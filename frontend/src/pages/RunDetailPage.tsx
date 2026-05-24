@@ -25,10 +25,11 @@ const stageLabels: Record<string, string> = {
 export default function RunDetailPage() {
   const { runId } = useParams<{ runId: string }>();
   const id = runId ?? '';
-  const runQuery = useQuery({ queryKey: ['run', id], queryFn: () => getRun(id), enabled: Boolean(id), refetchInterval: (query) => query.state.data?.status === 'running' ? 1000 : false });
-  const competitorsQuery = useQuery({ queryKey: ['competitors', id], queryFn: () => getCompetitors(id), enabled: Boolean(id), refetchInterval: runQuery.data?.status === 'running' ? 1000 : false });
-  const timelineQuery = useQuery({ queryKey: ['timeline', id], queryFn: () => getTimeline(id), enabled: Boolean(id), refetchInterval: runQuery.data?.status === 'running' ? 1000 : false });
-  const sourcesQuery = useQuery({ queryKey: ['sources', id], queryFn: () => getSources(id), enabled: Boolean(id), refetchInterval: runQuery.data?.status === 'running' ? 1000 : false });
+  const runQuery = useQuery({ queryKey: ['run', id], queryFn: () => getRun(id), enabled: Boolean(id), refetchInterval: (query) => query.state.data?.status === 'running' ? 3000 : false });
+  const isRunning = runQuery.data?.status === 'running';
+  const competitorsQuery = useQuery({ queryKey: ['competitors', id], queryFn: () => getCompetitors(id), enabled: Boolean(id), refetchInterval: isRunning ? 5000 : false });
+  const timelineQuery = useQuery({ queryKey: ['timeline', id], queryFn: () => getTimeline(id), enabled: Boolean(id), refetchInterval: isRunning ? 5000 : false });
+  const sourcesQuery = useQuery({ queryKey: ['sources', id], queryFn: () => getSources(id), enabled: Boolean(id), refetchInterval: isRunning ? 5000 : false });
 
   if (runQuery.isLoading) return <p className="loading">加载任务中...</p>;
   if (runQuery.isError || !runQuery.data) return <p className="error-text">任务加载失败。</p>;

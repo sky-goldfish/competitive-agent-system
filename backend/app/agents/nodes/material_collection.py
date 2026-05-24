@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 from urllib.parse import urlparse
 
@@ -8,7 +9,13 @@ from app.providers.search.base import SearchProvider
 ProgressCallback = Callable[[str, str, dict[str, Any]], None]
 
 ANALYSIS_DIMENSIONS = ["产品定位", "核心功能", "价格与商业模式", "用户评价与痛点"]
-COMMODITY_MARKERS = ["保温杯", "水杯", "硬件", "商品", "消费品", "电商", "mug", "cup", "bottle"]
+COMMODITY_MARKERS = [
+    "保温杯", "水杯", "硬件", "商品", "消费品", "电商", "家电", "家具", "食品", "饮料",
+    "服装", "鞋", "箱包", "配件", "美妆", "护肤", "清洁", "宠物用品", "玩具", "母婴",
+    "猫砂", "猫粮", "狗粮", "宠物", "智能家居", "耳机", "音箱", "手表", "手环",
+    "mug", "cup", "bottle", "hardware", "appliance", "gadget", "device",
+    "pet", "toy", "furniture", "cosmetic", "skincare",
+]
 
 SOURCE_TYPE_LABELS = {
     "brand_official_product_page": "品牌官网/商品介绍",
@@ -51,7 +58,10 @@ DIMENSION_SOURCE_BONUS = {
 
 
 def material_collection_node(state: AgentState, search: SearchProvider, progress: ProgressCallback | None = None) -> AgentState:
-    product_queries = _plan_material_queries(state["selected_competitors"], state.get("requirement", {}))
+    requirement = state.get("requirement", {})
+    if state.get("target_understanding"):
+        requirement = {**requirement, **{k: v for k, v in state["target_understanding"].items() if v}}
+    product_queries = _plan_material_queries(state["selected_competitors"], requirement)
     _emit(progress, "material_query_planning", "为已确认竞品按分析维度和来源类型生成资料采集 query", {"product_count": len(product_queries), "query_count": sum(len(item["queries"]) for item in product_queries), "source_weights": SOURCE_WEIGHTS})
 
     sources = []
@@ -60,40 +70,50 @@ def material_collection_node(state: AgentState, search: SearchProvider, progress
     for product_query in product_queries:
         competitor = product_query["competitor"]
         product_source_count = 0
-        for query_item in product_query["queries"]:
-            results = search.search(query_item["query"], limit=4)
-            classified_results = _classify_and_rank_results(results, state.get("requirement", {}), query_item)
-            for ranked_result in classified_results[:2]:
-                result = ranked_result["result"]
-                source_key = f"{competitor['id']}::{query_item['dimension']}::{result.url}"
-                if source_key in seen_urls:
-                    continue
-                seen_urls.add(source_key)
-                source_type = ranked_result["source_type"]
-                credibility_score = ranked_result["credibility_score"]
-                source = {
-                    "competitor_id": competitor["id"],
-                    "title": result.title,
-                    "url": result.url,
-                    "snippet": result.snippet,
-                    "source_type": source_type,
-                    "provider": search.name,
-                    "raw_content": result.raw_content,
-                    "metadata_json": _metadata_json(credibility_score, ranked_result["rank_score"], source_type, ranked_result["label"], ranked_result["reason"], query_item),
-                }
-                sources.append(source)
-                product_source_count += 1
-                evidence.append(
-                    {
+
+        def _search_one_dimension(query_item: dict) -> list[dict]:
+            try:
+                results = search.search(query_item["query"], limit=4)
+            except Exception:
+                return []
+            return _classify_and_rank_results(results, state.get("requirement", {}), query_item)
+
+        with ThreadPoolExecutor(max_workers=min(4, len(product_query["queries"]))) as executor:
+            futures = {executor.submit(_search_one_dimension, qi): qi for qi in product_query["queries"]}
+            for future in as_completed(futures):
+                query_item = futures[future]
+                classified_results = future.result()
+                for ranked_result in classified_results[:2]:
+                    result = ranked_result["result"]
+                    source_key = f"{competitor['id']}::{query_item['dimension']}::{result.url}"
+                    if source_key in seen_urls:
+                        continue
+                    seen_urls.add(source_key)
+                    source_type = ranked_result["source_type"]
+                    credibility_score = ranked_result["credibility_score"]
+                    source = {
                         "competitor_id": competitor["id"],
-                        "related_product": competitor["name"],
-                        "related_dimension": query_item["dimension"],
-                        "quote": (result.raw_content or result.snippet)[:800],
-                        "summary": f"[{ranked_result['label']}｜权重 {credibility_score:.2f}] {result.snippet}",
-                        "confidence": min(0.95, max(0.5, credibility_score - 0.04)),
-                        "source_url": result.url,
+                        "title": result.title,
+                        "url": result.url,
+                        "snippet": result.snippet,
+                        "source_type": source_type,
+                        "provider": search.name,
+                        "raw_content": result.raw_content,
+                        "metadata_json": _metadata_json(credibility_score, ranked_result["rank_score"], source_type, ranked_result["label"], ranked_result["reason"], query_item),
                     }
-                )
+                    sources.append(source)
+                    product_source_count += 1
+                    evidence.append(
+                        {
+                            "competitor_id": competitor["id"],
+                            "related_product": competitor["name"],
+                            "related_dimension": query_item["dimension"],
+                            "quote": (result.raw_content or result.snippet)[:800],
+                            "summary": f"[{ranked_result['label']}｜权重 {credibility_score:.2f}] {result.snippet}",
+                            "confidence": min(0.95, max(0.5, credibility_score - 0.04)),
+                            "source_url": result.url,
+                        }
+                    )
         _emit(progress, "source_search", "按来源类型召回并重排序候选网页", {"product": competitor["name"], "source_count": product_source_count})
 
     coverage_report = _build_coverage_report(state["selected_competitors"], evidence)
@@ -179,16 +199,10 @@ def _classify_commodity_source(domain: str, lowered: str) -> str:
         return "community_discussion"
     if any(item in lowered for item in ["测评", "评测", "review", "体验", "开箱"]):
         return "professional_review"
-    if _looks_official_domain(domain):
-        return "brand_official_product_page"
     return "unknown"
 
 
 def _classify_saas_source(domain: str, lowered: str) -> str:
-    if any(item in lowered for item in ["pricing", "price", "plans", "定价", "价格"]):
-        return "official_pricing_page" if _looks_official_domain(domain) else "review_site"
-    if any(item in lowered for item in ["docs", "help", "support", "developer", "文档", "帮助中心"]):
-        return "official_docs"
     if any(item in domain for item in ["g2.com", "capterra.com", "producthunt.com", "trustradius.com"]):
         return "review_site"
     if any(item in domain for item in ["reddit.com", "zhihu.com", "v2ex.com", "news.ycombinator.com"]):
@@ -196,6 +210,10 @@ def _classify_saas_source(domain: str, lowered: str) -> str:
     if any(item in domain for item in ["x.com", "twitter.com", "linkedin.com", "youtube.com"]):
         return "social_review_post"
     if _looks_official_domain(domain):
+        if any(item in lowered for item in ["pricing", "price", "plans", "定价", "价格"]):
+            return "official_pricing_page"
+        if any(item in lowered for item in ["docs", "help", "support", "developer", "文档", "帮助中心"]):
+            return "official_docs"
         return "official_site"
     return "unknown"
 
@@ -214,8 +232,24 @@ def _is_commodity_domain(requirement: dict) -> bool:
 
 
 def _looks_official_domain(domain: str) -> bool:
-    blocked = ["google.com", "bing.com", "duckduckgo.com", "wikipedia.org", "reddit.com", "youtube.com", "xiaohongshu.com", "taobao.com", "tmall.com", "jd.com"]
-    return bool(domain and not any(item in domain for item in blocked))
+    if not domain:
+        return False
+    noise_domains = [
+        "google.com", "bing.com", "duckduckgo.com", "wikipedia.org", "reddit.com",
+        "youtube.com", "xiaohongshu.com", "taobao.com", "tmall.com", "jd.com",
+        "facebook.com", "twitter.com", "x.com", "linkedin.com", "instagram.com",
+        "medium.com", "substack.com", "wordpress.com", "blogspot.com", "weibo.com",
+        "zhihu.com", "douban.com", "bilibili.com", "douyin.com", "tiktok.com",
+        "pinterest.com", "quora.com", "news.ycombinator.com", "v2ex.com",
+        "amazon.com", "ebay.com", "aliexpress.com", "pinduoduo.com", "suning.com",
+        "g2.com", "capterra.com", "producthunt.com", "trustradius.com",
+        "smzdm.com", "chiphell.com", "36kr.com", "techcrunch.com",
+        "github.com", "gitlab.com", "stackoverflow.com",
+        "relay.app", "zapier.com", "ifttt.com",
+        "pragmaticinstitute.com", "hubspot.com", "mindtheproduct.com",
+        "kaizen.com", "checkthat.ai", "relevanceai.com",
+    ]
+    return not any(item in domain for item in noise_domains)
 
 
 def _metadata_json(credibility_score: float, rank_score: float, source_type: str, source_label: str, classification_reason: str, query_item: dict) -> str:

@@ -1,10 +1,13 @@
 import json
+import logging
 from typing import Any
 
 from openai import OpenAI
 
 from app.core.config import get_settings
 from app.providers.llm.mock import MockLLMProvider
+
+logger = logging.getLogger(__name__)
 
 
 def _safe_confidence(value: Any) -> float:
@@ -86,7 +89,9 @@ JSON schema:
 }}
 """
         result = self._json_chat(prompt, fallback)
-        return {**fallback, **result}
+        if result is fallback:
+            return fallback
+        return result
 
     def extract_competitors(
         self,
@@ -96,33 +101,39 @@ JSON schema:
     ) -> list[dict[str, Any]]:
         fallback = self.fallback.extract_competitors(requirement, target_understanding, search_results)
         prompt = f"""
-你是竞品发现 Agent。请从真实搜索结果中提取“产品/公司/服务”级别的候选竞品，过滤文章标题、榜单页、新闻页、泛概念词和无关结果。
+你是竞品发现 Agent。请从真实搜索结果中提取与目标对象同赛道的具体产品/品牌/服务名称。
 
 需求理解：{json.dumps(requirement, ensure_ascii=False)}
 目标对象理解：{json.dumps(target_understanding, ensure_ascii=False)}
 竞品发现搜索结果：{json.dumps(search_results, ensure_ascii=False)}
 
-要求：
-- 优先从搜索结果标题和摘要中明确出现的产品名、App 名、服务名里提取候选，例如微信、Soul、TIM、ICQ、抖音、小红书、Telegram、WhatsApp。
-- 不要把流量分析工具、竞品分析方法文章、报告平台、媒体站点、泛概念词抽成竞品，除非它们确实和目标对象同赛道。
-- 如果搜索结果里出现“X 和 Y”“X、Y 都属于”“同类聊天软件有哪些”等句式，要把 Y 作为候选线索。
-- 排除目标产品自身、文章标题、榜单名称、新闻标题和“竞品分析/替代方案/主要玩家”等泛词。
+严格要求：
+1. name 字段必须是一个具体的产品名、品牌名、App名或服务名。例如：”Litter-Robot”、”CATLINK”、”小佩”、”Stripe”、”PayPal”。
+2. name 绝对不能是：
+   - 行业/市场描述（如”宠物智能用品行业”、”全球智能猫砂盒市场”）
+   - 数字/金额（如”亿元”、”年的”、”2024年”）
+   - 句子片段或中文短语（如”此外”、”其中”、”但是”）
+   - 泛概念词（如”竞品”、”替代方案”、”主要玩家”）
+3. 优先从搜索结果中出现的品牌名、产品名、公司名提取。
+4. 如果搜索结果中提到了具体品牌（如”CATLINK智能猫砂盆”），提取品牌名”CATLINK”。
+5. 排除目标产品自身。
+6. 输出 3-5 个候选竞品。
 
-输出严格 JSON，不要输出 Markdown。
+输出严格 JSON，不要输出 Markdown 代码块。
 JSON schema:
 {{
-  "competitors": [
+  “competitors”: [
     {{
-      "name": "竞品名称",
-      "website": "官网或最相关 URL",
-      "description": "用中文解释它是什么，以及为什么和目标对象相关",
-      "category": "direct_competitor | indirect_competitor | substitute_solution | adjacent_product",
-      "reason": "推荐理由，说明它与目标对象在定位、用户、核心功能或场景上的重叠",
-      "matched_dimensions": ["产品定位", "目标用户", "核心功能", "使用场景"],
-      "source_ids": ["支撑来源 URL"],
-      "evidence_ids": [],
-      "selected_by_default": true,
-      "confidence": 0.0
+      “name”: “具体的产品名或品牌名（2-30个字符）”,
+      “website”: “官网或最相关 URL”,
+      “description”: “用中文解释它是什么产品，以及为什么和目标对象竞争”,
+      “category”: “direct_competitor | indirect_competitor | substitute_solution | adjacent_product”,
+      “reason”: “推荐理由”,
+      “matched_dimensions”: [“产品定位”, “目标用户”, “核心功能”, “使用场景”],
+      “source_ids”: [“支撑来源 URL”],
+      “evidence_ids”: [],
+      “selected_by_default”: true,
+      “confidence”: 0.0
     }}
   ]
 }}
@@ -156,68 +167,101 @@ JSON schema:
 
     def analyze_competitor(self, competitor: dict[str, Any], evidence: list[dict[str, Any]]) -> dict[str, Any]:
         fallback = self.fallback.analyze_competitor(competitor, evidence)
+        evidence_summary = "\n".join(
+            f"- [{e.get('related_dimension', '未知')}] {e.get('summary', '')[:300]}"
+            for e in evidence[:12]
+        )
         prompt = f"""
-你是竞品分析师 Agent。基于竞品信息和证据，输出严格 JSON，不要输出 Markdown。
+你是竞品分析师 Agent。请仔细阅读以下证据材料，基于证据中的真实信息对竞品进行分析。
+不要编造证据中没有的信息。如果某个字段在证据中没有找到相关内容，请如实写"证据中未涉及"。
 
-竞品：{json.dumps(competitor, ensure_ascii=False)}
-证据：{json.dumps(evidence, ensure_ascii=False)}
+竞品名称：{competitor.get('name', '')}
+竞品描述：{competitor.get('description', '')[:300]}
 
-分析要求：优先参考高权重来源；官网/官方文档适合判断定位、功能、定价，评价站、社区、电商评价和社交平台更适合判断用户痛点。若证据摘要中包含来源类型和权重，请在结论中体现不同来源的差异，不要把低权重来源当成唯一事实。
+已采集证据（请基于这些内容分析）：
+{evidence_summary}
 
+输出严格 JSON，不要输出 Markdown。
 JSON schema:
 {{
-  "positioning": "定位总结",
-  "target_users": "JSON 字符串数组",
-  "core_features_json": "JSON 字符串数组",
-  "pricing_summary": "定价摘要",
-  "strengths_json": "JSON 字符串数组",
-  "weaknesses_json": "JSON 字符串数组",
-  "opportunities_json": "JSON 字符串数组",
-  "evidence_ids_json": "JSON 字符串数组"
+  "positioning": "基于证据总结该产品的定位，引用具体证据内容",
+  "target_users": ["从证据中提取的目标用户"],
+  "core_features_json": ["从证据中提取的核心功能"],
+  "pricing_summary": "从证据中提取的定价信息，无则写'证据中未涉及'",
+  "strengths_json": ["从证据中提取的优势"],
+  "weaknesses_json": ["从证据中提取的劣势或用户痛点"],
+  "opportunities_json": ["基于证据分析的机会点"],
+  "evidence_ids_json": ["引用的证据来源URL"]
 }}
 """
         result = self._json_chat(prompt, fallback)
         for key in ["target_users", "core_features_json", "strengths_json", "weaknesses_json", "opportunities_json", "evidence_ids_json"]:
             if isinstance(result.get(key), list):
                 result[key] = json.dumps(result[key], ensure_ascii=False)
-        return {**fallback, **result}
+        if result is fallback:
+            return fallback
+        return result
 
     def generate_report(self, run: dict[str, Any], analyses: list[dict[str, Any]], sources: list[dict[str, Any]]) -> dict[str, str]:
         fallback = self.fallback.generate_report(run, analyses, sources)
+        analyses_summary = json.dumps(analyses, ensure_ascii=False)[:4000]
+        sources_summary = json.dumps(
+            [{"title": s.get("title", "")[:80], "url": s.get("url", ""), "source_type": s.get("source_type", ""), "credibility_score": s.get("credibility_score", 0)} for s in sources[:20]],
+            ensure_ascii=False,
+        )
         prompt = f"""
-你是报告撰写 Agent。请基于分析结果生成一份中文 Markdown 竞品分析报告，并输出严格 JSON，不要输出 Markdown 代码块。
+你是报告撰写 Agent。请基于以下分析结果和来源，生成一份专业的中文 Markdown 竞品分析报告。
 
-任务：{json.dumps(run, ensure_ascii=False)}
-分析：{json.dumps(analyses, ensure_ascii=False)}
-来源：{json.dumps(sources, ensure_ascii=False)}
+用户需求：{run.get('user_requirement', '')}
+分析结果：{analyses_summary}
+来源列表：{sources_summary}
 
-报告要求：来源与证据章节必须标注来源类型、权重或可信度；综合结论要说明信息来自哪些不同角度，例如官网/商品页、价格页、电商评价、社交平台、社区讨论、媒体测评等。不同来源冲突时，优先采用高权重来源，并注明低权重来源只作为用户情绪或线索参考。
+报告要求：
+1. 标题应该准确反映分析对象和领域，不要用"通用产品"这种泛泛标题
+2. 每个竞品的分析必须基于上面的分析结果，引用具体的功能、定价、优劣势信息
+3. 不要使用"MVP Mock 数据显示"这类字样
+4. 来源与证据章节必须标注来源类型和权重
+5. 如果某些信息不确定或缺失，明确说明而不是编造
 
+输出严格 JSON，不要输出 Markdown 代码块。
 JSON schema:
 {{
-  "title": "报告标题",
-  "summary": "报告摘要",
-  "markdown_content": "完整 Markdown 报告，必须包含来源与证据章节"
+  "title": "报告标题（应包含具体产品或领域名称）",
+  "summary": "报告摘要（2-3句话概括核心发现）",
+  "markdown_content": "完整 Markdown 报告"
 }}
 """
         result = self._json_chat(prompt, fallback)
-        return {**fallback, **result}
+        if result is fallback:
+            return fallback
+        return result
 
     def _json_chat(self, prompt: str, fallback: dict[str, Any]) -> dict[str, Any]:
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": "你是严谨的竞品分析多 Agent 系统，只输出可解析 JSON。"},
+                    {"role": "system", "content": "你是严谨的竞品分析多 Agent 系统。必须只输出纯 JSON，不要包含 ```json 代码块标记，不要输出任何解释文字。"},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.2,
-                response_format={"type": "json_object"},
             )
-            content = response.choices[0].message.content or "{}"
+            content = (response.choices[0].message.content or "").strip()
+            if content.startswith("```"):
+                content = content.split("\n", 1)[-1] if "\n" in content else content[3:]
+                if content.endswith("```"):
+                    content = content[:-3].strip()
+            if not content:
+                logger.warning("LLM returned empty content, using fallback")
+                return fallback
             parsed = json.loads(content)
             if not isinstance(parsed, dict):
+                logger.warning("LLM returned non-dict JSON, using fallback")
                 return fallback
-            return {**fallback, **parsed}
+            return parsed
+        except json.JSONDecodeError:
+            logger.warning("LLM returned invalid JSON: %s", content[:200] if content else "empty")
+            return fallback
         except Exception:
+            logger.exception("LLM API call failed, using fallback")
             return fallback

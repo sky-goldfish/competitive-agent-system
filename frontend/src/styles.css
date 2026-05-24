@@ -155,7 +155,7 @@ button:disabled {
 }
 
 .detail-grid {
-  grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr);
+  grid-template-columns: 1fr minmax(0, 380px);
   align-items: start;
 }
 
@@ -413,6 +413,15 @@ button:disabled {
   gap: 6px;
   padding: 16px;
   text-align: left;
+  overflow: hidden;
+}
+
+.competitor-card p {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-all;
 }
 
 .competitor-card.selected {

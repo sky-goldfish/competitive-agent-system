@@ -1,10 +1,20 @@
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class RunCreateRequest(BaseModel):
     user_requirement: str
+
+    @field_validator("user_requirement")
+    @classmethod
+    def validate_requirement(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) < 2:
+            raise ValueError("需求描述不能为空")
+        if len(v) > 2000:
+            raise ValueError("需求描述不能超过 2000 字")
+        return v
 
 
 class RunResponse(BaseModel):

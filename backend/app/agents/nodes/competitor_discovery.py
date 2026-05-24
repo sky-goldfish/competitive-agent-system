@@ -1,6 +1,7 @@
 import re
 from collections import Counter
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 from urllib.parse import urlparse
 
@@ -11,11 +12,21 @@ from app.providers.search.base import SearchProvider
 
 BLOCKED_SOURCE_DOMAINS = {"reddit.com", "www.reddit.com", "linkedin.com", "www.linkedin.com", "youtube.com", "www.youtube.com"}
 CONTENT_HINTS = ["alternative", "alternatives", "competitor", "competitors", "best", "review", "blog", "vs"]
-INVALID_COMPETITOR_NAMES = {"gie", "outscraper", "通用", "視点", "products", "the", "epd", "industrial", "similarweb"}
+INVALID_COMPETITOR_NAMES = {
+    "gie", "outscraper", "通用", "視点", "products", "the", "epd", "industrial", "similarweb",
+    "亿元", "万元", "百万", "千万", "十亿", "美元", "人民币", "市场规模", "行业",
+    "全球", "中国", "国内", "海外", "市场", "赛道", "趋势", "增长", "年的",
+}
 GENERIC_CANDIDATE_TERMS = {
-    "竞品", "竞争", "对手", "替代", "方案", "产品", "分析", "报告", "用户", "需求", "功能", "场景", "同类", "主要", "工具", "模型",
-    "图表", "构筑", "护城", "纷纷", "入局", "社交超强", "超强护城", "字节快手", "领域", "机会", "是否",
+    "竞品", "竞争", "对手", "替代", "方案", "分析", "报告", "用户", "需求", "功能", "场景", "同类", "主要", "工具",
+    "图表", "构筑", "护城", "纷纷", "入局", "领域", "机会", "是否", "此外", "其中", "以及", "但是", "因此", "所以",
+    "目前", "可以", "通过", "年的", "全球", "市场", "行业", "方面", "这些", "一个", "这个", "那个", "如何", "什么",
     "alternatives", "alternative", "competitors", "competitor", "review", "reviews", "pricing", "product", "products", "top", "best",
+}
+CHINESE_STOPWORDS = {
+    "的", "了", "在", "是", "我", "有", "和", "就", "不", "人", "都", "一", "个", "上", "也", "很", "到", "说", "要",
+    "去", "你", "会", "着", "没有", "看", "好", "自己", "这", "他", "她", "它", "吗", "把", "那", "里", "让", "给",
+    "此外", "其中", "以及", "但是", "因此", "所以", "目前", "可以", "通过", "如何", "什么", "这些", "那些", "年的",
 }
 KNOWN_PRODUCT_ALIASES = {
     "微信": "微信",
@@ -104,9 +115,8 @@ def competitor_discovery_node(
     competitors = llm.extract_competitors(requirement, target_understanding, search_results)
     _emit(progress, "candidate_extraction", "抽取候选竞品并解释推荐理由", {"candidate_count": len(competitors), "candidates": [item.get("name") for item in competitors[:6]]})
 
-    normalized = []
+    filtered_candidates = []
     seen_names = set()
-    extra_search_results = []
     for item in competitors:
         name = str(item.get("name", "")).strip()
         if not name or name.lower() in seen_names or name.lower() in INVALID_COMPETITOR_NAMES or _looks_generic_name(name):
@@ -116,8 +126,22 @@ def competitor_discovery_node(
         if not _is_domain_relevant_candidate(name, target_understanding, requirement):
             continue
         seen_names.add(name.lower())
-        _emit(progress, "official_site_resolution", "解析候选竞品官网", {"name": name})
-        product_result = _resolve_product_result(name, requirement, search)
+        filtered_candidates.append(item)
+        if len(filtered_candidates) >= 4:
+            break
+
+    _emit(progress, "official_site_resolution", "并行解析候选竞品官网", {"names": [c.get("name") for c in filtered_candidates]})
+    product_results: dict[str, dict | None] = {}
+    with ThreadPoolExecutor(max_workers=min(4, max(1, len(filtered_candidates)))) as executor:
+        futures = {executor.submit(_resolve_product_result, item["name"], requirement, search): item["name"] for item in filtered_candidates}
+        for future in as_completed(futures):
+            product_results[futures[future]] = future.result()
+
+    normalized = []
+    extra_search_results = []
+    for item in filtered_candidates:
+        name = str(item["name"]).strip()
+        product_result = product_results.get(name)
         if product_result:
             extra_search_results.append(product_result)
         website = product_result.get("url") if product_result else item.get("website")
@@ -132,8 +156,6 @@ def competitor_discovery_node(
                 "discovery_source": item.get("discovery_source") or f"{llm.name}+{search.name}",
             }
         )
-        if len(normalized) >= 4:
-            break
     if not normalized:
         fallback_competitors = _extract_fallback_competitors(requirement, target_understanding, search_results)
         _emit(
@@ -197,50 +219,41 @@ def _plan_competitor_queries(requirement: dict, target_understanding: dict) -> l
     name = target_understanding.get("name") or requirement.get("target_product") or requirement.get("domain", "目标产品")
     category = target_understanding.get("category") or requirement.get("domain", "")
     capabilities = " ".join(target_understanding.get("core_capabilities", [])[:3])
-    if "企业协作" in category or "协作办公" in category:
-        return [
-            {"query": "飞书 Lark 竞品 钉钉 企业微信 Slack Microsoft Teams", "purpose": "direct_competitor_discovery"},
-            {"query": "企业协作办公平台 竞品 钉钉 企业微信 飞书", "purpose": "direct_competitor_discovery"},
-            {"query": "team collaboration suite competitors Slack Microsoft Teams DingTalk WeCom", "purpose": "indirect_competitor_discovery"},
-        ]
-    if "竞品分析" in category or "市场调研" in category:
-        return [
-            {"query": "AI competitor analysis tools Crayon Kompyte Klue Similarweb", "purpose": "direct_competitor_discovery"},
-            {"query": "competitive intelligence software competitors Crayon Kompyte Klue", "purpose": "direct_competitor_discovery"},
-            {"query": "AI market research tools Perplexity ChatGPT Deep Research Similarweb", "purpose": "indirect_competitor_discovery"},
-        ]
-    if "保温杯" in category or "水杯" in category:
-        return [
-            {"query": "智能保温杯 竞品 Ember Mug 小米 智能水杯", "purpose": "direct_competitor_discovery"},
-            {"query": "smart temperature control mug competitors Ember Fellow Xiaomi", "purpose": "direct_competitor_discovery"},
-            {"query": "office smart thermos bottle temperature display competitors", "purpose": "indirect_competitor_discovery"},
-        ]
+    use_cases = " ".join(target_understanding.get("primary_use_cases", [])[:2])
     queries = [
         {"query": f"{name} 竞品 替代品 对比", "purpose": "direct_competitor_discovery"},
-        {"query": f"{name} 竞争对手 同类产品", "purpose": "direct_competitor_discovery"},
-        {"query": f"{name} alternatives competitors similar products", "purpose": "direct_competitor_discovery"},
-        {"query": f"{category} 主要玩家 竞品 {capabilities}", "purpose": "indirect_competitor_discovery"},
+        {"query": f"{name} competitors alternatives vs", "purpose": "direct_competitor_discovery"},
+        {"query": f"{category} 主要产品 品牌 排行 {capabilities}", "purpose": "indirect_competitor_discovery"},
     ]
+    if use_cases:
+        queries.append({"query": f"{use_cases} 同类产品 推荐 对比", "purpose": "indirect_competitor_discovery"})
     return queries
 
 
 def _run_queries(queries: list[dict], search: SearchProvider, *, limit: int) -> list[dict]:
-    collected = []
-    seen_urls = set()
-    for query_item in queries:
+    def _search_one(query_item: dict) -> list[dict]:
         try:
             results = search.search(query_item["query"], limit=limit)
         except Exception:
-            continue
+            return []
+        batch = []
         for rank, result in enumerate(results, start=1):
             serialized = _serialize_result(result, search.name)
-            if serialized["url"] in seen_urls:
-                continue
-            seen_urls.add(serialized["url"])
             serialized["query"] = query_item["query"]
             serialized["purpose"] = query_item.get("purpose")
             serialized["rank"] = rank
-            collected.append(serialized)
+            batch.append(serialized)
+        return batch
+
+    collected = []
+    seen_urls: set[str] = set()
+    with ThreadPoolExecutor(max_workers=min(4, len(queries))) as executor:
+        futures = {executor.submit(_search_one, q): q for q in queries}
+        for future in as_completed(futures):
+            for item in future.result():
+                if item["url"] not in seen_urls:
+                    seen_urls.add(item["url"])
+                    collected.append(item)
     return collected
 
 
@@ -255,13 +268,7 @@ def _serialize_result(result, provider: str) -> dict:
 
 
 def _resolve_product_result(name: str, requirement: dict, search: SearchProvider) -> dict | None:
-    domain = requirement.get("domain", "")
-    if "企业协作" in domain or "办公" in domain or "协同" in domain:
-        query = f"{name} 官网 企业协作 办公平台"
-    elif "会议" in domain or "meeting" in domain.lower():
-        query = f"{name} official product AI meeting notes"
-    else:
-        query = f"{name} official product"
+    query = f"{name} official site product"
     try:
         results = search.search(query, limit=5)
     except Exception:
@@ -324,10 +331,25 @@ def _extract_fallback_competitors(requirement: dict, target_understanding: dict,
 def _target_aliases(target_name: str) -> set[str]:
     lowered = target_name.lower().replace(" ", "")
     aliases = {lowered} if lowered else set()
-    if lowered in {"qq", "腾讯qq"}:
-        aliases.update({"qq", "腾讯qq"})
-    if lowered in {"微信", "wechat", "weixin"}:
-        aliases.update({"微信", "wechat", "weixin"})
+    alias_map = {
+        "qq": {"qq", "腾讯qq"},
+        "腾讯qq": {"qq", "腾讯qq"},
+        "微信": {"微信", "wechat", "weixin"},
+        "wechat": {"微信", "wechat", "weixin"},
+        "weixin": {"微信", "wechat", "weixin"},
+        "飞书": {"飞书", "lark", "feishu"},
+        "lark": {"飞书", "lark", "feishu"},
+        "feishu": {"飞书", "lark", "feishu"},
+        "钉钉": {"钉钉", "dingtalk"},
+        "dingtalk": {"钉钉", "dingtalk"},
+        "抖音": {"抖音", "douyin", "tiktok"},
+        "douyin": {"抖音", "douyin", "tiktok"},
+        "tiktok": {"抖音", "douyin", "tiktok"},
+        "小红书": {"小红书", "xiaohongshu", "rednote"},
+    }
+    if lowered in alias_map:
+        aliases.update(alias_map[lowered])
+    aliases.add(target_name.lower())
     return aliases
 
 
@@ -342,9 +364,18 @@ def _extract_known_product_names(text: str) -> list[str]:
 
 def _extract_candidate_names_from_text(text: str) -> list[str]:
     candidates = []
+    brand_patterns = [
+        r"([A-Z][a-z]+(?:[A-Z][a-z]+)+)",
+        r"「([^」]{2,15})」",
+    ]
+    for pattern in brand_patterns:
+        for match in re.findall(pattern, text):
+            name = match.strip()
+            if len(name) >= 2 and not _looks_generic_name(name):
+                candidates.append(name)
     patterns = [
-        r"\b[A-Z][A-Za-z0-9]*(?:\.[A-Za-z0-9]+)?\b",
-        r"[\u4e00-\u9fa5]{2,8}(?:AI|会议|听见|纪要|助手|通|浏览器)?",
+        r"\b[A-Z][A-Za-z0-9]*(?:[-\.][A-Za-z0-9]+)*\b",
+        r"[\u4e00-\u9fa5]{2,6}(?:AI|会议|听见|纪要|助手|通|浏览器)?",
     ]
     for pattern in patterns:
         for match in re.findall(pattern, text):
@@ -356,30 +387,30 @@ def _extract_candidate_names_from_text(text: str) -> list[str]:
 
 
 def _looks_generic_name(name: str) -> bool:
-    lowered = name.lower().replace(" ", "")
-    if lowered in GENERIC_CANDIDATE_TERMS:
+    lowered = name.lower().strip()
+    stripped = lowered.replace(" ", "")
+    if stripped in GENERIC_CANDIDATE_TERMS or stripped in CHINESE_STOPWORDS:
         return True
-    if any(term in lowered for term in GENERIC_CANDIDATE_TERMS):
+    if len(name) <= 1:
         return True
-    if any(term in name for term in ["云", "数据", "报表", "平台", "系统", "广告", "营销"]):
+    cn_chars = [ch for ch in name if "一" <= ch <= "鿿"]
+    en_chars = [ch for ch in name if ch.isascii() and ch.isalpha()]
+    if cn_chars and len(cn_chars) > 10:
+        return True
+    sentence_markers = ["的", "了", "在", "是", "有", "和", "与", "或", "从", "将", "被", "等", "也", "都", "而", "但", "到", "为"]
+    marker_count = sum(1 for m in sentence_markers if m in name)
+    if marker_count >= 2:
+        return True
+    generic_suffixes = ["行业", "市场", "赛道", "领域", "品类", "方面", "方向", "趋势", "规模", "分析", "报告"]
+    if any(name.endswith(s) for s in generic_suffixes):
+        return True
+    unit_patterns = ["亿", "万", "元", "美金", "美元", "人民币", "%", "年"]
+    if cn_chars and any(p in name for p in unit_patterns) and not en_chars:
         return True
     return False
 
 
 def _is_domain_relevant_candidate(name: str, target_understanding: dict, requirement: dict) -> bool:
-    category = (target_understanding.get("category") or requirement.get("domain") or "").lower()
-    lowered = name.lower()
-    allowed_by_domain = {
-        "企业协作": {"钉钉", "企业微信", "wecom", "slack", "microsoft teams", "google workspace", "notion"},
-        "协作办公": {"钉钉", "企业微信", "wecom", "slack", "microsoft teams", "google workspace", "notion"},
-        "竞品分析": {"perplexity", "chatgpt deep research", "similarweb", "crayon", "kompyte", "klue"},
-        "市场调研": {"perplexity", "chatgpt deep research", "similarweb", "crayon", "kompyte", "klue"},
-        "保温杯": {"ember mug", "fellow carter", "小米智能保温杯", "aquaphor 智能杯", "vanow 智能保温杯"},
-        "水杯": {"ember mug", "fellow carter", "小米智能保温杯", "aquaphor 智能杯", "vanow 智能保温杯"},
-    }
-    for marker, allowed in allowed_by_domain.items():
-        if marker.lower() in category:
-            return lowered in {item.lower() for item in allowed}
     return True
 
 
@@ -412,11 +443,7 @@ def _is_known_official_domain(name: str, result: dict) -> bool:
 def _is_candidate_result_relevant(name: str, result: dict) -> bool:
     haystack = f"{result.get('title', '')} {result.get('snippet', '')} {result.get('url', '')}".lower()
     lowered = name.lower()
-    if lowered == "crayon":
-        return any(term in haystack for term in ["competitive intelligence", "market intelligence", "crayon.co", "sales battlecard"])
-    if lowered == "ember mug":
-        return any(term in haystack for term in ["ember", "temperature control", "heated coffee mug", "smart mug"])
-    return lowered.replace(".ai", "") in haystack.replace(".ai", "")
+    return lowered.replace(".ai", "").replace(" ", "") in haystack.replace(".ai", "").replace(" ", "")
 
 
 

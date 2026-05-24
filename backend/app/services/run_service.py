@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 
 from sqlalchemy.orm import Session
@@ -58,6 +59,9 @@ def execute_discovery_run(run_id: str) -> None:
 
         run.requirement_summary = state["requirement"]["summary"]
         run.title = state["requirement"]["domain"]
+        run.requirement_json = json.dumps(state["requirement"], ensure_ascii=False)
+        if state.get("target_understanding"):
+            run.target_understanding_json = json.dumps(state["target_understanding"], ensure_ascii=False)
         for item in state["competitors"]:
             db.add(Competitor(run_id=run.id, **item))
         run.status = "waiting_for_human"
@@ -120,14 +124,16 @@ def execute_report_run(run_id: str) -> None:
 
         llm = get_llm_provider()
         search = get_search_provider()
+        requirement = json.loads(run.requirement_json) if run.requirement_json else {
+            "domain": run.title,
+            "summary": run.requirement_summary,
+            "query": f"{run.title} 竞品 对比 功能 定价 用户评价",
+        }
+        target_understanding = json.loads(run.target_understanding_json) if run.target_understanding_json else None
         state: AgentState = {
             "run_id": run.id,
             "user_requirement": run.user_requirement,
-            "requirement": {
-                "domain": run.title,
-                "summary": run.requirement_summary,
-                "query": f"{run.title} 竞品 对比 功能 定价 用户评价",
-            },
+            "requirement": requirement,
             "selected_competitors": [
                 {
                     "id": item.id,
@@ -140,6 +146,8 @@ def execute_report_run(run_id: str) -> None:
                 for item in selected
             ],
         }
+        if target_understanding:
+            state["target_understanding"] = target_understanding
 
         graph = build_report_generation_graph(
             llm,

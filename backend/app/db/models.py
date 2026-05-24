@@ -18,6 +18,8 @@ class Run(Base):
     title: Mapped[str] = mapped_column(String, default="竞品分析任务")
     user_requirement: Mapped[str] = mapped_column(Text)
     requirement_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    requirement_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    target_understanding_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String, default="created")
     current_stage: Mapped[str] = mapped_column(String, default="created")
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)

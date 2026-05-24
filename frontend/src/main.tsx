@@ -5,7 +5,18 @@ import { BrowserRouter } from 'react-router-dom';
 import App from './App';
 import './styles.css';
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      retry: (failureCount, error) => {
+        if (error instanceof Error && error.message.includes('404')) return false;
+        return failureCount < 2;
+      },
+      staleTime: 5_000,
+      refetchOnWindowFocus: false,
+    },
+  },
+});
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
