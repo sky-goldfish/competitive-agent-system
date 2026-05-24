@@ -64,6 +64,12 @@ JSON schema:
 需求理解：{json.dumps(requirement, ensure_ascii=False)}
 目标搜索结果：{json.dumps(target_search_results, ensure_ascii=False)}
 
+要求：
+- category 必须是具体赛道，例如“即时通讯与社交平台”“移动支付与生活服务”“企业协作办公平台”，不要输出“某某所在产品赛道”这类占位。
+- core_capabilities 必须来自目标产品真实能力或搜索结果，不要输出“核心流程自动化、信息整理、报告生成”这类通用占位。
+- 如果搜索结果混入广告平台、开发者文档、企业版或同品牌其他产品，要区分它们与目标产品本体，不要让噪声主导画像。
+- 对 QQ、微信、小红书、B站、抖音、淘宝等 C 端产品，优先识别消费级社交、内容、交易、支付、社区等真实用户场景。
+
 输出严格 JSON，不要输出 Markdown。
 JSON schema:
 {{
@@ -95,6 +101,12 @@ JSON schema:
 需求理解：{json.dumps(requirement, ensure_ascii=False)}
 目标对象理解：{json.dumps(target_understanding, ensure_ascii=False)}
 竞品发现搜索结果：{json.dumps(search_results, ensure_ascii=False)}
+
+要求：
+- 优先从搜索结果标题和摘要中明确出现的产品名、App 名、服务名里提取候选，例如微信、Soul、TIM、ICQ、抖音、小红书、Telegram、WhatsApp。
+- 不要把流量分析工具、竞品分析方法文章、报告平台、媒体站点、泛概念词抽成竞品，除非它们确实和目标对象同赛道。
+- 如果搜索结果里出现“X 和 Y”“X、Y 都属于”“同类聊天软件有哪些”等句式，要把 Y 作为候选线索。
+- 排除目标产品自身、文章标题、榜单名称、新闻标题和“竞品分析/替代方案/主要玩家”等泛词。
 
 输出严格 JSON，不要输出 Markdown。
 JSON schema:

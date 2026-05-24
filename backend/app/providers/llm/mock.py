@@ -3,6 +3,12 @@ import re
 from collections import Counter
 from typing import Any
 
+TARGET_PATTERNS = [
+    r"(?:分析|研究|看看|调研|了解)\s*([\w\u4e00-\u9fa5][\w\u4e00-\u9fa5 .&+\-]{0,40}?)(?:\s*的)?(?:竞品|竞争对手|替代品|对标)",
+    r"([\w\u4e00-\u9fa5][\w\u4e00-\u9fa5 .&+\-]{0,40}?)(?:\s*的)?(?:竞品|竞争对手|替代品|对标)(?:分析|调研)?",
+]
+FILLER_WORDS = ["我想", "帮我", "请", "一下", "一个", "这个", "产品", "应用", "软件", "平台"]
+
 
 def _parse_metadata(metadata_json: str | None) -> dict[str, Any]:
     if not metadata_json:
@@ -22,12 +28,23 @@ def _clean_name(title: str) -> str:
     return name[:80]
 
 
+def _cleanup_target_name(value: str) -> str | None:
+    name = value.strip(" ，。,.；;：:!?？（）()【】[]\"'“”‘’")
+    for word in FILLER_WORDS:
+        name = name.replace(word, "")
+    name = re.sub(r"\s+", " ", name).strip(" 的")
+    if not name or len(name) > 40:
+        return None
+    if name in {"竞品", "竞争对手", "替代品", "对标", "分析", "调研"}:
+        return None
+    return name
+
+
 def _infer_input_type(user_requirement: str) -> str:
     lowered = user_requirement.lower()
-    existing_markers = ["竞品", "分析", "替代", "alternative", "competitor"]
-    idea_markers = ["我想做", "想做", "产品想法", "可能有哪些", "面向"]
-    known_products = ["飞书", "feishu", "lark", "notion", "cursor", "linear"]
-    if any(product in lowered for product in known_products) and any(marker in lowered for marker in existing_markers):
+    existing_markers = ["竞品", "分析", "替代", "alternative", "competitor", "竞争对手", "对标"]
+    idea_markers = ["我想做", "想做一个", "产品想法", "可能有哪些", "面向"]
+    if _extract_target_product(user_requirement) and any(marker in lowered for marker in existing_markers):
         return "existing_product"
     if any(marker in lowered for marker in idea_markers):
         return "product_idea"
@@ -35,15 +52,18 @@ def _infer_input_type(user_requirement: str) -> str:
 
 
 def _extract_target_product(user_requirement: str) -> str | None:
-    lowered = user_requirement.lower()
-    known_products = {"飞书": ["飞书", "feishu", "lark"], "Notion AI": ["notion ai"]}
-    for canonical, aliases in known_products.items():
-        if any(alias in lowered for alias in aliases):
-            return canonical
+    for pattern in TARGET_PATTERNS:
+        match = re.search(pattern, user_requirement, flags=re.IGNORECASE)
+        if match:
+            target = _cleanup_target_name(match.group(1))
+            if target:
+                return target
     return None
 
 
-def _build_discovery_query(domain: str) -> str:
+def _build_discovery_query(domain: str, target_product: str | None = None) -> str:
+    if target_product:
+        return f"{target_product} 竞品 替代品 对比 alternatives competitors"
     if "会议" in domain or "meeting" in domain.lower():
         return "best AI meeting notes tools alternatives Otter Fireflies Fathom competitors"
     if "AI 知识管理" in domain or "knowledge management" in domain.lower() or "协作文档" in domain:
@@ -54,12 +74,14 @@ def _build_discovery_query(domain: str) -> str:
         return "AI competitor analysis market research tools Perplexity Similarweb Crayon Kompyte"
     if "智能保温杯" in domain or "办公水杯" in domain:
         return "smart thermos mug competitors Ember Mug Fellow Carter Xiaomi smart cup"
+    if "社交通讯" in domain or "即时通讯" in domain:
+        return "微信 竞品 QQ 支付宝 抖音 小红书 Telegram WhatsApp"
     if "企业协作" in domain or "办公" in domain or "协同" in domain:
         return "飞书 竞品 钉钉 企业微信 协同办公"
     return f"{domain} alternatives competitors products"
 
 
-def _extract_product_names(search_results: list[dict[str, Any]]) -> list[str]:
+def _extract_product_names(search_results: list[dict[str, Any]], target_name: str | None = None) -> list[str]:
     collaboration_names = ["钉钉", "企业微信", "WeCom", "Slack", "Microsoft Teams", "Google Workspace", "Notion"]
     knowledge_names = ["Coda AI", "Confluence AI", "ClickUp AI", "Mem", "Guru", "Slite", "Craft"]
     meeting_names = ["Otter.ai", "Fireflies.ai", "Fathom", "tl;dv"]
@@ -88,24 +110,36 @@ def _extract_product_names(search_results: list[dict[str, Any]]) -> list[str]:
         "Products", "Product", "The", "Enterprise", "Industrial", "GIE", "EPD", "Outscraper",
         "会议纪要", "工具", "哪个", "最好用", "热门", "测评", "排名", "最新版", "通用", "視点",
         "候选竞品", "围绕", "直接竞品", "间接竞品", "接竞品", "目标产品", "相关赛道",
+        "同类产品", "替代方案", "替代品", "主要竞争", "竞争对手", "榜单", "对比",
     }
     candidates: Counter[str] = Counter()
     patterns = [
         r"\b[A-Z][A-Za-z0-9]*(?:\.[A-Za-z0-9]+)?\b",
         r"[\u4e00-\u9fa5]{2,8}(?:AI|会议|听见|纪要|助手|通)?",
     ]
+    generic_phrases = [
+        "用户", "需求", "场景", "核心", "功能", "替代", "方案", "讨论", "覆盖", "相似", "主要", "竞争", "对手", "产品",
+        "迁移", "成本", "价格", "生态", "兼容", "角度", "比较", "渠道", "差异", "筛选", "发现",
+    ]
     for pattern in patterns:
         for match in re.findall(pattern, text):
             name = match.strip(" .,;:!?[]()（）【】")
             if len(name) < 2 or name in stop_words or name.lower() in {word.lower() for word in stop_words}:
                 continue
+            if any(word in name for word in stop_words if any("\u4e00" <= char <= "\u9fff" for char in word)):
+                continue
             if name.lower() in {"https", "http", "www", "com", "blog", "app", "apps", "crm", "soc"}:
+                continue
+            if any(phrase in name for phrase in generic_phrases):
                 continue
             candidates[name] += 1
     preferred_order = ["Otter.ai", "Fireflies", "Fathom", "tl;dv", "Granola", "Fellow", "Jamie", "ScreenApp", "Grain", "HappyScribe", "讯飞听见", "听脑AI", "科会通"]
     ordered = [name for name in preferred_order if any(name.lower() == candidate.lower() for candidate in candidates)]
+    target_lower = (target_name or "").lower()
     for name, _ in candidates.most_common():
         canonical = next((preferred for preferred in preferred_order if preferred.lower() == name.lower()), name)
+        if target_lower and canonical.lower() == target_lower:
+            continue
         if canonical not in ordered:
             ordered.append(canonical)
     return ordered
@@ -177,8 +211,12 @@ class MockLLMProvider:
             target_users = ["产品团队", "运营团队", "中小企业决策者"]
             analysis_dimensions = ["定位", "核心功能", "目标用户", "商业模式", "差异化机会"]
 
-        input_type = _infer_input_type(user_requirement)
         target_product = _extract_target_product(user_requirement)
+        input_type = _infer_input_type(user_requirement)
+        if target_product and domain == "通用产品":
+            domain = f"{target_product} 所在产品赛道"
+            target_users = ["目标产品的现有用户", "同类需求用户", "潜在替代方案购买者"]
+            analysis_dimensions = ["产品定位", "核心功能", "目标用户", "价格与商业模式", "差异化机会"]
         return {
             "input_type": input_type,
             "target_product": target_product,
@@ -194,7 +232,7 @@ class MockLLMProvider:
             "clarification_questions": [],
             "confidence": 0.78,
             "warnings": [],
-            "query": _build_discovery_query(domain),
+            "query": _build_discovery_query(domain, target_product),
         }
 
     def understand_target(self, requirement: dict[str, Any], target_search_results: list[dict[str, Any]]) -> dict[str, Any]:
@@ -245,15 +283,18 @@ class MockLLMProvider:
         search_results: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         categories = ["direct_competitor", "direct_competitor", "indirect_competitor", "substitute_solution"]
-        names = _extract_product_names(search_results)
+        target_name = str(target_understanding.get("name") or requirement.get("target_product") or "")
+        names = _extract_product_names(search_results, target_name)
         target_category = target_understanding.get("category") or requirement.get("domain", "")
+        target_name_lower = target_name.lower()
+        names = [name for name in names if name.lower() != target_name_lower]
         if "企业协作" in target_category or "办公" in target_category:
             preferred = ["钉钉", "企业微信", "Slack", "Microsoft Teams", "Google Workspace", "Notion"]
             names = [name for name in preferred if name in names] + [name for name in names if name not in preferred]
             names = names or preferred
         elif "AI 知识管理" in target_category or "协作文档" in target_category:
             preferred = ["Coda AI", "Confluence AI", "ClickUp AI", "Mem", "Guru"]
-            names = [name for name in preferred if name in names] + [name for name in names if name not in preferred and name.lower() != "notion"]
+            names = [name for name in preferred if name in names] + [name for name in names if name not in preferred and name.lower() != target_name_lower]
             names = names or preferred
         elif "会议" in target_category:
             preferred = ["Otter.ai", "Fireflies.ai", "Fathom", "tl;dv"]
@@ -267,6 +308,10 @@ class MockLLMProvider:
             preferred = ["Ember Mug", "Fellow Carter", "小米智能保温杯", "AQUAPHOR 智能杯", "Vanow 智能保温杯"]
             names = [name for name in preferred if name in names] + [name for name in names if name not in preferred]
             names = names or preferred
+        if target_name and not names and search_results:
+            names = [f"{target_name} 同类产品", f"{target_name} 替代方案", f"{target_name} 间接竞品"]
+        elif not names:
+            names = ["同类产品", "替代方案", "间接竞品"]
         competitors = []
         for index, name in enumerate(names[:4]):
             related_result = _find_related_result(name, search_results)

@@ -24,7 +24,7 @@ def test_factory_selects_tavily_provider(monkeypatch):
 
 def test_tavily_requires_api_key_when_fallback_disabled(monkeypatch):
     monkeypatch.setenv("SEARCH_PROVIDER", "tavily")
-    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    monkeypatch.setenv("TAVILY_API_KEY", "")
     monkeypatch.setenv("ENABLE_MOCK_SEARCH_FALLBACK", "false")
     get_settings.cache_clear()
 
@@ -34,7 +34,7 @@ def test_tavily_requires_api_key_when_fallback_disabled(monkeypatch):
 
 def test_tavily_uses_mock_fallback_without_api_key(monkeypatch):
     monkeypatch.setenv("SEARCH_PROVIDER", "tavily")
-    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    monkeypatch.setenv("TAVILY_API_KEY", "")
     monkeypatch.setenv("ENABLE_MOCK_SEARCH_FALLBACK", "true")
     get_settings.cache_clear()
 

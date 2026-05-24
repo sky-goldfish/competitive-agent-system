@@ -87,10 +87,20 @@ function formatDuration(ms: number | null) {
   return `${Math.round(ms / 1000)}s`;
 }
 
-function elapsedFrom(startedAt: string) {
-  const seconds = Math.max(0, Math.round((Date.now() - new Date(startedAt).getTime()) / 1000));
+function parseApiDate(value: string) {
+  const hasTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/.test(value);
+  return new Date(hasTimezone ? value : `${value}Z`);
+}
+
+function formatElapsedSeconds(seconds: number) {
   if (seconds < 60) return `${seconds}s`;
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+function elapsedFrom(startedAt: string, endedAt?: string | null) {
+  const endTime = endedAt ? parseApiDate(endedAt).getTime() : Date.now();
+  const seconds = Math.max(0, Math.round((endTime - parseApiDate(startedAt).getTime()) / 1000));
+  return formatElapsedSeconds(seconds);
 }
 
 function parseSummary(trace: Trace) {
@@ -158,7 +168,9 @@ export default function AgentTimeline({ traces, run }: Props) {
   const lastTrace = getLatestTrace(traces);
   const currentStage = runningTrace?.stage ?? run.current_stage;
   const isRunning = run.status === 'running';
-  const elapsed = runningTrace ? elapsedFrom(runningTrace.started_at) : lastTrace ? elapsedFrom(lastTrace.started_at) : '0s';
+  const elapsed = runningTrace
+    ? elapsedFrom(runningTrace.started_at)
+    : elapsedFrom(run.created_at, run.completed_at);
 
   return (
     <section className="panel">
@@ -195,6 +207,11 @@ export default function AgentTimeline({ traces, run }: Props) {
           const summary = group.main ? parseSummary(group.main) : [];
           const message = displayTrace ? parseTraceMessage(displayTrace) : null;
           const completedChildren = group.children.filter((trace) => trace.status === 'completed').length;
+          const groupDuration = group.main
+            ? formatDuration(group.main.duration_ms)
+            : groupStatus === 'running' && displayTrace
+              ? elapsedFrom(displayTrace.started_at)
+              : `${completedChildren}/${group.children.length}`;
           return (
             <article key={group.stage} className={`timeline-group ${groupStatus}`}>
               <div className={`timeline-icon ${groupStatus}`}>
@@ -203,7 +220,7 @@ export default function AgentTimeline({ traces, run }: Props) {
               <div className="tool-call-body">
                 <div className="tool-call-title">
                   <strong>{stageLabels[group.stage] ?? group.stage}</strong>
-                  <span>{groupStatus === 'running' ? '正在执行' : groupStatus} · {group.main ? formatDuration(group.main.duration_ms) : `${completedChildren}/${group.children.length}`}</span>
+                  <span>{groupStatus === 'running' ? '正在执行' : groupStatus} · {groupDuration}</span>
                 </div>
                 <p>{message ?? stageDescriptions[group.stage] ?? '执行 Agent 子任务'}</p>
                 {summary.length > 0 ? (
@@ -222,7 +239,7 @@ export default function AgentTimeline({ traces, run }: Props) {
                           <div>
                             <div className="substep-title">
                               <strong>{stageLabels[trace.stage] ?? trace.stage}</strong>
-                              <span>{trace.status === 'running' ? '正在执行' : formatDuration(trace.duration_ms)}</span>
+                              <span>{trace.status === 'running' ? elapsedFrom(trace.started_at) : formatDuration(trace.duration_ms)}</span>
                             </div>
                             <p>{childMessage ?? stageDescriptions[trace.stage] ?? '执行子步骤'}</p>
                             {childSummary.length > 0 ? <p className="muted substep-summary">{childSummary.join(' · ')}</p> : null}

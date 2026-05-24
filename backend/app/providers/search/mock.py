@@ -18,7 +18,7 @@ class MockSearchProvider:
             results = self._meeting_tools()
         elif self._matches(query_lower, ["crm", "客户", "sales"]):
             results = self._crm_tools()
-        elif self._matches(query_lower, ["竞品", "research", "analysis", "调研"]):
+        elif self._matches(query_lower, ["competitive intelligence", "market research", "research tools", "analysis tools", "市场调研"]):
             results = self._research_tools()
         else:
             results = self._fallback_tools(query)
@@ -300,23 +300,24 @@ class MockSearchProvider:
 
     @staticmethod
     def _fallback_tools(query: str) -> list[SearchResult]:
+        target = query.split()[0].strip("，。,.；;：:") or "目标产品"
         return [
             SearchResult(
-                title="候选竞品 A（同类工作流产品）",
-                url="https://example.com/competitor-a",
-                snippet=f"围绕“{query}”发现的直接竞品，解决相似用户需求，功能路径与目标产品高度接近。",
-                raw_content="候选竞品 A 提供相似核心工作流，目标用户接近，主要在功能完整度和交付效率上竞争。",
+                title=f"{target} 同类产品榜单与竞品对比",
+                url="https://example.com/competitor-landscape",
+                snippet=f"围绕“{target}”的同类产品、替代品和主要竞争对手进行对比，覆盖相似用户需求和核心使用场景。",
+                raw_content=f"{target} 的竞品发现需要结合目标用户、核心功能、价格与渠道，筛选同类产品和替代解决方案。",
             ),
             SearchResult(
-                title="候选竞品 B（轻量替代产品）",
-                url="https://example.com/competitor-b",
-                snippet=f"围绕“{query}”发现的间接竞品，用更轻量或更低成本方式解决同一类用户任务。",
-                raw_content="候选竞品 B 通过不同工作流解决相同用户任务，主要在价格、易用性和部署速度上竞争。",
+                title=f"{target} alternatives and competitors",
+                url="https://example.com/alternatives",
+                snippet=f"A market landscape page lists alternatives, competitors, similar products, and substitute solutions for {target}.",
+                raw_content=f"Alternative products for {target} should be compared by positioning, target users, core workflow, pricing, and differentiation.",
             ),
             SearchResult(
-                title="候选竞品 C（人工流程或通用工具替代方案）",
-                url="https://example.com/competitor-c",
-                snippet=f"围绕“{query}”发现的替代方案，可能不是同类软件，但用户会用它完成相似目标。",
-                raw_content="候选竞品 C 是用户采用专门软件前常用的替代方案，例如人工流程、表格或通用工具组合。",
+                title=f"{target} 用户需求与替代方案讨论",
+                url="https://example.com/user-needs",
+                snippet=f"用户会从功能完整度、迁移成本、价格和生态兼容性角度比较“{target}”及其替代方案。",
+                raw_content=f"Generic user discussions can reveal why buyers choose competitors or substitute workflows instead of {target}.",
             ),
         ]

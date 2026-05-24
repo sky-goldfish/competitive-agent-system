@@ -1,3 +1,5 @@
+import re
+from collections import Counter
 from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
@@ -10,6 +12,27 @@ from app.providers.search.base import SearchProvider
 BLOCKED_SOURCE_DOMAINS = {"reddit.com", "www.reddit.com", "linkedin.com", "www.linkedin.com", "youtube.com", "www.youtube.com"}
 CONTENT_HINTS = ["alternative", "alternatives", "competitor", "competitors", "best", "review", "blog", "vs"]
 INVALID_COMPETITOR_NAMES = {"gie", "outscraper", "通用", "視点", "products", "the", "epd", "industrial", "similarweb"}
+GENERIC_CANDIDATE_TERMS = {
+    "竞品", "竞争", "对手", "替代", "方案", "产品", "分析", "报告", "用户", "需求", "功能", "场景", "同类", "主要", "工具", "模型",
+    "图表", "构筑", "护城", "纷纷", "入局", "社交超强", "超强护城", "字节快手", "领域", "机会", "是否",
+    "alternatives", "alternative", "competitors", "competitor", "review", "reviews", "pricing", "product", "products", "top", "best",
+}
+KNOWN_PRODUCT_ALIASES = {
+    "微信": "微信",
+    "wechat": "微信",
+    "qq": "QQ",
+    "soul": "Soul",
+    "tim": "TIM",
+    "icq": "ICQ",
+    "抖音": "抖音",
+    "douyin": "抖音",
+    "小红书": "小红书",
+    "telegram": "Telegram",
+    "whatsapp": "WhatsApp",
+    "line": "LINE",
+    "支付宝": "支付宝",
+    "alipay": "支付宝",
+}
 OFFICIAL_DOMAIN_HINTS = {
     "钉钉": ["dingtalk.com"],
     "企业微信": ["work.weixin.qq.com"],
@@ -86,7 +109,7 @@ def competitor_discovery_node(
     extra_search_results = []
     for item in competitors:
         name = str(item.get("name", "")).strip()
-        if not name or name.lower() in seen_names or name.lower() in INVALID_COMPETITOR_NAMES:
+        if not name or name.lower() in seen_names or name.lower() in INVALID_COMPETITOR_NAMES or _looks_generic_name(name):
             continue
         if _is_target_product(name, target_understanding, requirement):
             continue
@@ -111,6 +134,33 @@ def competitor_discovery_node(
         )
         if len(normalized) >= 4:
             break
+    if not normalized:
+        fallback_competitors = _extract_fallback_competitors(requirement, target_understanding, search_results)
+        _emit(
+            progress,
+            "candidate_fallback_extraction",
+            "LLM 候选过滤后为空，基于搜索结果进行通用候选兜底",
+            {"candidate_count": len(fallback_competitors), "candidates": [item.get("name") for item in fallback_competitors]},
+        )
+        for item in fallback_competitors:
+            name = str(item.get("name", "")).strip()
+            if not name or name.lower() in seen_names or name.lower() in INVALID_COMPETITOR_NAMES:
+                continue
+            if _is_target_product(name, target_understanding, requirement):
+                continue
+            seen_names.add(name.lower())
+            normalized.append(
+                {
+                    "name": name[:80],
+                    "website": item.get("website"),
+                    "description": _build_description(name, requirement, target_understanding, item.get("description"), item),
+                    "category": item.get("category") or "direct_competitor",
+                    "confidence": float(item.get("confidence") or 0.62),
+                    "discovery_source": item.get("discovery_source") or f"fallback+{search.name}",
+                }
+            )
+            if len(normalized) >= 4:
+                break
     return {
         **state,
         "target_understanding": target_understanding,
@@ -166,9 +216,10 @@ def _plan_competitor_queries(requirement: dict, target_understanding: dict) -> l
             {"query": "office smart thermos bottle temperature display competitors", "purpose": "indirect_competitor_discovery"},
         ]
     queries = [
-        {"query": requirement.get("query") or f"{name} 竞品 替代品", "purpose": "direct_competitor_discovery"},
-        {"query": f"{name} alternatives competitors", "purpose": "direct_competitor_discovery"},
-        {"query": f"{category} 竞品 {capabilities}", "purpose": "indirect_competitor_discovery"},
+        {"query": f"{name} 竞品 替代品 对比", "purpose": "direct_competitor_discovery"},
+        {"query": f"{name} 竞争对手 同类产品", "purpose": "direct_competitor_discovery"},
+        {"query": f"{name} alternatives competitors similar products", "purpose": "direct_competitor_discovery"},
+        {"query": f"{category} 主要玩家 竞品 {capabilities}", "purpose": "indirect_competitor_discovery"},
     ]
     return queries
 
@@ -228,6 +279,91 @@ def _resolve_product_result(name: str, requirement: dict, search: SearchProvider
             return result
     relevant = [result for result in filtered if _is_candidate_result_relevant(name, result)]
     return relevant[0] if relevant else None
+
+
+def _extract_fallback_competitors(requirement: dict, target_understanding: dict, search_results: list[dict]) -> list[dict]:
+    target_name = str(target_understanding.get("name") or requirement.get("target_product") or "")
+    aliases = _target_aliases(target_name)
+    counts: Counter[str] = Counter()
+    evidence: dict[str, dict] = {}
+    for result in search_results:
+        text = f"{result.get('title', '')} {result.get('snippet', '')}"
+        for name in _extract_known_product_names(text):
+            if name.lower() in aliases:
+                continue
+            counts[name] += 3
+            evidence.setdefault(name, result)
+        for name in _extract_candidate_names_from_text(text):
+            if name.lower() in aliases:
+                continue
+            counts[name] += 1
+            evidence.setdefault(name, result)
+    competitors = []
+    for index, (name, _) in enumerate(counts.most_common(6)):
+        if name.lower() in INVALID_COMPETITOR_NAMES or _looks_generic_name(name):
+            continue
+        result = evidence.get(name, {})
+        competitors.append(
+            {
+                "name": name,
+                "website": result.get("url"),
+                "description": f"{name} 是从搜索结果标题或摘要中识别出的候选竞品线索。搜索证据摘要：{result.get('snippet', '')[:180]}",
+                "category": "direct_competitor" if index < 2 else "indirect_competitor",
+                "reason": f"搜索结果将 {name} 与 {target_name or '目标产品'} 放在同类、替代、竞品或相关使用场景中讨论。",
+                "matched_dimensions": ["产品定位", "目标用户", "核心功能", "使用场景"],
+                "source_ids": [result.get("url")] if result.get("url") else [],
+                "confidence": max(0.56, 0.72 - index * 0.04),
+                "discovery_source": "search_result_fallback",
+            }
+        )
+        if len(competitors) >= 4:
+            break
+    return competitors
+
+
+def _target_aliases(target_name: str) -> set[str]:
+    lowered = target_name.lower().replace(" ", "")
+    aliases = {lowered} if lowered else set()
+    if lowered in {"qq", "腾讯qq"}:
+        aliases.update({"qq", "腾讯qq"})
+    if lowered in {"微信", "wechat", "weixin"}:
+        aliases.update({"微信", "wechat", "weixin"})
+    return aliases
+
+
+def _extract_known_product_names(text: str) -> list[str]:
+    lowered = text.lower()
+    found = []
+    for alias, canonical in KNOWN_PRODUCT_ALIASES.items():
+        if alias in lowered and canonical not in found:
+            found.append(canonical)
+    return found
+
+
+def _extract_candidate_names_from_text(text: str) -> list[str]:
+    candidates = []
+    patterns = [
+        r"\b[A-Z][A-Za-z0-9]*(?:\.[A-Za-z0-9]+)?\b",
+        r"[\u4e00-\u9fa5]{2,8}(?:AI|会议|听见|纪要|助手|通|浏览器)?",
+    ]
+    for pattern in patterns:
+        for match in re.findall(pattern, text):
+            name = match.strip(" .,;:!?[]()（）【】《》\"'“”‘’")
+            if len(name) < 2 or _looks_generic_name(name):
+                continue
+            candidates.append(name)
+    return candidates
+
+
+def _looks_generic_name(name: str) -> bool:
+    lowered = name.lower().replace(" ", "")
+    if lowered in GENERIC_CANDIDATE_TERMS:
+        return True
+    if any(term in lowered for term in GENERIC_CANDIDATE_TERMS):
+        return True
+    if any(term in name for term in ["云", "数据", "报表", "平台", "系统", "广告", "营销"]):
+        return True
+    return False
 
 
 def _is_domain_relevant_candidate(name: str, target_understanding: dict, requirement: dict) -> bool:
