@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     ark_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     search_provider: str = "mock"
     tavily_api_key: str | None = None
+    bocha_api_key: str | None = None
     enable_mock_search_fallback: bool = True
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
