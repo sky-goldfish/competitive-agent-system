@@ -1,4 +1,5 @@
 import type { Evidence, Source } from '../../lib/types';
+import { useState } from 'react';
 
 type Props = {
   evidence: Evidence[];
@@ -6,6 +7,7 @@ type Props = {
 };
 
 export default function EvidenceList({ evidence, sources }: Props) {
+  const [detailEvidence, setDetailEvidence] = useState<Evidence | null>(null);
   const sourceById = new Map(sources.map((source) => [source.id, source]));
 
   return (
@@ -20,14 +22,50 @@ export default function EvidenceList({ evidence, sources }: Props) {
           const source = sourceById.get(item.source_id);
           return (
             <article key={item.id} className="evidence-item">
-              <span>{item.related_product} · {item.related_dimension} · {(item.confidence * 100).toFixed(0)}%</span>
-              <p>{item.summary}</p>
-              <blockquote>{item.quote}</blockquote>
-              {source ? <a href={source.url} target="_blank" rel="noreferrer">来源：{source.title}</a> : null}
+              <div className="source-meta-row">
+                <span>{item.related_product} · {item.related_dimension}</span>
+                <strong>置信度 {(item.confidence * 100).toFixed(0)}%</strong>
+              </div>
+              <button type="button" className="summary-title-button" onClick={() => setDetailEvidence(item)}>
+                {source?.title ?? item.summary}
+              </button>
             </article>
           );
         })}
       </div>
+      {detailEvidence ? (
+        <div className="modal-backdrop" role="presentation" onClick={() => setDetailEvidence(null)}>
+          <div className="competitor-modal" role="dialog" aria-modal="true" aria-labelledby="evidence-detail-title" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <h3 id="evidence-detail-title">{detailEvidence.related_product} · {detailEvidence.related_dimension}</h3>
+                <p>置信度 {(detailEvidence.confidence * 100).toFixed(0)}%</p>
+              </div>
+              <button type="button" className="modal-close" onClick={() => setDetailEvidence(null)}>关闭</button>
+            </div>
+            <dl className="competitor-detail-list">
+              <div>
+                <dt>证据摘要</dt>
+                <dd>{detailEvidence.summary}</dd>
+              </div>
+              <div>
+                <dt>证据片段</dt>
+                <dd>{detailEvidence.quote}</dd>
+              </div>
+              <div>
+                <dt>来源</dt>
+                <dd>
+                  {sourceById.get(detailEvidence.source_id) ? (
+                    <a href={sourceById.get(detailEvidence.source_id)!.url} target="_blank" rel="noreferrer">
+                      {sourceById.get(detailEvidence.source_id)!.title}
+                    </a>
+                  ) : '暂无'}
+                </dd>
+              </div>
+            </dl>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }
