@@ -1,6 +1,7 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.db.models import Run
 from app.db.session import get_db
 from app.schemas.competitor import ConfirmCompetitorsRequest
 from app.schemas.run import RunCreateRequest, RunResponse
@@ -22,6 +23,11 @@ def create_run(payload: RunCreateRequest, background_tasks: BackgroundTasks, db:
     run = start_run(db, payload.user_requirement)
     background_tasks.add_task(execute_discovery_run, run.id)
     return run
+
+
+@router.get("", response_model=list[RunResponse])
+def list_runs(db: Session = Depends(get_db)):
+    return db.query(Run).order_by(Run.created_at.desc()).limit(50).all()
 
 
 @router.get("/{run_id}", response_model=RunResponse)

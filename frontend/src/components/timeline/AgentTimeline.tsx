@@ -79,6 +79,7 @@ const stageDescriptions: Record<string, string> = {
 type Props = {
   traces: Trace[];
   run: Run;
+  compactHeader?: boolean;
 };
 
 function formatDuration(ms: number | null) {
@@ -162,7 +163,7 @@ function StatusIcon({ status }: { status: string }) {
   return <CircleDashed size={18} />;
 }
 
-export default function AgentTimeline({ traces, run }: Props) {
+export default function AgentTimeline({ traces, run, compactHeader = false }: Props) {
   const groups = getGroupedTraces(traces);
   const runningTrace = traces.find((trace) => trace.status === 'running');
   const lastTrace = getLatestTrace(traces);
@@ -174,13 +175,15 @@ export default function AgentTimeline({ traces, run }: Props) {
 
   return (
     <section className="panel">
-      <div className="panel-header">
-        <div>
-          <h2>Agent Activity</h2>
-          <p className="muted">实时展示 Agent 当前阶段、搜索/思考/生成状态</p>
+      {!compactHeader ? (
+        <div className="panel-header">
+          <div>
+            <h2>Agent Activity</h2>
+            <p className="muted">实时展示 Agent 当前阶段、搜索/思考/生成状态</p>
+          </div>
+          <span>{traces.length} steps</span>
         </div>
-        <span>{traces.length} steps</span>
-      </div>
+      ) : null}
 
       {isRunning ? (
         <div className="working-banner">

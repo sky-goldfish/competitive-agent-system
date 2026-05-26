@@ -24,6 +24,10 @@ export function createRun(userRequirement: string): Promise<Run> {
   });
 }
 
+export function listRuns(): Promise<Run[]> {
+  return request<Run[]>('/runs');
+}
+
 export function getRun(runId: string): Promise<Run> {
   return request<Run>(`/runs/${runId}`);
 }

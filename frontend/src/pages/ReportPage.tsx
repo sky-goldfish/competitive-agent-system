@@ -21,7 +21,7 @@ export default function ReportPage() {
         <div className="panel-header">
           <div>
             <p className="eyebrow">Markdown Report</p>
-            <h1>{reportQuery.data.title}</h1>
+            <h1>分析报告</h1>
           </div>
           <Link className="primary-link" to={`/runs/${id}`}>返回任务</Link>
         </div>
