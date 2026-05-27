@@ -1,4 +1,4 @@
-import type { Competitor, CustomCompetitorInput, Evidence, Report, Run, Source, Trace } from './types';
+import type { Analysis, CitationMapItem, Competitor, CustomCompetitorInput, Evidence, Report, Run, Source, Trace } from './types';
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000/api';
 
@@ -55,6 +55,14 @@ export function getReport(runId: string): Promise<Report> {
   return request<Report>(`/runs/${runId}/report`);
 }
 
+export function getReportCitations(runId: string): Promise<CitationMapItem[]> {
+  return request<CitationMapItem[]>(`/runs/${runId}/report/citations`);
+}
+
 export function getEvidence(runId: string): Promise<Evidence[]> {
   return request<Evidence[]>(`/runs/${runId}/evidence`);
+}
+
+export function getAnalyses(runId: string): Promise<Analysis[]> {
+  return request<Analysis[]>(`/runs/${runId}/analyses`);
 }

@@ -4,6 +4,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from app.agents.state import AgentState
+from app.db.models import new_id
 from app.providers.search.base import SearchProvider
 
 ProgressCallback = Callable[[str, str, dict[str, Any]], None]
@@ -105,6 +106,7 @@ def material_collection_node(state: AgentState, search: SearchProvider, progress
                     product_source_count += 1
                     evidence.append(
                         {
+                            "id": new_id("ev"),
                             "competitor_id": competitor["id"],
                             "related_product": competitor["name"],
                             "related_dimension": query_item["dimension"],

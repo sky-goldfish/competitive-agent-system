@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from typing import Any
 
 from openai import OpenAI
@@ -18,6 +19,83 @@ def _safe_confidence(value: Any) -> float:
     if confidence > 1:
         confidence = confidence / 100
     return min(max(confidence, 0.0), 1.0)
+
+
+def _parse_source_metadata(source: dict[str, Any]) -> dict[str, Any]:
+    metadata = source.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata_json = source.get("metadata_json")
+        if isinstance(metadata_json, str) and metadata_json:
+            try:
+                parsed = json.loads(metadata_json)
+            except json.JSONDecodeError:
+                parsed = {}
+            metadata = parsed if isinstance(parsed, dict) else {}
+        else:
+            metadata = {}
+    return metadata
+
+
+def _source_report_summary(source: dict[str, Any], reference_id: int | None = None) -> dict[str, Any]:
+    metadata = _parse_source_metadata(source)
+    summary = {
+        "title": str(source.get("title", ""))[:80],
+        "url": source.get("url", ""),
+        "source_type": source.get("source_type", ""),
+        "source_type_label": metadata.get("source_type_label"),
+        "credibility_score": metadata.get("credibility_score", source.get("credibility_score", 0)),
+        "rank_score": metadata.get("rank_score", source.get("rank_score", 0)),
+        "dimension": metadata.get("dimension"),
+        "query": metadata.get("query"),
+        "classification_reason": metadata.get("classification_reason"),
+    }
+    if reference_id is not None:
+        summary["reference_id"] = reference_id
+    return summary
+
+
+def _format_reference_section(sources: list[dict[str, Any]]) -> str:
+    if not sources:
+        return ""
+    lines = ["## 参考来源", ""]
+    for index, source in enumerate(sources, start=1):
+        summary = _source_report_summary(source, index)
+        title = str(summary.get("title") or f"来源 {index}").replace("\n", " ").strip()
+        url = str(summary.get("url") or "").strip()
+        source_label = summary.get("source_type_label") or summary.get("source_type") or "来源"
+        credibility = summary.get("credibility_score")
+        weight_text = f"，权重 {float(credibility):.2f}" if isinstance(credibility, int | float) else ""
+        if url:
+            lines.append(f"{index}. [[{index}]]({url}) [{title}]({url}) - {source_label}{weight_text}")
+        else:
+            lines.append(f"{index}. [{index}] {title} - {source_label}{weight_text}")
+    return "\n".join(lines)
+
+
+def _normalize_inline_citations(markdown_content: str, max_reference_id: int | None = None) -> str:
+    normalized = re.sub(r"(?<!\[)\[(\d{1,2})\]\((https?://[^)\s]+)\)", r"[[\1]](\2)", markdown_content)
+    if max_reference_id is None:
+        return normalized
+
+    def keep_known_reference(match: re.Match[str]) -> str:
+        reference_id = int(match.group(1))
+        if 1 <= reference_id <= max_reference_id:
+            return match.group(0)
+        return ""
+
+    return re.sub(r"\[\[(\d{1,2})\]\]\((https?://[^)\s]+)\)", keep_known_reference, normalized)
+
+
+def _ensure_reference_section(markdown_content: str, sources: list[dict[str, Any]]) -> str:
+    reference_section = _format_reference_section(sources)
+    max_reference_id = len(sources)
+    if not reference_section:
+        return _normalize_inline_citations(markdown_content)
+    stripped = _normalize_inline_citations(markdown_content.strip(), max_reference_id=max_reference_id)
+    pattern = r"\n*##\s*(?:(?:\d+|[一二三四五六七八九十]+)[\.、]\s*)?(?:参考来源|参考文献|References)\s*\n[\s\S]*$"
+    if re.search(pattern, stripped):
+        return re.sub(pattern, f"\n\n{reference_section}", stripped).strip()
+    return f"{stripped}\n\n{reference_section}".strip()
 
 
 class ArkLLMProvider:
@@ -168,7 +246,7 @@ JSON schema:
     def analyze_competitor(self, competitor: dict[str, Any], evidence: list[dict[str, Any]]) -> dict[str, Any]:
         fallback = self.fallback.analyze_competitor(competitor, evidence)
         evidence_summary = "\n".join(
-            f"- [{e.get('related_dimension', '未知')}] {e.get('summary', '')[:300]}"
+            f"- evidence_id={e.get('id', '')}；维度={e.get('related_dimension', '未知')}；来源={e.get('source_url', '')}；摘要={e.get('summary', '')[:300]}"
             for e in evidence[:12]
         )
         prompt = f"""
@@ -191,7 +269,7 @@ JSON schema:
   "strengths_json": ["从证据中提取的优势"],
   "weaknesses_json": ["从证据中提取的劣势或用户痛点"],
   "opportunities_json": ["基于证据分析的机会点"],
-  "evidence_ids_json": ["引用的证据来源URL"]
+  "evidence_ids_json": ["引用的 evidence_id，必须来自已采集证据中的 evidence_id"]
 }}
 """
         result = self._json_chat(prompt, fallback)
@@ -206,22 +284,29 @@ JSON schema:
         fallback = self.fallback.generate_report(run, analyses, sources)
         analyses_summary = json.dumps(analyses, ensure_ascii=False)[:4000]
         sources_summary = json.dumps(
-            [{"title": s.get("title", "")[:80], "url": s.get("url", ""), "source_type": s.get("source_type", ""), "credibility_score": s.get("credibility_score", 0)} for s in sources[:20]],
+            [_source_report_summary(source, index) for index, source in enumerate(sources, start=1)],
             ensure_ascii=False,
         )
+        citation_bundle = json.dumps(run.get("citation_bundle", []), ensure_ascii=False)[:12000]
         prompt = f"""
 你是报告撰写 Agent。请基于以下分析结果和来源，生成一份专业的中文 Markdown 竞品分析报告。
 
 用户需求：{run.get('user_requirement', '')}
 分析结果：{analyses_summary}
 来源列表：{sources_summary}
+严格引用链路 citation_bundle：{citation_bundle}
 
 报告要求：
 1. 标题应该准确反映分析对象和领域，不要用"通用产品"这种泛泛标题
-2. 每个竞品的分析必须基于上面的分析结果，引用具体的功能、定价、优劣势信息
+2. 每个竞品的分析必须基于上面的分析结果和 citation_bundle，引用具体的功能、定价、优劣势信息
 3. 不要使用"MVP Mock 数据显示"这类字样
-4. 来源与证据章节必须标注来源类型和权重
-5. 如果某些信息不确定或缺失，明确说明而不是编造
+4. 禁止使用 Markdown 表格；不要输出任何 `| 来源标题 |` 这类表格
+5. 正文中涉及关键结论、事实、数据、价格、功能、用户评价时，必须在对应句子末尾标注可点击引用编号。Markdown 原文必须写成 `[[1]](URL)`、`[[2]](URL)`，这样页面会显示为 `[1]`、`[2]`；禁止写成 `[1](URL)`，因为页面会只显示裸数字 `1`。
+6. 每个正文引用都必须遵守“报告结论 -> citation_bundle.claim -> evidence.evidence_id -> source_reference_id/source_url”的链路。某条结论只能引用同一 claim.evidence 中提供的 source_reference_id 和 source_url，禁止引用该 claim 下不存在的来源编号。
+7. 不要只在段落末尾集中引用；每个关键结论应就近引用其支撑来源，例如：“A 产品采用分层订阅模式[[3]](https://example.com/pricing)。”，不要输出“分层订阅模式3”。
+8. 报告末尾必须使用 `## 参考来源`，用有序列表列出引用来源，编号必须与正文引用一致，格式为 `1. [[1]](URL) [来源标题](URL) - 来源类型/标签，权重 0.xx`
+9. `## 参考来源` 必须列出来源列表中的全部来源，按 reference_id 从小到大排列，不得漏列、重排或改号。
+10. 如果某些信息不确定或缺失，明确说明而不是编造
 
 输出严格 JSON，不要输出 Markdown 代码块。
 JSON schema:
@@ -234,6 +319,7 @@ JSON schema:
         result = self._json_chat(prompt, fallback)
         if result is fallback:
             return fallback
+        result["markdown_content"] = _ensure_reference_section(result.get("markdown_content", ""), sources)
         return result
 
     def _json_chat(self, prompt: str, fallback: dict[str, Any]) -> dict[str, Any]:

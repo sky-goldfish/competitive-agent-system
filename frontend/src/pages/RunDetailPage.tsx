@@ -1,12 +1,13 @@
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
 import { useParams } from 'react-router-dom';
+import AnalysisList from '../components/analysis/AnalysisList';
 import CompetitorConfirmPanel from '../components/competitors/CompetitorConfirmPanel';
 import EvidenceList from '../components/evidence/EvidenceList';
 import SourceList from '../components/evidence/SourceList';
+import ReportMarkdown from '../components/report/ReportMarkdown';
 import AgentTimeline from '../components/timeline/AgentTimeline';
-import { getCompetitors, getEvidence, getReport, getRun, getSources, getTimeline } from '../lib/api';
+import { getAnalyses, getCompetitors, getEvidence, getReport, getReportCitations, getRun, getSources, getTimeline } from '../lib/api';
 import type { Run, Trace } from '../lib/types';
 
 const statusLabels: Record<string, string> = {
@@ -79,7 +80,7 @@ export default function RunDetailPage() {
   const { runId } = useParams<{ runId: string }>();
   const id = runId ?? '';
   const [mainTab, setMainTab] = useState<'process' | 'report'>('process');
-  const [workbenchTab, setWorkbenchTab] = useState<'info' | 'sources' | 'competitors'>('info');
+  const [workbenchTab, setWorkbenchTab] = useState<'info' | 'sources' | 'competitors' | 'analysis'>('info');
 
   const runQuery = useQuery({
     queryKey: ['run', id],
@@ -93,7 +94,9 @@ export default function RunDetailPage() {
   const timelineQuery = useQuery({ queryKey: ['timeline', id], queryFn: () => getTimeline(id), enabled: Boolean(id), refetchInterval: isActive ? 3000 : false });
   const sourcesQuery = useQuery({ queryKey: ['sources', id], queryFn: () => getSources(id), enabled: Boolean(id), refetchInterval: isActive ? 5000 : false });
   const evidenceQuery = useQuery({ queryKey: ['evidence', id], queryFn: () => getEvidence(id), enabled: Boolean(id), refetchInterval: isActive ? 5000 : false });
+  const analysesQuery = useQuery({ queryKey: ['analyses', id], queryFn: () => getAnalyses(id), enabled: Boolean(id), refetchInterval: isActive ? 5000 : false });
   const reportQuery = useQuery({ queryKey: ['report', id], queryFn: () => getReport(id), enabled: Boolean(id) && run?.status === 'completed' });
+  const citationsQuery = useQuery({ queryKey: ['report-citations', id], queryFn: () => getReportCitations(id), enabled: Boolean(id) && run?.status === 'completed' });
 
   useEffect(() => {
     if (run?.status === 'waiting_for_human') setWorkbenchTab('competitors');
@@ -109,6 +112,7 @@ export default function RunDetailPage() {
   const competitors = competitorsQuery.data ?? [];
   const sources = sourcesQuery.data ?? [];
   const evidence = evidenceQuery.data ?? [];
+  const analyses = analysesQuery.data ?? [];
   const report = reportQuery.data;
   const canShowReport = run.status === 'completed' && Boolean(report);
 
@@ -145,7 +149,7 @@ export default function RunDetailPage() {
               {reportQuery.isLoading ? <p className="loading">加载报告中...</p> : null}
               {reportQuery.isError ? <p className="error-text">报告加载失败。</p> : null}
               {canShowReport && report ? (
-                <ReactMarkdown>{report.markdown_content}</ReactMarkdown>
+                <ReportMarkdown markdown={report.markdown_content} citations={citationsQuery.data ?? []} />
               ) : null}
             </article>
           ) : null}
@@ -156,6 +160,7 @@ export default function RunDetailPage() {
             <button type="button" className={workbenchTab === 'info' ? 'active' : ''} onClick={() => setWorkbenchTab('info')}>任务信息</button>
             <button type="button" className={workbenchTab === 'sources' ? 'active' : ''} onClick={() => setWorkbenchTab('sources')}>搜索结果</button>
             <button type="button" className={workbenchTab === 'competitors' ? 'active' : ''} onClick={() => setWorkbenchTab('competitors')}>竞品确认</button>
+            <button type="button" className={workbenchTab === 'analysis' ? 'active' : ''} onClick={() => setWorkbenchTab('analysis')}>结构化分析</button>
           </div>
 
           <div className="workbench-pane">
@@ -188,6 +193,7 @@ export default function RunDetailPage() {
               </div>
             ) : null}
             {workbenchTab === 'competitors' ? <CompetitorConfirmPanel run={run} competitors={competitors} /> : null}
+            {workbenchTab === 'analysis' ? <AnalysisList analyses={analyses} competitors={competitors} evidence={evidence} sources={sources} /> : null}
           </div>
         </aside>
       </div>

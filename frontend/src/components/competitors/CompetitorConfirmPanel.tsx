@@ -83,15 +83,17 @@ export default function CompetitorConfirmPanel({ run, competitors }: Props) {
       <div className="competitor-grid">
         {competitors.map((competitor) => (
           <div key={competitor.id} className={`competitor-card ${selectedIds.includes(competitor.id) ? 'selected' : ''}`}>
-            <label className="competitor-select-row">
+            <div className="competitor-select-row">
               <input
                 type="checkbox"
                 checked={selectedIds.includes(competitor.id)}
                 onChange={() => toggle(competitor.id)}
                 disabled={run.status !== 'waiting_for_human'}
               />
-              <span className="competitor-name">{competitor.name}</span>
-            </label>
+              <button type="button" className="competitor-title-button" onClick={() => setDetailCompetitor(competitor)}>
+                {competitor.name}
+              </button>
+            </div>
             <div className="competitor-brief">
               <span>{categoryLabels[competitor.category] ?? competitor.category}</span>
               <strong>{(competitor.confidence * 100).toFixed(0)}%</strong>
@@ -103,15 +105,17 @@ export default function CompetitorConfirmPanel({ run, competitors }: Props) {
         ))}
         {customCompetitors.map((competitor) => (
           <div key={`custom-${competitor.name}`} className={`competitor-card custom ${selectedCustomNames.includes(competitor.name) ? 'selected' : ''}`}>
-            <label className="competitor-select-row">
+            <div className="competitor-select-row">
               <input
                 type="checkbox"
                 checked={selectedCustomNames.includes(competitor.name)}
                 onChange={() => toggleCustom(competitor.name)}
                 disabled={run.status !== 'waiting_for_human'}
               />
-              <span className="competitor-name">{competitor.name}</span>
-            </label>
+              <button type="button" className="competitor-title-button" onClick={() => setCustomDetail(competitor)}>
+                {competitor.name}
+              </button>
+            </div>
             <div className="competitor-brief">
               <span>{categoryLabels[competitor.category] ?? competitor.category}</span>
               <strong className="custom-confidence">自定义</strong>

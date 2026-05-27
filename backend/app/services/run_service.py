@@ -184,6 +184,7 @@ def execute_report_run(run_id: str) -> None:
         for item in state["analyses"]:
             db.add(
                 Analysis(
+                    id=item["id"],
                     run_id=run.id,
                     competitor_id=item["competitor_id"],
                     positioning=item["positioning"],

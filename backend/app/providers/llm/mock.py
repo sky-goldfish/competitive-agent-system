@@ -348,6 +348,11 @@ class MockLLMProvider:
 
     def generate_report(self, run: dict[str, Any], analyses: list[dict[str, Any]], sources: list[dict[str, Any]]) -> dict[str, str]:
         title = f"{run.get('title', '竞品分析任务')}报告"
+        citations_by_competitor = {
+            item.get("competitor_id"): _first_bundle_citation(item)
+            for item in run.get("citation_bundle", [])
+            if isinstance(item, dict)
+        }
         lines = [
             f"# {title}",
             "",
@@ -358,26 +363,28 @@ class MockLLMProvider:
         ]
 
         for item in analyses:
+            first_source = sources[0] if sources else None
+            citation = citations_by_competitor.get(item.get("competitor_id")) or (f"[[1]]({first_source['url']})" if first_source else "")
             lines.extend(
                 [
                     f"### {item['competitor_name']}",
-                    f"- 定位：{item['positioning']}",
-                    f"- 价格摘要：{item['pricing_summary']}",
-                    f"- 核心功能：{', '.join(json.loads(item['core_features_json']))}",
-                    f"- 优势：{', '.join(json.loads(item['strengths_json']))}",
-                    f"- 风险/短板：{', '.join(json.loads(item['weaknesses_json']))}",
+                    f"- 定位：{item['positioning']}{citation}",
+                    f"- 价格摘要：{item['pricing_summary']}{citation}",
+                    f"- 核心功能：{', '.join(json.loads(item['core_features_json']))}{citation}",
+                    f"- 优势：{', '.join(json.loads(item['strengths_json']))}{citation}",
+                    f"- 风险/短板：{', '.join(json.loads(item['weaknesses_json']))}{citation}",
                     f"- 机会点：{', '.join(json.loads(item['opportunities_json']))}",
                     "",
                 ]
             )
 
-        lines.extend(["## 3. 来源与证据", ""])
+        lines.extend(["## 3. 参考来源", ""])
         for index, source in enumerate(sources, start=1):
             metadata = _parse_metadata(source.get("metadata_json"))
             source_label = metadata.get("source_type_label") or source.get("source_type", "来源")
             credibility = metadata.get("credibility_score")
             weight_text = f"，权重 {credibility:.2f}" if isinstance(credibility, int | float) else ""
-            lines.append(f"{index}. [{source['title']}]({source['url']}) - {source_label}{weight_text} - {source['snippet']}")
+            lines.append(f"{index}. [[{index}]]({source['url']}) [{source['title']}]({source['url']}) - {source_label}{weight_text} - {source['snippet']}")
 
         lines.extend(
             [
@@ -391,3 +398,17 @@ class MockLLMProvider:
             "summary": "已完成候选竞品确认、资料采集、结构化分析和 Markdown 报告生成。",
             "markdown_content": "\n".join(lines),
         }
+
+
+def _first_bundle_citation(bundle_item: dict[str, Any]) -> str:
+    for claim in bundle_item.get("claims", []):
+        if not isinstance(claim, dict):
+            continue
+        for evidence in claim.get("evidence", []):
+            if not isinstance(evidence, dict):
+                continue
+            reference_id = evidence.get("source_reference_id")
+            source_url = evidence.get("source_url")
+            if isinstance(reference_id, int) and source_url:
+                return f"[[{reference_id}]]({source_url})"
+    return ""

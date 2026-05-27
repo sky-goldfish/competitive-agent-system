@@ -56,6 +56,21 @@ export type Evidence = {
   confidence: number;
 };
 
+export type Analysis = {
+  id: string;
+  run_id: string;
+  competitor_id: string;
+  positioning: string;
+  target_users: string;
+  core_features_json: string;
+  pricing_summary: string;
+  strengths_json: string;
+  weaknesses_json: string;
+  opportunities_json: string;
+  evidence_ids_json: string;
+  created_at: string;
+};
+
 export type Source = {
   id: string;
   run_id: string;
@@ -81,4 +96,18 @@ export type Report = {
   summary: string;
   created_at: string;
   updated_at: string;
+};
+
+export type CitationAnalysisRef = {
+  id: string;
+  competitor_id: string;
+  competitor_name: string;
+  claim_types: string[];
+};
+
+export type CitationMapItem = {
+  reference_id: number;
+  source: Source;
+  evidence: Evidence[];
+  analyses: CitationAnalysisRef[];
 };
