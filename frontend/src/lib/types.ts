@@ -111,3 +111,26 @@ export type CitationMapItem = {
   evidence: Evidence[];
   analyses: CitationAnalysisRef[];
 };
+
+export type CitationBundleEvidence = {
+  source_reference_id: number | null;
+  source_title: string | null;
+  source_url: string | null;
+  related_dimension: string | null;
+  summary: string | null;
+  quote: string | null;
+  confidence: number | null;
+};
+
+export type CitationBundleClaim = {
+  claim_type: string;
+  label: string;
+  text: string;
+  evidence: CitationBundleEvidence[];
+};
+
+export type CitationBundleCompetitor = {
+  competitor_id: string;
+  competitor_name: string;
+  claims: CitationBundleClaim[];
+};

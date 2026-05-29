@@ -4,9 +4,10 @@ import { useState } from 'react';
 type Props = {
   sources: Source[];
   isCollecting?: boolean;
+  referenceIdByUrl?: Map<string, number>;
 };
 
-export default function SourceList({ sources, isCollecting = false }: Props) {
+export default function SourceList({ sources, isCollecting = false, referenceIdByUrl }: Props) {
   const [detailSource, setDetailSource] = useState<Source | null>(null);
 
   return (
@@ -16,16 +17,27 @@ export default function SourceList({ sources, isCollecting = false }: Props) {
         <span>{sources.length} sources</span>
       </div>
       <div className="source-list source-list-grid">
-        {sources.length === 0 ? <p className="muted">{isCollecting ? 'Agent 正在采集来源资料...' : '暂无来源资料，可能采集失败或来源不足。'}</p> : null}
-        {sources.map((source) => (
-          <article key={source.id} className="source-item">
-            <div className="source-meta-row">
-              <span>{source.source_type_label ?? source.source_type}</span>
-              {source.credibility_score !== null ? <strong>权重 {(source.credibility_score * 100).toFixed(0)}%</strong> : null}
-            </div>
-            <button type="button" className="summary-title-button" onClick={() => setDetailSource(source)}>{source.title}</button>
-          </article>
-        ))}
+        {sources.length === 0 ? (
+          <div className="empty-state">
+            <p className="empty-state-title">{isCollecting ? '正在采集来源资料...' : '暂无来源资料'}</p>
+            <p className="empty-state-desc">{isCollecting ? 'Agent 正在搜索和采集，请稍候。' : '可能采集失败或来源不足，请检查任务状态。'}</p>
+          </div>
+        ) : null}
+        {sources.map((source) => {
+          const refId = referenceIdByUrl?.get(source.url);
+          return (
+            <article key={source.id} className="source-item">
+              <div className="source-meta-row">
+                <span>
+                  {refId !== undefined ? <strong className="source-ref-badge">[{refId}]</strong> : null}
+                  {source.source_type_label ?? source.source_type}
+                </span>
+                {source.credibility_score !== null ? <strong>权重 {(source.credibility_score * 100).toFixed(0)}%</strong> : null}
+              </div>
+              <button type="button" className="summary-title-button" onClick={() => setDetailSource(source)}>{source.title}</button>
+            </article>
+          );
+        })}
       </div>
       {detailSource ? (
         <div className="modal-backdrop" role="presentation" onClick={() => setDetailSource(null)}>
@@ -38,6 +50,12 @@ export default function SourceList({ sources, isCollecting = false }: Props) {
               <button type="button" className="modal-close" onClick={() => setDetailSource(null)}>关闭</button>
             </div>
             <dl className="competitor-detail-list">
+              {referenceIdByUrl?.get(detailSource.url) !== undefined ? (
+                <div>
+                  <dt>报告引用编号</dt>
+                  <dd>[{referenceIdByUrl.get(detailSource.url)}]</dd>
+                </div>
+              ) : null}
               <div>
                 <dt>URL</dt>
                 <dd><a href={detailSource.url} target="_blank" rel="noreferrer">{detailSource.url}</a></dd>

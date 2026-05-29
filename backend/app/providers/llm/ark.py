@@ -54,11 +54,13 @@ def _source_report_summary(source: dict[str, Any], reference_id: int | None = No
     return summary
 
 
-def _format_reference_section(sources: list[dict[str, Any]]) -> str:
+def _format_reference_section(sources: list[dict[str, Any]], cited_ids: set[int] | None = None) -> str:
     if not sources:
         return ""
     lines = ["## 参考来源", ""]
     for index, source in enumerate(sources, start=1):
+        if cited_ids is not None and index not in cited_ids:
+            continue
         summary = _source_report_summary(source, index)
         title = str(summary.get("title") or f"来源 {index}").replace("\n", " ").strip()
         url = str(summary.get("url") or "").strip()
@@ -87,15 +89,20 @@ def _normalize_inline_citations(markdown_content: str, max_reference_id: int | N
 
 
 def _ensure_reference_section(markdown_content: str, sources: list[dict[str, Any]]) -> str:
-    reference_section = _format_reference_section(sources)
+    stripped = markdown_content.strip()
+    # Strip existing reference section before extracting cited IDs,
+    # so self-referencing [[N]] in the reference section are not counted.
+    body_only = re.sub(r"\n*##\s*(?:(?:\d+|[一二三四五六七八九十]+)[\.、]\s*)?(?:参考来源|参考文献|References)\s*\n[\s\S]*$", "", stripped).strip()
+    cited_ids = {int(m) for m in re.findall(r"\[\[(\d+)\]\]", body_only)}
+    reference_section = _format_reference_section(sources, cited_ids if cited_ids else None)
     max_reference_id = len(sources)
     if not reference_section:
-        return _normalize_inline_citations(markdown_content)
-    stripped = _normalize_inline_citations(markdown_content.strip(), max_reference_id=max_reference_id)
+        return _normalize_inline_citations(stripped)
+    normalized = _normalize_inline_citations(stripped, max_reference_id=max_reference_id)
     pattern = r"\n*##\s*(?:(?:\d+|[一二三四五六七八九十]+)[\.、]\s*)?(?:参考来源|参考文献|References)\s*\n[\s\S]*$"
-    if re.search(pattern, stripped):
-        return re.sub(pattern, f"\n\n{reference_section}", stripped).strip()
-    return f"{stripped}\n\n{reference_section}".strip()
+    if re.search(pattern, normalized):
+        return re.sub(pattern, f"\n\n{reference_section}", normalized).strip()
+    return f"{normalized}\n\n{reference_section}".strip()
 
 
 class ArkLLMProvider:
@@ -146,8 +153,8 @@ JSON schema:
 目标搜索结果：{json.dumps(target_search_results, ensure_ascii=False)}
 
 要求：
-- category 必须是具体赛道，例如“即时通讯与社交平台”“移动支付与生活服务”“企业协作办公平台”，不要输出“某某所在产品赛道”这类占位。
-- core_capabilities 必须来自目标产品真实能力或搜索结果，不要输出“核心流程自动化、信息整理、报告生成”这类通用占位。
+- category 必须是具体赛道，例如"即时通讯与社交平台""移动支付与生活服务""企业协作办公平台"，不要输出"某某所在产品赛道"这类占位。
+- core_capabilities 必须来自目标产品真实能力或搜索结果，不要输出"核心流程自动化、信息整理、报告生成"这类通用占位。
 - 如果搜索结果混入广告平台、开发者文档、企业版或同品牌其他产品，要区分它们与目标产品本体，不要让噪声主导画像。
 - 对 QQ、微信、小红书、B站、抖音、淘宝等 C 端产品，优先识别消费级社交、内容、交易、支付、社区等真实用户场景。
 
@@ -186,32 +193,32 @@ JSON schema:
 竞品发现搜索结果：{json.dumps(search_results, ensure_ascii=False)}
 
 严格要求：
-1. name 字段必须是一个具体的产品名、品牌名、App名或服务名。例如：”Litter-Robot”、”CATLINK”、”小佩”、”Stripe”、”PayPal”。
+1. name 字段必须是一个具体的产品名、品牌名、App名或服务名。例如："Litter-Robot"、"CATLINK"、"小佩"、"Stripe"、"PayPal"。
 2. name 绝对不能是：
-   - 行业/市场描述（如”宠物智能用品行业”、”全球智能猫砂盒市场”）
-   - 数字/金额（如”亿元”、”年的”、”2024年”）
-   - 句子片段或中文短语（如”此外”、”其中”、”但是”）
-   - 泛概念词（如”竞品”、”替代方案”、”主要玩家”）
+   - 行业/市场描述（如"宠物智能用品行业"、"全球智能猫砂盒市场"）
+   - 数字/金额（如"亿元"、"年的"、"2024年"）
+   - 句子片段或中文短语（如"此外"、"其中"、"但是"）
+   - 泛概念词（如"竞品"、"替代方案"、"主要玩家"）
 3. 优先从搜索结果中出现的品牌名、产品名、公司名提取。
-4. 如果搜索结果中提到了具体品牌（如”CATLINK智能猫砂盆”），提取品牌名”CATLINK”。
+4. 如果搜索结果中提到了具体品牌（如"CATLINK智能猫砂盆"），提取品牌名"CATLINK"。
 5. 排除目标产品自身。
 6. 输出 3-5 个候选竞品。
 
 输出严格 JSON，不要输出 Markdown 代码块。
 JSON schema:
 {{
-  “competitors”: [
+  "competitors": [
     {{
-      “name”: “具体的产品名或品牌名（2-30个字符）”,
-      “website”: “官网或最相关 URL”,
-      “description”: “用中文解释它是什么产品，以及为什么和目标对象竞争”,
-      “category”: “direct_competitor | indirect_competitor | substitute_solution | adjacent_product”,
-      “reason”: “推荐理由”,
-      “matched_dimensions”: [“产品定位”, “目标用户”, “核心功能”, “使用场景”],
-      “source_ids”: [“支撑来源 URL”],
-      “evidence_ids”: [],
-      “selected_by_default”: true,
-      “confidence”: 0.0
+      "name": "具体的产品名或品牌名（2-30个字符）",
+      "website": "官网或最相关 URL",
+      "description": "用中文解释它是什么产品，以及为什么和目标对象竞争",
+      "category": "direct_competitor | indirect_competitor | substitute_solution | adjacent_product",
+      "reason": "推荐理由",
+      "matched_dimensions": ["产品定位", "目标用户", "核心功能", "使用场景"],
+      "source_ids": ["支撑来源 URL"],
+      "evidence_ids": [],
+      "selected_by_default": true,
+      "confidence": 0.0
     }}
   ]
 }}
@@ -282,31 +289,23 @@ JSON schema:
 
     def generate_report(self, run: dict[str, Any], analyses: list[dict[str, Any]], sources: list[dict[str, Any]]) -> dict[str, str]:
         fallback = self.fallback.generate_report(run, analyses, sources)
-        analyses_summary = json.dumps(analyses, ensure_ascii=False)[:4000]
-        sources_summary = json.dumps(
-            [_source_report_summary(source, index) for index, source in enumerate(sources, start=1)],
-            ensure_ascii=False,
-        )
-        citation_bundle = json.dumps(run.get("citation_bundle", []), ensure_ascii=False)[:12000]
+        citation_bundle = json.dumps(run.get("citation_bundle", []), ensure_ascii=False)
         prompt = f"""
-你是报告撰写 Agent。请基于以下分析结果和来源，生成一份专业的中文 Markdown 竞品分析报告。
+你是报告撰写 Agent。请基于以下 citation_bundle 生成一份专业的中文 Markdown 竞品分析报告。
 
 用户需求：{run.get('user_requirement', '')}
-分析结果：{analyses_summary}
-来源列表：{sources_summary}
-严格引用链路 citation_bundle：{citation_bundle}
+citation_bundle：{citation_bundle}
 
 报告要求：
 1. 标题应该准确反映分析对象和领域，不要用"通用产品"这种泛泛标题
-2. 每个竞品的分析必须基于上面的分析结果和 citation_bundle，引用具体的功能、定价、优劣势信息
+2. 每个竞品的分析必须严格按照 citation_bundle 中的 7 个 claim（产品定位、目标用户、核心功能、定价策略、优势、劣势或痛点、机会点）逐项撰写，每个 claim 的内容来自 claim.text
 3. 不要使用"MVP Mock 数据显示"这类字样
 4. 禁止使用 Markdown 表格；不要输出任何 `| 来源标题 |` 这类表格
-5. 正文中涉及关键结论、事实、数据、价格、功能、用户评价时，必须在对应句子末尾标注可点击引用编号。Markdown 原文必须写成 `[[1]](URL)`、`[[2]](URL)`，这样页面会显示为 `[1]`、`[2]`；禁止写成 `[1](URL)`，因为页面会只显示裸数字 `1`。
-6. 每个正文引用都必须遵守“报告结论 -> citation_bundle.claim -> evidence.evidence_id -> source_reference_id/source_url”的链路。某条结论只能引用同一 claim.evidence 中提供的 source_reference_id 和 source_url，禁止引用该 claim 下不存在的来源编号。
-7. 不要只在段落末尾集中引用；每个关键结论应就近引用其支撑来源，例如：“A 产品采用分层订阅模式[[3]](https://example.com/pricing)。”，不要输出“分层订阅模式3”。
-8. 报告末尾必须使用 `## 参考来源`，用有序列表列出引用来源，编号必须与正文引用一致，格式为 `1. [[1]](URL) [来源标题](URL) - 来源类型/标签，权重 0.xx`
-9. `## 参考来源` 必须列出来源列表中的全部来源，按 reference_id 从小到大排列，不得漏列、重排或改号。
-10. 如果某些信息不确定或缺失，明确说明而不是编造
+5. 每个 claim 的关键结论必须引用该 claim 下 evidence 中提供的 source_reference_id。Markdown 原文写成 `[[1]](URL)`；禁止写成 `[1](URL)`
+6. 【重要】不同 claim 有各自不同的 evidence 和 source_reference_id。你必须为每个 claim 使用该 claim 自己的 evidence 中的 source_reference_id，严禁把同一个 source_reference_id 用于所有 claim。示例：产品定位 claim 的 evidence 包含 source_reference_id 3 和 4，定价策略 claim 的 evidence 包含 source_reference_id 7 和 8，则产品定位的结论应引用 [[3]] 或 [[4]]，定价策略的结论应引用 [[7]] 或 [[8]]，不得混用
+7. 每个关键结论应就近引用其支撑来源，不要在段落末尾集中引用
+8. 不要自行生成 `## 参考来源` 部分，系统会自动补充
+9. 如果某些信息不确定或缺失，如实写"证据中未涉及"，不要编造
 
 输出严格 JSON，不要输出 Markdown 代码块。
 JSON schema:

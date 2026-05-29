@@ -17,7 +17,10 @@ const categoryLabels: Record<string, string> = {
 
 export default function CompetitorConfirmPanel({ run, competitors }: Props) {
   const queryClient = useQueryClient();
-  const initialSelected = useMemo(() => competitors.slice(0, 3).map((item) => item.id), [competitors]);
+  const initialSelected = useMemo(() => {
+    const selected = competitors.filter((item) => item.selected).map((item) => item.id);
+    return selected.length > 0 ? selected : competitors.slice(0, 3).map((item) => item.id);
+  }, [competitors]);
   const [selectedIds, setSelectedIds] = useState<string[]>(initialSelected);
   const [customName, setCustomName] = useState('');
   const [customWebsite, setCustomWebsite] = useState('');
@@ -81,6 +84,12 @@ export default function CompetitorConfirmPanel({ run, competitors }: Props) {
         <span>{selectedTotal} selected</span>
       </div>
       <div className="competitor-grid">
+        {competitors.length === 0 ? (
+          <div className="empty-state">
+            <p className="empty-state-title">暂无候选竞品</p>
+            <p className="empty-state-desc">Agent 尚未完成竞品发现，或未找到匹配的竞品。</p>
+          </div>
+        ) : null}
         {competitors.map((competitor) => (
           <div key={competitor.id} className={`competitor-card ${selectedIds.includes(competitor.id) ? 'selected' : ''}`}>
             <div className="competitor-select-row">
@@ -142,9 +151,7 @@ export default function CompetitorConfirmPanel({ run, competitors }: Props) {
         <button className="primary-action" onClick={() => mutation.mutate()} disabled={selectedTotal === 0 || mutation.isPending}>
           {mutation.isPending ? '已提交，Agent 正在采集资料...' : '确认竞品并生成报告'}
         </button>
-      ) : (
-        <p className="muted">竞品已确认，后续 Agent 已继续执行。</p>
-      )}
+      ) : null}
       {mutation.isError ? <p className="error-text">确认失败：{String(mutation.error.message)}</p> : null}
       {isCustomModalOpen ? (
         <div className="modal-backdrop" role="presentation" onClick={() => setIsCustomModalOpen(false)}>

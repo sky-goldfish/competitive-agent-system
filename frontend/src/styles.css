@@ -868,6 +868,16 @@ button:disabled {
   padding: 2px 6px;
 }
 
+.source-meta-row .source-ref-badge {
+  color: #3151a3;
+  font-size: 11px;
+  font-weight: 800;
+  margin-right: 4px;
+  padding: 1px 0;
+  background: transparent;
+  border-radius: 0;
+}
+
 .source-classification {
   background: #fbfdff;
   border-radius: 10px;
@@ -1006,6 +1016,43 @@ button:disabled {
   text-decoration: none;
 }
 
+.delete-action {
+  background: transparent;
+  border: 1px solid #f0c5c5;
+  border-radius: 6px;
+  color: #a13c3c;
+  font-size: 12px;
+  padding: 4px 8px;
+}
+
+.delete-action:hover {
+  background: #fff5f5;
+  border-color: #e0a0a0;
+}
+
+.delete-confirm {
+  align-items: center;
+  display: flex;
+  gap: 4px;
+}
+
+.delete-confirm-yes {
+  background: #c0392b;
+  border-radius: 6px;
+  color: white;
+  font-size: 12px;
+  padding: 4px 8px;
+}
+
+.delete-confirm-no {
+  background: transparent;
+  border: 1px solid #cbd6e8;
+  border-radius: 6px;
+  color: #40506a;
+  font-size: 12px;
+  padding: 4px 8px;
+}
+
 .history-table td:first-child span {
   color: #627086;
   max-width: 520px;
@@ -1122,6 +1169,9 @@ button:disabled {
   gap: 0;
   min-height: 45px;
   padding: 0 18px;
+  position: sticky;
+  top: 0;
+  z-index: 5;
 }
 
 .workbench-tabs {
@@ -1143,6 +1193,21 @@ button:disabled {
 .workbench-tabs button.active {
   border-bottom-color: #465be7;
   color: #172033;
+}
+
+.workspace-regenerate {
+  background: transparent;
+  border: 1px solid #cbd6e8;
+  border-radius: 6px;
+  color: #40506a;
+  font-size: 12px;
+  margin-left: auto;
+  padding: 5px 10px;
+}
+
+.workspace-regenerate:hover {
+  border-color: #5366d9;
+  color: #3151a3;
 }
 
 .workbench-main > .panel,
@@ -1203,6 +1268,30 @@ button:disabled {
 
 .workbench-pane {
   min-height: 100%;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 24px;
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.empty-state-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+
+.empty-state-desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  max-width: 320px;
+  line-height: 1.5;
 }
 
 .task-info-pane {
@@ -1315,6 +1404,207 @@ button:disabled {
 .report-document p,
 .report-document li {
   line-height: 1.75;
+}
+
+/* Citation Bundle */
+.citation-bundle-list {
+  display: grid;
+  gap: 6px;
+}
+
+.citation-bundle-competitor {
+  border: 1px solid #edf1f7;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.citation-bundle-trigger {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: #172033;
+  display: flex;
+  justify-content: space-between;
+  padding: 10px 12px;
+  width: 100%;
+}
+
+.citation-bundle-trigger.open {
+  background: #f8faff;
+  border-bottom: 1px solid #edf1f7;
+}
+
+.citation-bundle-name {
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.citation-bundle-count {
+  background: #e7edff;
+  border-radius: 999px;
+  color: #3151a3;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 7px;
+}
+
+.citation-bundle-claims {
+  display: grid;
+  gap: 0;
+  padding: 4px 0;
+}
+
+.citation-claim {
+  border-bottom: 1px solid #f0f3f8;
+  padding: 8px 12px;
+}
+
+.citation-claim:last-child {
+  border-bottom: 0;
+}
+
+.citation-claim-header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.citation-claim-label {
+  color: #5366d9;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.citation-claim-toggle {
+  background: transparent;
+  border: 1px solid #dbe4f0;
+  border-radius: 6px;
+  color: #40506a;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 7px;
+}
+
+.citation-claim-toggle:hover {
+  border-color: #5366d9;
+  color: #3151a3;
+}
+
+.citation-claim-empty {
+  color: #9aa8b8;
+  font-size: 11px;
+}
+
+.citation-claim-text {
+  color: #40506a;
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.claim-modal-body {
+  padding: 16px 20px 20px;
+  overflow: hidden;
+}
+
+.claim-modal-conclusion {
+  border-bottom: 1px solid #edf1f7;
+  margin-bottom: 14px;
+  padding-bottom: 14px;
+}
+
+.claim-modal-conclusion dt {
+  color: #627086;
+  font-size: 12px;
+  font-weight: 800;
+  margin-bottom: 5px;
+}
+
+.claim-modal-conclusion dd {
+  color: #172033;
+  line-height: 1.65;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.claim-modal-evidence-list {
+  display: grid;
+  gap: 10px;
+}
+
+.citation-ev-ref {
+  background: #f8faff;
+  border: 1px solid #edf1f7;
+  border-radius: 8px;
+  padding: 8px 10px;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.citation-ev-ref .source-meta-row {
+  justify-content: flex-start;
+}
+
+.citation-ev-ref .source-meta-row strong {
+  background: #eef4ff;
+  color: #3151a3;
+}
+
+.citation-ev-dim {
+  font-size: 11px;
+  color: #6b7a94;
+  background: #f0f2f7;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.citation-ev-confidence {
+  font-size: 11px;
+  font-weight: 600;
+  color: #2d8a57;
+  background: #eaf8f0;
+  border: 1px solid #b8e0c8;
+  border-radius: 999px;
+  padding: 1px 8px;
+  margin-left: auto;
+}
+
+.citation-ev-summary {
+  color: #40506a;
+  font-size: 11px;
+  line-height: 1.45;
+  margin: 4px 0;
+  overflow-wrap: anywhere;
+}
+
+.citation-ev-quote {
+  border-left: 2px solid #b9c5e3;
+  color: #5c6b82;
+  font-size: 11px;
+  line-height: 1.45;
+  margin: 4px 0;
+  max-height: 72px;
+  overflow: hidden;
+  padding-left: 8px;
+}
+
+.citation-ev-link {
+  color: #3151a3;
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  margin-top: 4px;
+  overflow: hidden;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.citation-ev-link:hover {
+  text-decoration: underline;
 }
 
 @media (max-width: 900px) {

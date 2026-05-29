@@ -76,10 +76,6 @@ def _evidence_ref(evidence: dict[str, Any], source_reference_by_url: dict[str | 
     source_url = evidence.get("source_url")
     source = source_by_url.get(source_url, {})
     return {
-        "evidence_id": evidence.get("id"),
-        "related_dimension": evidence.get("related_dimension"),
-        "summary": evidence.get("summary"),
-        "quote": evidence.get("quote"),
         "source_reference_id": source_reference_by_url.get(source_url),
         "source_title": source.get("title"),
         "source_url": source_url,

@@ -4,6 +4,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.agents.graph import build_competitor_discovery_graph, build_report_generation_graph
+from app.agents.nodes.report_generation import report_generation_node
 from app.agents.state import AgentState
 from app.agents.trace import record_progress_trace, run_traced_stage
 from app.db.models import Analysis, Competitor, Evidence, Report, Run, Source
@@ -116,6 +117,45 @@ def confirm_and_continue_run(db: Session, run_id: str, competitor_ids: list[str]
 
 def execute_report_run(run_id: str) -> None:
     db = SessionLocal()
+    # Track persisted source URLs → Source objects for evidence foreign key resolution
+    source_by_url: dict[str, Source] = {}
+
+    def on_stage_complete(stage: str, state: AgentState) -> None:
+        nonlocal source_by_url
+        run = db.get(Run, run_id)
+        if stage == "material_collection":
+            for item in state["sources"]:
+                source = Source(run_id=run_id, **item)
+                db.add(source)
+                db.flush()
+                source_by_url[item["url"]] = source
+            for item in state["evidence"]:
+                source = source_by_url[item["source_url"]]
+                evidence = Evidence(run_id=run_id, source_id=source.id, **{key: value for key, value in item.items() if key not in ("competitor_id", "source_url")})
+                db.add(evidence)
+                db.flush()
+            run.current_stage = "structured_analysis"
+            db.commit()
+        elif stage == "structured_analysis":
+            for item in state["analyses"]:
+                db.add(
+                    Analysis(
+                        id=item["id"],
+                        run_id=run_id,
+                        competitor_id=item["competitor_id"],
+                        positioning=item["positioning"],
+                        target_users=item["target_users"],
+                        core_features_json=item["core_features_json"],
+                        pricing_summary=item["pricing_summary"],
+                        strengths_json=item["strengths_json"],
+                        weaknesses_json=item["weaknesses_json"],
+                        opportunities_json=item["opportunities_json"],
+                        evidence_ids_json=item["evidence_ids_json"],
+                    )
+                )
+            run.current_stage = "report_generation"
+            db.commit()
+
     try:
         run = get_run_or_raise(db, run_id)
         selected = db.query(Competitor).filter(Competitor.run_id == run_id, Competitor.selected.is_(True)).all()
@@ -160,49 +200,18 @@ def execute_report_run(run_id: str) -> None:
                 action,
             ),
             progress=lambda stage, message, metadata: record_progress_trace(db, run.id, stage, message, metadata),
+            on_stage_complete=on_stage_complete,
         )
         state = graph.invoke(state)
 
-        source_by_url: dict[str, Source] = {}
-        for item in state["sources"]:
-            source = Source(run_id=run.id, **item)
-            db.add(source)
-            db.flush()
-            source_by_url[item["url"]] = source
+        # Resolve evidence source_url → source_id for report_generation_node's citation_bundle
+        for item in state.get("evidence", []):
+            if "source_url" in item and item["source_url"] in source_by_url:
+                item["source_id"] = source_by_url[item["source_url"]].id
 
-        persisted_evidence = []
-        for item in state["evidence"]:
-            source = source_by_url[item.pop("source_url")]
-            evidence = Evidence(run_id=run.id, source_id=source.id, **{key: value for key, value in item.items() if key != "competitor_id"})
-            db.add(evidence)
-            db.flush()
-            persisted_evidence.append({**item, "id": evidence.id, "source_id": source.id})
-        state["evidence"] = persisted_evidence
-        run.current_stage = "report_generation"
-        db.commit()
-
-        for item in state["analyses"]:
-            db.add(
-                Analysis(
-                    id=item["id"],
-                    run_id=run.id,
-                    competitor_id=item["competitor_id"],
-                    positioning=item["positioning"],
-                    target_users=item["target_users"],
-                    core_features_json=item["core_features_json"],
-                    pricing_summary=item["pricing_summary"],
-                    strengths_json=item["strengths_json"],
-                    weaknesses_json=item["weaknesses_json"],
-                    opportunities_json=item["opportunities_json"],
-                    evidence_ids_json=item["evidence_ids_json"],
-                )
-            )
-        run.current_stage = "report_generation"
-        db.commit()
-
-        existing_report = db.query(Report).filter(Report.run_id == run.id).first()
+        existing_report = db.query(Report).filter(Report.run_id == run_id).first()
         if existing_report is None:
-            db.add(Report(run_id=run.id, **state["report"]))
+            db.add(Report(run_id=run_id, **state["report"]))
         else:
             existing_report.title = state["report"]["title"]
             existing_report.summary = state["report"]["summary"]
@@ -236,3 +245,94 @@ def _trace_input(stage: str, state: AgentState) -> dict:
     if stage == "report_generation":
         return {"analysis_count": len(state.get("analyses", []))}
     return {}
+
+
+def regenerate_report(run_id: str) -> None:
+    db = SessionLocal()
+    try:
+        run = get_run_or_raise(db, run_id)
+
+        llm = get_llm_provider()
+
+        sources = db.query(Source).filter(Source.run_id == run_id).all()
+        evidence_items = db.query(Evidence).filter(Evidence.run_id == run_id).all()
+        analyses = db.query(Analysis).filter(Analysis.run_id == run_id).all()
+
+        source_list = [
+            {
+                "id": s.id,
+                "competitor_id": s.competitor_id,
+                "title": s.title,
+                "url": s.url,
+                "snippet": s.snippet,
+                "source_type": s.source_type,
+                "provider": s.provider,
+                "raw_content": s.raw_content,
+                "metadata_json": s.metadata_json,
+            }
+            for s in sources
+        ]
+        evidence_list = [
+            {
+                "id": e.id,
+                "competitor_id": e.source.competitor_id if e.source else None,
+                "related_product": e.related_product,
+                "related_dimension": e.related_dimension,
+                "summary": e.summary,
+                "quote": e.quote,
+                "confidence": e.confidence,
+                "source_url": e.source.url if e.source else None,
+            }
+            for e in evidence_items
+        ]
+        analysis_list = [
+            {
+                "id": a.id,
+                "competitor_id": a.competitor_id,
+                "competitor_name": a.competitor.name if a.competitor else "",
+                "positioning": a.positioning,
+                "target_users": a.target_users,
+                "core_features_json": a.core_features_json,
+                "pricing_summary": a.pricing_summary,
+                "strengths_json": a.strengths_json,
+                "weaknesses_json": a.weaknesses_json,
+                "opportunities_json": a.opportunities_json,
+                "evidence_ids_json": a.evidence_ids_json,
+            }
+            for a in analyses
+        ]
+
+        state: AgentState = {
+            "run_id": run_id,
+            "user_requirement": run.user_requirement,
+            "sources": source_list,
+            "evidence": evidence_list,
+            "analyses": analysis_list,
+        }
+
+        run.status = "running"
+        run.current_stage = "report_generation"
+        db.commit()
+
+        state = report_generation_node(state, llm)
+
+        existing_report = db.query(Report).filter(Report.run_id == run_id).first()
+        if existing_report is None:
+            db.add(Report(run_id=run_id, **state["report"]))
+        else:
+            existing_report.title = state["report"]["title"]
+            existing_report.summary = state["report"]["summary"]
+            existing_report.markdown_content = state["report"]["markdown_content"]
+
+        run.status = "completed"
+        run.current_stage = "completed"
+        run.completed_at = datetime.utcnow()
+        db.commit()
+    except Exception as exc:
+        run = db.get(Run, run_id)
+        if run is not None:
+            run.status = "failed"
+            run.error_message = str(exc)
+            db.commit()
+    finally:
+        db.close()

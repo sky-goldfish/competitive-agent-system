@@ -1,4 +1,4 @@
-import type { Analysis, CitationMapItem, Competitor, CustomCompetitorInput, Evidence, Report, Run, Source, Trace } from './types';
+import type { Analysis, CitationBundleCompetitor, CitationMapItem, Competitor, CustomCompetitorInput, Evidence, Report, Run, Source, Trace } from './types';
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000/api';
 
@@ -14,6 +14,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     const detail = await response.text();
     throw new Error(detail || `Request failed: ${response.status}`);
   }
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
@@ -30,6 +31,14 @@ export function listRuns(): Promise<Run[]> {
 
 export function getRun(runId: string): Promise<Run> {
   return request<Run>(`/runs/${runId}`);
+}
+
+export function deleteRun(runId: string): Promise<void> {
+  return request<void>(`/runs/${runId}`, { method: 'DELETE' });
+}
+
+export function regenerateReport(runId: string): Promise<Run> {
+  return request<Run>(`/runs/${runId}/regenerate`, { method: 'POST' });
 }
 
 export function getCompetitors(runId: string): Promise<Competitor[]> {
@@ -57,6 +66,10 @@ export function getReport(runId: string): Promise<Report> {
 
 export function getReportCitations(runId: string): Promise<CitationMapItem[]> {
   return request<CitationMapItem[]>(`/runs/${runId}/report/citations`);
+}
+
+export function getReportCitationBundle(runId: string): Promise<CitationBundleCompetitor[]> {
+  return request<CitationBundleCompetitor[]>(`/runs/${runId}/report/citation-bundle`);
 }
 
 export function getEvidence(runId: string): Promise<Evidence[]> {
