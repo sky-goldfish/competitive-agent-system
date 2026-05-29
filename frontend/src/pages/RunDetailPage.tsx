@@ -122,13 +122,6 @@ export default function RunDetailPage() {
 
   const traces = timelineQuery.data ?? [];
   const stagePath = useMemo(() => run ? getStagePath(run, traces) : [], [run, traces]);
-  const referenceIdByUrl = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const item of citationsQuery.data ?? []) {
-      map.set(item.source.url, item.reference_id);
-    }
-    return map;
-  }, [citationsQuery.data]);
 
   if (runQuery.isLoading) return <p className="loading">加载任务中...</p>;
   if (runQuery.isError || !run) return <p className="error-text">任务加载失败。</p>;
@@ -229,7 +222,7 @@ export default function RunDetailPage() {
             ) : null}
             {workbenchTab === 'sources' ? (
               <div className="side-stack">
-                <SourceList sources={sources} isCollecting={run.status === 'running'} referenceIdByUrl={referenceIdByUrl} />
+                <SourceList sources={sources} isCollecting={run.status === 'running'} />
                 <EvidenceList evidence={evidence} sources={sources} />
               </div>
             ) : null}

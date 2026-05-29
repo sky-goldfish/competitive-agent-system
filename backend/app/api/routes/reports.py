@@ -113,12 +113,8 @@ def get_report_citation_bundle(run_id: str, db: Session = Depends(get_db)):
     if db.get(Run, run_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found.")
 
-    report = db.query(Report).filter(Report.run_id == run_id).first()
-    reference_urls = _extract_reference_urls(report.markdown_content) if report else []
-    source_ref_by_url: dict[str, int] = {url: ref_id for ref_id, url in reference_urls}
-
     sources = db.query(Source).filter(Source.run_id == run_id).all()
-    source_by_url = {s.url: s for s in sources}
+    source_ref_by_id = {s.id: _extract_ref_id(s.metadata_json) for s in sources}
     source_by_id = {s.id: s for s in sources}
 
     evidence_items = db.query(Evidence).filter(Evidence.run_id == run_id).all()
@@ -152,7 +148,7 @@ def get_report_citation_bundle(run_id: str, db: Session = Depends(get_db)):
                 source_url = source.url if source else ""
                 ev_refs.append(
                     CitationBundleEvidenceRef(
-                        source_reference_id=source_ref_by_url.get(source_url),
+                        source_reference_id=source_ref_by_id.get(e.source_id),
                         source_title=source.title if source else None,
                         source_url=source_url or None,
                         related_dimension=e.related_dimension,
@@ -224,3 +220,14 @@ def _analysis_field_text(analysis: Analysis, field: str) -> str:
         items = _json_list(value)
         return "；".join(items) if items else ""
     return str(value)
+
+
+def _extract_ref_id(metadata_json: str | None) -> int | None:
+    if not metadata_json:
+        return None
+    try:
+        metadata = json.loads(metadata_json)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    value = metadata.get("reference_id")
+    return int(value) if isinstance(value, (int, float)) else None

@@ -1,5 +1,4 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useMemo } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import EvidenceList from '../components/evidence/EvidenceList';
 import SourceList from '../components/evidence/SourceList';
@@ -23,16 +22,9 @@ export default function ReportPage() {
       queryClient.invalidateQueries({ queryKey: ['report', id] });
       queryClient.invalidateQueries({ queryKey: ['report-citations', id] });
       queryClient.invalidateQueries({ queryKey: ['citation-bundle', id] });
+      queryClient.invalidateQueries({ queryKey: ['sources', id] });
     },
   });
-
-  const referenceIdByUrl = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const item of citationsQuery.data ?? []) {
-      map.set(item.source.url, item.reference_id);
-    }
-    return map;
-  }, [citationsQuery.data]);
 
   if (reportQuery.isLoading) return <p className="loading">加载报告中...</p>;
   if (reportQuery.isError || !reportQuery.data) return <p className="error-text">报告尚未生成或加载失败。</p>;
@@ -65,7 +57,7 @@ export default function ReportPage() {
       </article>
       <div className="detail-column">
         <CitationBundleView bundle={citationBundleQuery.data ?? []} />
-        <SourceList sources={sourcesQuery.data ?? []} referenceIdByUrl={referenceIdByUrl} />
+        <SourceList sources={sourcesQuery.data ?? []} />
         <EvidenceList evidence={evidenceQuery.data ?? []} sources={sourcesQuery.data ?? []} />
       </div>
     </div>

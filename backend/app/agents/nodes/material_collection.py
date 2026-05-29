@@ -100,6 +100,7 @@ def material_collection_node(state: AgentState, search: SearchProvider, progress
                         "source_type": source_type,
                         "provider": search.name,
                         "raw_content": result.raw_content,
+                        "reference_id": len(sources) + 1,
                         "metadata_json": _metadata_json(credibility_score, ranked_result["rank_score"], source_type, ranked_result["label"], ranked_result["reason"], query_item),
                     }
                     sources.append(source)

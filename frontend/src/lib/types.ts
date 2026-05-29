@@ -84,6 +84,7 @@ export type Source = {
   rank_score: number | null;
   classification_reason: string | null;
   metadata_json: string | null;
+  reference_id: number | null;
   provider: string;
   retrieved_at: string;
 };

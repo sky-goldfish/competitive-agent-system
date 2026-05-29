@@ -125,7 +125,10 @@ def execute_report_run(run_id: str) -> None:
         run = db.get(Run, run_id)
         if stage == "material_collection":
             for item in state["sources"]:
-                source = Source(run_id=run_id, **item)
+                metadata = _merge_reference_id(item.get("metadata_json"), item.get("reference_id"))
+                source_data = {k: v for k, v in item.items() if k != "reference_id"}
+                source_data["metadata_json"] = metadata
+                source = Source(run_id=run_id, **source_data)
                 db.add(source)
                 db.flush()
                 source_by_url[item["url"]] = source
@@ -231,6 +234,28 @@ def execute_report_run(run_id: str) -> None:
         db.close()
 
 
+def _merge_reference_id(metadata_json: str | None, reference_id: int | None) -> str | None:
+    if reference_id is None:
+        return metadata_json
+    try:
+        metadata = json.loads(metadata_json) if metadata_json else {}
+    except (json.JSONDecodeError, TypeError):
+        metadata = {}
+    metadata["reference_id"] = reference_id
+    return json.dumps(metadata, ensure_ascii=False)
+
+
+def _extract_reference_id(metadata_json: str | None) -> int | None:
+    if not metadata_json:
+        return None
+    try:
+        metadata = json.loads(metadata_json)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    value = metadata.get("reference_id")
+    return int(value) if isinstance(value, (int, float)) else None
+
+
 def _trace_input(stage: str, state: AgentState) -> dict:
     if stage == "requirement_understanding":
         return {"user_requirement": state.get("user_requirement")}
@@ -268,6 +293,7 @@ def regenerate_report(run_id: str) -> None:
                 "source_type": s.source_type,
                 "provider": s.provider,
                 "raw_content": s.raw_content,
+                "reference_id": _extract_reference_id(s.metadata_json),
                 "metadata_json": s.metadata_json,
             }
             for s in sources

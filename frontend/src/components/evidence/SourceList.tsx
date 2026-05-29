@@ -4,10 +4,9 @@ import { useState } from 'react';
 type Props = {
   sources: Source[];
   isCollecting?: boolean;
-  referenceIdByUrl?: Map<string, number>;
 };
 
-export default function SourceList({ sources, isCollecting = false, referenceIdByUrl }: Props) {
+export default function SourceList({ sources, isCollecting = false }: Props) {
   const [detailSource, setDetailSource] = useState<Source | null>(null);
 
   return (
@@ -23,21 +22,18 @@ export default function SourceList({ sources, isCollecting = false, referenceIdB
             <p className="empty-state-desc">{isCollecting ? 'Agent 正在搜索和采集，请稍候。' : '可能采集失败或来源不足，请检查任务状态。'}</p>
           </div>
         ) : null}
-        {sources.map((source) => {
-          const refId = referenceIdByUrl?.get(source.url);
-          return (
+        {sources.map((source) => (
             <article key={source.id} className="source-item">
               <div className="source-meta-row">
                 <span>
-                  {refId !== undefined ? <strong className="source-ref-badge">[{refId}]</strong> : null}
+                  {source.reference_id != null ? <strong className="source-ref-badge">[{source.reference_id}]</strong> : null}
                   {source.source_type_label ?? source.source_type}
                 </span>
                 {source.credibility_score !== null ? <strong>权重 {(source.credibility_score * 100).toFixed(0)}%</strong> : null}
               </div>
               <button type="button" className="summary-title-button" onClick={() => setDetailSource(source)}>{source.title}</button>
             </article>
-          );
-        })}
+          ))}
       </div>
       {detailSource ? (
         <div className="modal-backdrop" role="presentation" onClick={() => setDetailSource(null)}>
@@ -50,10 +46,10 @@ export default function SourceList({ sources, isCollecting = false, referenceIdB
               <button type="button" className="modal-close" onClick={() => setDetailSource(null)}>关闭</button>
             </div>
             <dl className="competitor-detail-list">
-              {referenceIdByUrl?.get(detailSource.url) !== undefined ? (
+              {detailSource.reference_id != null ? (
                 <div>
                   <dt>报告引用编号</dt>
-                  <dd>[{referenceIdByUrl.get(detailSource.url)}]</dd>
+                  <dd>[{detailSource.reference_id}]</dd>
                 </div>
               ) : null}
               <div>

@@ -58,19 +58,22 @@ def _format_reference_section(sources: list[dict[str, Any]], cited_ids: set[int]
     if not sources:
         return ""
     lines = ["## 参考来源", ""]
-    for index, source in enumerate(sources, start=1):
-        if cited_ids is not None and index not in cited_ids:
+    for source in sources:
+        reference_id = source.get("reference_id")
+        if not isinstance(reference_id, int):
             continue
-        summary = _source_report_summary(source, index)
-        title = str(summary.get("title") or f"来源 {index}").replace("\n", " ").strip()
+        if cited_ids is not None and reference_id not in cited_ids:
+            continue
+        summary = _source_report_summary(source, reference_id)
+        title = str(summary.get("title") or f"来源 {reference_id}").replace("\n", " ").strip()
         url = str(summary.get("url") or "").strip()
         source_label = summary.get("source_type_label") or summary.get("source_type") or "来源"
         credibility = summary.get("credibility_score")
         weight_text = f"，权重 {float(credibility):.2f}" if isinstance(credibility, int | float) else ""
         if url:
-            lines.append(f"{index}. [[{index}]]({url}) [{title}]({url}) - {source_label}{weight_text}")
+            lines.append(f"{reference_id}. [[{reference_id}]]({url}) [{title}]({url}) - {source_label}{weight_text}")
         else:
-            lines.append(f"{index}. [{index}] {title} - {source_label}{weight_text}")
+            lines.append(f"{reference_id}. [{reference_id}] {title} - {source_label}{weight_text}")
     return "\n".join(lines)
 
 
@@ -95,7 +98,7 @@ def _ensure_reference_section(markdown_content: str, sources: list[dict[str, Any
     body_only = re.sub(r"\n*##\s*(?:(?:\d+|[一二三四五六七八九十]+)[\.、]\s*)?(?:参考来源|参考文献|References)\s*\n[\s\S]*$", "", stripped).strip()
     cited_ids = {int(m) for m in re.findall(r"\[\[(\d+)\]\]", body_only)}
     reference_section = _format_reference_section(sources, cited_ids if cited_ids else None)
-    max_reference_id = len(sources)
+    max_reference_id = max((s.get("reference_id", 0) for s in sources if isinstance(s.get("reference_id"), int)), default=0)
     if not reference_section:
         return _normalize_inline_citations(stripped)
     normalized = _normalize_inline_citations(stripped, max_reference_id=max_reference_id)
