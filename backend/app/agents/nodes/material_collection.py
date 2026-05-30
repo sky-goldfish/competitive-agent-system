@@ -10,6 +10,25 @@ from app.providers.search.base import SearchProvider
 ProgressCallback = Callable[[str, str, dict[str, Any]], None]
 
 ANALYSIS_DIMENSIONS = ["产品定位", "核心功能", "价格与商业模式", "用户评价与痛点"]
+CORE_SCHEMA_SLOTS = ["positioning", "core_features", "pricing", "user_feedback"]
+SCHEMA_SLOT_DIMENSIONS = {
+    "relationship_evidence": "竞争关系",
+    "positioning": "产品定位",
+    "core_features": "核心功能",
+    "pricing": "价格与商业模式",
+    "user_feedback": "用户评价与痛点",
+    "market_signal": "产品定位",
+    "risk_opportunity": "用户评价与痛点",
+}
+SLOT_LABELS = {
+    "relationship_evidence": "竞品关系、竞争需求、重叠点、替代路径",
+    "positioning": "定位、所属公司、官网、目标用户",
+    "core_features": "核心能力、特色功能、平台/参数",
+    "pricing": "价格、套餐、企业版或电商价格",
+    "user_feedback": "评价、痛点、差评、优缺点",
+    "market_signal": "新闻、测评、版本更新、榜单",
+    "risk_opportunity": "限制、机会点、替代方案",
+}
 COMMODITY_MARKERS = [
     "保温杯", "水杯", "硬件", "商品", "消费品", "电商", "家电", "家具", "食品", "饮料",
     "服装", "鞋", "箱包", "配件", "美妆", "护肤", "清洁", "宠物用品", "玩具", "母婴",
@@ -51,6 +70,7 @@ SOURCE_WEIGHTS = {
 }
 
 DIMENSION_SOURCE_BONUS = {
+    "竞争关系": {"official_site", "brand_official_product_page", "review_site", "professional_review", "community_discussion", "news_article"},
     "产品定位": {"brand_official_product_page", "official_site", "news_article", "professional_review"},
     "核心功能": {"brand_official_product_page", "official_site", "official_docs", "professional_review", "ecommerce_product_page"},
     "价格与商业模式": {"official_pricing_page", "ecommerce_product_page", "marketplace_listing_unknown_seller"},
@@ -62,8 +82,27 @@ def material_collection_node(state: AgentState, search: SearchProvider, progress
     requirement = state.get("requirement", {})
     if state.get("target_understanding"):
         requirement = {**requirement, **{k: v for k, v in state["target_understanding"].items() if v}}
-    product_queries = _plan_material_queries(state["selected_competitors"], requirement)
-    _emit(progress, "material_query_planning", "为已确认竞品按分析维度和来源类型生成资料采集 query", {"product_count": len(product_queries), "query_count": sum(len(item["queries"]) for item in product_queries), "source_weights": SOURCE_WEIGHTS})
+    product_queries = _plan_material_queries(state["selected_competitors"], requirement, state.get("evidence", []), state.get("sources", []))
+    quarts = [quart for item in product_queries for quart in item["queries"]]
+    product_types = sorted({quart["product_type"] for quart in quarts})
+    missing_slots = sorted({quart["target_slot"] for quart in quarts})
+    _emit(
+        progress,
+        "quart_planning",
+        "基于竞品关系、产品类型和知识 Schema 缺口生成检索 Quart",
+        {
+            "product_count": len(product_queries),
+            "quart_count": len(quarts),
+            "product_types": product_types,
+            "missing_slots": missing_slots,
+            "relationship_quart_count": len([quart for quart in quarts if quart["target_slot"] == "relationship_evidence"]),
+            "competitor_types": sorted({quart["competitor_type"] for quart in quarts}),
+            "relationship_claims": [quart["relation_claim"] for quart in quarts if quart["target_slot"] == "relationship_evidence"][:4],
+            "queries": [quart["query"] for quart in quarts[:8]],
+            "query_purposes": [quart["target_slot"] for quart in quarts[:8]],
+        },
+    )
+    _emit(progress, "material_query_planning", "为已确认竞品按检索 Quart 规划资料采集 query", {"product_count": len(product_queries), "query_count": len(quarts), "source_weights": SOURCE_WEIGHTS})
 
     sources = []
     evidence = []
@@ -74,11 +113,14 @@ def material_collection_node(state: AgentState, search: SearchProvider, progress
 
         def _search_one_dimension(query_item: dict) -> list[dict]:
             try:
-                results = search.search(query_item["query"], limit=4)
+                results = search.search(query_item["query"], limit=query_item.get("limit", 4))
             except Exception:
                 return []
-            return _classify_and_rank_results(results, state.get("requirement", {}), query_item)
+            return _classify_and_rank_results(results, requirement, query_item)
 
+        if not product_query["queries"]:
+            _emit(progress, "source_search", "该竞品已有足够证据，跳过检索", {"product": competitor["name"], "source_count": 0})
+            continue
         with ThreadPoolExecutor(max_workers=min(4, len(product_query["queries"]))) as executor:
             futures = {executor.submit(_search_one_dimension, qi): qi for qi in product_query["queries"]}
             for future in as_completed(futures):
@@ -86,24 +128,23 @@ def material_collection_node(state: AgentState, search: SearchProvider, progress
                 classified_results = future.result()
                 for ranked_result in classified_results[:2]:
                     result = ranked_result["result"]
-                    source_key = f"{competitor['id']}::{query_item['dimension']}::{result.url}"
-                    if source_key in seen_urls:
-                        continue
-                    seen_urls.add(source_key)
+                    source_key = f"{competitor['id']}::{result.url}"
                     source_type = ranked_result["source_type"]
                     credibility_score = ranked_result["credibility_score"]
-                    source = {
-                        "competitor_id": competitor["id"],
-                        "title": result.title,
-                        "url": result.url,
-                        "snippet": result.snippet,
-                        "source_type": source_type,
-                        "provider": search.name,
-                        "raw_content": result.raw_content,
-                        "metadata_json": _metadata_json(credibility_score, ranked_result["rank_score"], source_type, ranked_result["label"], ranked_result["reason"], query_item),
-                    }
-                    sources.append(source)
-                    product_source_count += 1
+                    if source_key not in seen_urls:
+                        seen_urls.add(source_key)
+                        source = {
+                            "competitor_id": competitor["id"],
+                            "title": result.title,
+                            "url": result.url,
+                            "snippet": result.snippet,
+                            "source_type": source_type,
+                            "provider": search.name,
+                            "raw_content": result.raw_content,
+                            "metadata_json": _metadata_json(credibility_score, ranked_result["rank_score"], source_type, ranked_result["label"], ranked_result["reason"], query_item),
+                        }
+                        sources.append(source)
+                        product_source_count += 1
                     evidence.append(
                         {
                             "id": new_id("ev"),
@@ -111,7 +152,7 @@ def material_collection_node(state: AgentState, search: SearchProvider, progress
                             "related_product": competitor["name"],
                             "related_dimension": query_item["dimension"],
                             "quote": (result.raw_content or result.snippet)[:800],
-                            "summary": f"[{ranked_result['label']}｜权重 {credibility_score:.2f}] {result.snippet}",
+                            "summary": _evidence_summary(query_item, ranked_result["label"], credibility_score, result.snippet),
                             "confidence": min(0.95, max(0.5, credibility_score - 0.04)),
                             "source_url": result.url,
                         }
@@ -132,32 +173,290 @@ def _emit(progress: ProgressCallback | None, stage: str, message: str, metadata:
 
 
 
-def _plan_material_queries(competitors: list[dict], requirement: dict) -> list[dict]:
+def _plan_material_queries(competitors: list[dict], requirement: dict, evidence: list[dict] | None = None, sources: list[dict] | None = None) -> list[dict]:
     planned = []
+    quarts = _plan_retrieval_quarts(competitors, requirement, evidence or [], sources or [])
     for competitor in competitors:
-        name = competitor["name"]
-        is_commodity = _is_commodity_domain(requirement) or _is_commodity_domain({"domain": competitor.get("description", "")})
-        queries = _plan_commodity_queries(name) if is_commodity else _plan_saas_queries(name)
+        queries = [quart for quart in quarts if quart["competitor_id"] == competitor["id"]]
         planned.append({"competitor": competitor, "queries": queries})
     return planned
 
 
-def _plan_saas_queries(name: str) -> list[dict]:
-    return [
-        {"query": f"{name} official product positioning features", "dimension": "产品定位"},
-        {"query": f"{name} docs features integrations platform", "dimension": "核心功能"},
-        {"query": f"{name} pricing plans enterprise official", "dimension": "价格与商业模式"},
-        {"query": f"{name} reviews user feedback pros cons G2 Capterra Reddit", "dimension": "用户评价与痛点"},
-    ]
+def _plan_retrieval_quarts(competitors: list[dict], requirement: dict, evidence: list[dict] | None = None, sources: list[dict] | None = None) -> list[dict]:
+    quarts = []
+    evidence = evidence or []
+    sources = sources or []
+    product_type = _detect_product_type(requirement)
+    for competitor in competitors:
+        competitor_type = competitor.get("category") or "direct_competitor"
+        relationship_model = _build_relationship_model(competitor, requirement)
+        covered_slots = _covered_schema_slots(competitor, evidence, sources)
+        candidate_slots = [slot for slot in _priority_slots_for_competitor_type(competitor_type) if slot not in covered_slots]
+        if len(candidate_slots) < 5:
+            for slot in ["market_signal", "risk_opportunity"]:
+                if slot not in covered_slots and slot not in candidate_slots:
+                    candidate_slots.append(slot)
+        for slot in candidate_slots[:5]:
+            quarts.append(_build_retrieval_quart(competitor, product_type, competitor_type, slot, relationship_model))
+    return quarts
 
 
-def _plan_commodity_queries(name: str) -> list[dict]:
-    return [
-        {"query": f"{name} 品牌 官网 商品介绍 参数", "dimension": "产品定位"},
-        {"query": f"{name} 功能 参数 测评 使用体验", "dimension": "核心功能"},
-        {"query": f"{name} 京东 天猫 淘宝 价格", "dimension": "价格与商业模式"},
-        {"query": f"{name} 用户评价 小红书 知乎 B站 京东 差评", "dimension": "用户评价与痛点"},
-    ]
+def _detect_product_type(requirement: dict) -> str:
+    return "commodity" if _is_commodity_domain(requirement) else "software"
+
+
+def _priority_slots_for_competitor_type(competitor_type: str) -> list[str]:
+    if competitor_type == "substitute_solution":
+        return ["relationship_evidence", "positioning", "user_feedback", "risk_opportunity", "pricing", "core_features"]
+    if competitor_type == "indirect_competitor":
+        return ["relationship_evidence", "positioning", "core_features", "user_feedback", "pricing", "market_signal"]
+    if competitor_type == "adjacent_product":
+        return ["relationship_evidence", "positioning", "core_features", "market_signal", "risk_opportunity", "pricing"]
+    return ["relationship_evidence", "positioning", "core_features", "pricing", "user_feedback", "market_signal"]
+
+
+def _covered_schema_slots(competitor: dict, evidence: list[dict], sources: list[dict]) -> set[str]:
+    source_by_id = {source.get("id"): source for source in sources if source.get("id")}
+    covered = set()
+    for item in evidence:
+        if item.get("competitor_id") and item.get("competitor_id") != competitor.get("id"):
+            continue
+        if item.get("related_product") and item.get("related_product") != competitor.get("name"):
+            continue
+        if float(item.get("confidence") or 0) < 0.75:
+            continue
+        dimension = item.get("related_dimension")
+        slot = _slot_for_dimension(dimension)
+        if slot == "pricing":
+            source = source_by_id.get(item.get("source_id"), {})
+            if source and source.get("source_type") not in {"official_pricing_page", "ecommerce_product_page", "marketplace_listing_unknown_seller"}:
+                continue
+        if slot:
+            covered.add(slot)
+    return covered
+
+
+def _slot_for_dimension(dimension: object) -> str | None:
+    for slot, mapped_dimension in SCHEMA_SLOT_DIMENSIONS.items():
+        if dimension == mapped_dimension:
+            return slot
+    return None
+
+
+def _build_relationship_model(competitor: dict, requirement: dict) -> dict:
+    target_name = str(requirement.get("name") or requirement.get("target_product") or requirement.get("domain") or "目标产品")
+    category = str(requirement.get("category") or requirement.get("possible_market_category") or requirement.get("domain") or "目标市场")
+    capabilities = _string_list(requirement.get("core_capabilities"))[:3]
+    use_cases = _string_list(requirement.get("primary_use_cases"))[:3]
+    overlap_points = _string_list(competitor.get("overlap_points")) or _extract_overlap_points(competitor.get("description"), capabilities, use_cases)
+    competed_need = str(competitor.get("competed_need") or _infer_competed_need(competitor.get("category"), category, use_cases, capabilities))
+    competitor_type = str(competitor.get("category") or "direct_competitor")
+    relation_claim = str(competitor.get("relation_claim") or _relation_claim_for_type(competitor["name"], target_name, competitor_type, competed_need, overlap_points))
+    return {
+        "target_name": target_name,
+        "category": category,
+        "relation_claim": relation_claim,
+        "competed_need": competed_need,
+        "overlap_points": overlap_points,
+    }
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _extract_overlap_points(description: object, capabilities: list[str], use_cases: list[str]) -> list[str]:
+    description_text = str(description or "")
+    candidates = capabilities + use_cases
+    matched = [item for item in candidates if item and item in description_text]
+    if matched:
+        return matched[:4]
+    if candidates:
+        return candidates[:3]
+    return ["目标用户", "使用场景", "核心任务"]
+
+
+def _infer_competed_need(competitor_type: object, category: str, use_cases: list[str], capabilities: list[str]) -> str:
+    if competitor_type == "substitute_solution":
+        return use_cases[0] if use_cases else f"{category}的替代完成路径"
+    if competitor_type == "indirect_competitor":
+        return use_cases[0] if use_cases else f"{category}中的相似任务"
+    return category
+
+
+def _relation_claim_for_type(name: str, target_name: str, competitor_type: str, competed_need: str, overlap_points: list[str]) -> str:
+    overlap_text = "、".join(overlap_points[:3]) if overlap_points else "核心使用场景"
+    if competitor_type == "substitute_solution":
+        return f"{name} 不是同类产品，但可能作为用户完成“{competed_need}”的替代路径，与 {target_name} 在{overlap_text}上形成替代关系。"
+    if competitor_type == "indirect_competitor":
+        return f"{name} 与 {target_name} 产品形态不完全相同，但都服务“{competed_need}”，在{overlap_text}场景中构成间接竞争。"
+    return f"{name} 与 {target_name} 面向相近用户和“{competed_need}”需求，在{overlap_text}上构成直接竞争。"
+
+
+def _build_retrieval_quart(competitor: dict, product_type: str, competitor_type: str, slot: str, relationship_model: dict) -> dict:
+    name = competitor["name"]
+    query_locale = _query_locale_for_competitor(competitor, product_type)
+    query = _quart_query(name, product_type, competitor_type, slot, query_locale, relationship_model)
+    preferred_source_types = _preferred_source_types(product_type, competitor_type, slot)
+    return {
+        "competitor_id": competitor["id"],
+        "competitor_name": name,
+        "product_type": product_type,
+        "competitor_type": competitor_type,
+        "relation_claim": relationship_model["relation_claim"],
+        "competed_need": relationship_model["competed_need"],
+        "overlap_points": relationship_model["overlap_points"],
+        "target_slot": slot,
+        "dimension": SCHEMA_SLOT_DIMENSIONS[slot],
+        "query": query,
+        "query_locale": query_locale,
+        "preferred_source_types": preferred_source_types,
+        "avoid_source_types": ["unknown"],
+        "priority": "high" if slot == "relationship_evidence" or slot in CORE_SCHEMA_SLOTS else "medium",
+        "limit": 4,
+        "success_criteria": _success_criteria(slot, relationship_model),
+    }
+
+
+def _query_locale_for_competitor(competitor: dict, product_type: str) -> str:
+    if product_type == "commodity":
+        return "china"
+    region = competitor.get("region")
+    if region in {"global", "china"}:
+        return region
+    return "china" if _contains_chinese(str(competitor.get("name", ""))) else "global"
+
+
+def _contains_chinese(value: str) -> bool:
+    return any("\u4e00" <= char <= "\u9fff" for char in value)
+
+
+def _quart_query(name: str, product_type: str, competitor_type: str, slot: str, query_locale: str, relationship_model: dict) -> str:
+    target_name = relationship_model["target_name"]
+    competed_need = relationship_model["competed_need"]
+    overlap_text = " ".join(relationship_model["overlap_points"][:2])
+    if product_type == "commodity":
+        if slot == "relationship_evidence":
+            if competitor_type == "substitute_solution":
+                return f"{competed_need} 传统方案 替代方案 用户经验"
+            if competitor_type == "indirect_competitor":
+                return f"{competed_need} 替代产品 推荐 测评 {name}"
+            return f"{target_name} {name} 对比 测评 参数 价格"
+        templates = _commodity_templates_for_type(competitor_type)
+        return templates[slot].format(product=name, target=target_name, need=competed_need, overlap=overlap_text)
+
+    software_templates = {
+        "global": {
+            "relationship_evidence": _software_relationship_query(name, target_name, competed_need, overlap_text, competitor_type, "global"),
+            "positioning": "{product} official website product positioning features",
+            "core_features": "{product} docs help features integrations API",
+            "pricing": "{product} pricing plans enterprise",
+            "user_feedback": "{product} reviews pros cons G2 Capterra Reddit",
+            "market_signal": "{product} news launch funding product update",
+            "risk_opportunity": "{product} limitations alternatives risks switching cost",
+        },
+        "china": {
+            "relationship_evidence": _software_relationship_query(name, target_name, competed_need, overlap_text, competitor_type, "china"),
+            "positioning": "{product} 官网 产品介绍 功能 目标用户",
+            "core_features": "{product} 帮助中心 文档 功能 集成 开放平台",
+            "pricing": "{product} 价格 收费 套餐 企业版",
+            "user_feedback": "{product} 用户评价 知乎 小红书 差评 替代品",
+            "market_signal": "{product} 新闻 发布 版本更新 融资",
+            "risk_opportunity": "{product} 缺点 问题 替代品 迁移成本",
+        },
+    }
+    locale = "china" if query_locale == "china" else "global"
+    return software_templates[locale][slot].format(product=name)
+
+
+def _software_relationship_query(name: str, target_name: str, competed_need: str, overlap_text: str, competitor_type: str, locale: str) -> str:
+    if locale == "china":
+        if competitor_type == "substitute_solution":
+            return f"{competed_need} 人工流程 表格 PPT 替代方案"
+        if competitor_type == "indirect_competitor":
+            return f"{name} {competed_need} 场景 团队 协作 {overlap_text}".strip()
+        return f"{target_name} 和 {name} 对比 替代 竞品 {competed_need}"
+    if competitor_type == "substitute_solution":
+        return f"{competed_need} manual workflow spreadsheet PPT alternative"
+    if competitor_type == "indirect_competitor":
+        return f"{name} {competed_need} use cases team workflow {overlap_text}".strip()
+    return f"{target_name} vs {name} features pricing reviews alternative"
+
+
+def _commodity_templates_for_type(competitor_type: str) -> dict[str, str]:
+    if competitor_type == "substitute_solution":
+        return {
+            "positioning": "{need} 传统方案 替代方案",
+            "core_features": "{need} 低成本方案 使用体验",
+            "pricing": "{need} 成本 价格 购买渠道",
+            "user_feedback": "{need} 用户经验 小红书 知乎 差评",
+            "market_signal": "{need} 推荐 榜单 测评",
+            "risk_opportunity": "{need} 缺点 问题 值不值得",
+        }
+    if competitor_type == "indirect_competitor":
+        return {
+            "positioning": "{product} 使用场景 适合人群 对比",
+            "core_features": "{product} 功能 参数 测评 使用体验",
+            "pricing": "{product} 京东 天猫 淘宝 价格",
+            "user_feedback": "{product} 用户评价 小红书 知乎 B站 差评",
+            "market_signal": "{product} 推荐 榜单 测评 对比",
+            "risk_opportunity": "{product} 缺点 问题 替代品 值不值得买",
+        }
+    return {
+        "positioning": "{product} 品牌 官网 商品介绍 参数",
+        "core_features": "{product} 功能 参数 测评 使用体验",
+        "pricing": "{product} 京东 天猫 淘宝 价格",
+        "user_feedback": "{product} 用户评价 小红书 知乎 B站 京东 差评",
+        "market_signal": "{product} 测评 对比 推荐 榜单",
+        "risk_opportunity": "{product} 缺点 问题 替代品 值不值得买",
+    }
+
+
+def _preferred_source_types(product_type: str, competitor_type: str, slot: str) -> list[str]:
+    if slot == "relationship_evidence":
+        if competitor_type == "substitute_solution":
+            return ["community_discussion", "social_review_post", "professional_review", "news_article"]
+        if competitor_type == "indirect_competitor":
+            return ["official_site", "official_docs", "professional_review", "community_discussion", "news_article"]
+        return ["official_site", "review_site", "professional_review", "community_discussion", "news_article"]
+    if product_type == "commodity":
+        return {
+            "positioning": ["brand_official_product_page", "ecommerce_product_page"],
+            "core_features": ["brand_official_product_page", "professional_review", "ecommerce_product_page"],
+            "pricing": ["ecommerce_product_page", "marketplace_listing_unknown_seller"],
+            "user_feedback": ["ecommerce_user_review", "social_review_post", "community_discussion"],
+            "market_signal": ["professional_review", "news_article"],
+            "risk_opportunity": ["ecommerce_user_review", "social_review_post", "community_discussion", "professional_review"],
+        }[slot]
+    return {
+        "positioning": ["official_site", "news_article"],
+        "core_features": ["official_docs", "official_site"],
+        "pricing": ["official_pricing_page"],
+        "user_feedback": ["review_site", "community_discussion", "social_review_post"],
+        "market_signal": ["news_article", "official_site"],
+        "risk_opportunity": ["review_site", "community_discussion", "news_article"],
+    }[slot]
+
+
+def _success_criteria(slot: str, relationship_model: dict) -> str:
+    if slot == "relationship_evidence":
+        return (
+            f"找到可支撑“{relationship_model['relation_claim']}”的公开来源，"
+            f"并明确体现竞争需求“{relationship_model['competed_need']}”或至少 1 个重叠点。"
+        )
+    return f"找到可支撑“{SLOT_LABELS[slot]}”的公开来源，并抽取至少 1 条 evidence。"
+
+
+def _evidence_summary(query_item: dict, source_label: str, credibility_score: float, snippet: str) -> str:
+    prefix = f"[{source_label}｜权重 {credibility_score:.2f}]"
+    if query_item.get("target_slot") == "relationship_evidence":
+        return (
+            f"{prefix} 关系假设：{query_item.get('relation_claim')} "
+            f"竞争需求：{query_item.get('competed_need')}。证据摘要：{snippet}"
+        )
+    return f"{prefix} {snippet}"
 
 
 
@@ -166,7 +465,9 @@ def _classify_and_rank_results(results: list, requirement: dict, query_item: dic
     for result in results:
         source_type, credibility_score, reason = _classify_source(result.url, result.title, result.snippet, requirement, query_item["dimension"])
         dimension_bonus = 0.08 if source_type in DIMENSION_SOURCE_BONUS.get(query_item["dimension"], set()) else 0
-        rank_score = min(1.0, credibility_score + dimension_bonus)
+        preferred_bonus = 0.06 if source_type in set(query_item.get("preferred_source_types", [])) else 0
+        relationship_bonus = _relationship_match_bonus(result, query_item)
+        rank_score = min(1.0, credibility_score + dimension_bonus + preferred_bonus + relationship_bonus)
         classified.append(
             {
                 "result": result,
@@ -178,6 +479,26 @@ def _classify_and_rank_results(results: list, requirement: dict, query_item: dic
             }
         )
     return sorted(classified, key=lambda item: item["rank_score"], reverse=True)
+
+
+def _relationship_match_bonus(result: object, query_item: dict) -> float:
+    if query_item.get("target_slot") != "relationship_evidence":
+        return 0
+    haystack = f"{getattr(result, 'title', '')} {getattr(result, 'snippet', '')} {getattr(result, 'raw_content', '')}".lower()
+    needles = [
+        str(query_item.get("competed_need") or "").lower(),
+        str(query_item.get("competitor_name") or "").lower(),
+        " vs ",
+        "对比",
+        "替代",
+        "alternative",
+        "competitor",
+        "workflow",
+        "场景",
+    ]
+    needles.extend(str(item).lower() for item in query_item.get("overlap_points", []) if item)
+    matches = sum(1 for needle in needles if needle and needle in haystack)
+    return min(0.1, matches * 0.025)
 
 
 def _classify_source(url: str, title: str, snippet: str, requirement: dict, dimension: str) -> tuple[str, float, str]:
@@ -264,6 +585,14 @@ def _metadata_json(credibility_score: float, rank_score: float, source_type: str
             "source_type_label": source_label,
             "query": query_item["query"],
             "dimension": query_item["dimension"],
+            "target_slot": query_item.get("target_slot"),
+            "product_type": query_item.get("product_type"),
+            "competitor_type": query_item.get("competitor_type"),
+            "relation_claim": query_item.get("relation_claim"),
+            "competed_need": query_item.get("competed_need"),
+            "overlap_points": query_item.get("overlap_points"),
+            "query_locale": query_item.get("query_locale"),
+            "success_criteria": query_item.get("success_criteria"),
             "classification_reason": classification_reason,
             "rerank_reason": "召回后按来源类型基础权重与维度匹配加权重排序，优先保留更适合当前分析维度的来源。",
         },

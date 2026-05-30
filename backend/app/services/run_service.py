@@ -82,18 +82,28 @@ def confirm_and_continue_run(db: Session, run_id: str, competitor_ids: list[str]
     if run.status != "waiting_for_human":
         raise InvalidRunStateError("Run is not waiting for human confirmation.")
 
+    competitor_ids = list(dict.fromkeys(competitor_ids))
     selected = db.query(Competitor).filter(Competitor.run_id == run_id, Competitor.id.in_(competitor_ids)).all()
+    selected_ids = {competitor.id for competitor in selected}
+    invalid_ids = [competitor_id for competitor_id in competitor_ids if competitor_id not in selected_ids]
+    if invalid_ids:
+        raise InvalidRunStateError("Selected competitors do not belong to this run.")
+
     custom_items = []
+    seen_custom_names: set[str] = set()
     for item in custom_competitors or []:
         name = str(item.get("name", "")).strip()
-        if not name:
+        normalized_name = name.casefold()
+        if not name or normalized_name in seen_custom_names:
             continue
+        seen_custom_names.add(normalized_name)
         competitor = Competitor(
             run_id=run_id,
             name=name[:80],
             website=item.get("website"),
             description=f"用户手动补充的候选竞品：{name}",
             category=item.get("category") or "direct_competitor",
+            region=item.get("region"),
             confidence=1.0,
             selected=True,
             discovery_source="human_input",
@@ -141,6 +151,7 @@ def execute_report_run(run_id: str) -> None:
                     "website": item.website,
                     "description": item.description,
                     "category": item.category,
+                    "region": item.region,
                     "confidence": item.confidence,
                 }
                 for item in selected
@@ -163,20 +174,33 @@ def execute_report_run(run_id: str) -> None:
         )
         state = graph.invoke(state)
 
+        source_by_key: dict[str, Source] = {}
+        source_by_competitor_url: dict[str, Source] = {}
         source_by_url: dict[str, Source] = {}
         for item in state["sources"]:
             source = Source(run_id=run.id, **item)
             db.add(source)
             db.flush()
-            source_by_url[item["url"]] = source
+            source_by_key[_source_key_for_source(item)] = source
+            if item.get("competitor_id") and item.get("url"):
+                source_by_competitor_url[_competitor_url_key(item.get("competitor_id"), item.get("url"))] = source
+            source_by_url.setdefault(item["url"], source)
 
         persisted_evidence = []
         for item in state["evidence"]:
-            source = source_by_url[item.pop("source_url")]
-            evidence = Evidence(run_id=run.id, source_id=source.id, **{key: value for key, value in item.items() if key != "competitor_id"})
+            source_url = item.get("source_url")
+            source = (
+                source_by_key.get(_source_key_for_evidence(item))
+                or source_by_competitor_url.get(_competitor_url_key(item.get("competitor_id"), source_url))
+                or source_by_url.get(source_url)
+            )
+            if source is None:
+                raise InvalidRunStateError(f"Evidence source not found for URL: {source_url}")
+            evidence_data = {key: value for key, value in item.items() if key not in {"competitor_id", "source_url"}}
+            evidence = Evidence(run_id=run.id, source_id=source.id, **evidence_data)
             db.add(evidence)
             db.flush()
-            persisted_evidence.append({**item, "id": evidence.id, "source_id": source.id})
+            persisted_evidence.append({**item, "id": evidence.id, "source_id": source.id, "source_url": source_url})
         state["evidence"] = persisted_evidence
         run.current_stage = "report_generation"
         db.commit()
@@ -236,3 +260,28 @@ def _trace_input(stage: str, state: AgentState) -> dict:
     if stage == "report_generation":
         return {"analysis_count": len(state.get("analyses", []))}
     return {}
+
+
+def _source_key_for_source(source: dict) -> str:
+    dimension = _source_dimension(source)
+    return "::".join(str(part or "") for part in [source.get("competitor_id"), dimension, source.get("url")])
+
+
+def _source_key_for_evidence(evidence: dict) -> str:
+    return "::".join(str(part or "") for part in [evidence.get("competitor_id"), evidence.get("related_dimension"), evidence.get("source_url")])
+
+
+def _competitor_url_key(competitor_id: object, url: object) -> str:
+    return "::".join(str(part or "") for part in [competitor_id, url])
+
+
+def _source_dimension(source: dict) -> str | None:
+    metadata_json = source.get("metadata_json")
+    if not metadata_json:
+        return None
+    try:
+        metadata = json.loads(metadata_json)
+    except json.JSONDecodeError:
+        return None
+    dimension = metadata.get("dimension") if isinstance(metadata, dict) else None
+    return str(dimension) if dimension else None

@@ -30,8 +30,10 @@ def get_report_citations(run_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found.")
 
     reference_urls = _extract_reference_urls(report.markdown_content)
-    sources = db.query(Source).filter(Source.run_id == run_id).all()
-    source_by_url = {source.url: source for source in sources}
+    sources = db.query(Source).filter(Source.run_id == run_id).order_by(Source.retrieved_at.asc(), Source.id.asc()).all()
+    sources_by_url: dict[str, list[Source]] = {}
+    for source in sources:
+        sources_by_url.setdefault(source.url, []).append(source)
     evidence_items = db.query(Evidence).filter(Evidence.run_id == run_id).all()
     evidence_by_source_id: dict[str, list[Evidence]] = {}
     for item in evidence_items:
@@ -42,7 +44,8 @@ def get_report_citations(run_id: str, db: Session = Depends(get_db)):
 
     citation_items = []
     for reference_id, url in reference_urls:
-        source = source_by_url.get(url)
+        matching_sources = sources_by_url.get(url, [])
+        source = matching_sources.pop(0) if matching_sources else None
         if source is None:
             continue
         evidence_for_source = evidence_by_source_id.get(source.id, [])

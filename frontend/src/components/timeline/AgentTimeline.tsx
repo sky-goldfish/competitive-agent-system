@@ -1,5 +1,6 @@
 import { CheckCircle2, CircleDashed, Clock3, Search, Sparkles, XCircle } from 'lucide-react';
 import type { Run, Trace } from '../../lib/types';
+import HybridQueryVisualizer from '../query/HybridQueryVisualizer';
 
 const stageLabels: Record<string, string> = {
   requirement_understanding: '需求理解',
@@ -16,6 +17,7 @@ const stageLabels: Record<string, string> = {
   competitor_search: '搜索候选竞品',
   candidate_extraction: '抽取候选竞品',
   official_site_resolution: '解析官网',
+  quart_planning: '规划检索 Quart',
   material_query_planning: '规划资料采集',
   source_search: '搜索来源资料',
   source_classification: '分类来源可信度',
@@ -43,6 +45,7 @@ const childStageGroups: Record<string, string[]> = {
     'official_site_resolution',
   ],
   material_collection: [
+    'quart_planning',
     'material_query_planning',
     'source_search',
     'source_classification',
@@ -69,6 +72,7 @@ const stageDescriptions: Record<string, string> = {
   competitor_search: '搜索候选竞品列表、榜单和对比资料',
   candidate_extraction: '从搜索结果中抽取候选竞品并生成推荐理由',
   official_site_resolution: '为候选竞品解析可信官网和证据页面',
+  quart_planning: '按竞品关系、产品类型和知识缺口生成检索任务单元',
   material_query_planning: '为已确认竞品按维度规划资料采集关键词',
   source_search: '调用搜索工具召回候选来源网页',
   source_classification: '判断来源类型并估计可信度',
@@ -104,12 +108,38 @@ function elapsedFrom(startedAt: string, endedAt?: string | null) {
   return formatElapsedSeconds(seconds);
 }
 
+function parseHybridQueries(trace: Trace) {
+  if (!trace.output_json) return null;
+  try {
+    const data = JSON.parse(trace.output_json) as Record<string, unknown>;
+    if (data.queries && Array.isArray(data.queries)) {
+      const queryPurposes = Array.isArray(data.query_purposes) ? data.query_purposes : [];
+      const queries = (data.queries as unknown[]).map((q, idx) => ({
+        query: typeof q === 'string' ? q : '',
+        purpose: typeof queryPurposes[idx] === 'string' ? queryPurposes[idx] : `hybrid_search_${idx}`
+      })).filter(item => item.query);
+      if (queries.length > 0) return queries;
+    }
+    if (data.query_count && data.queries && Array.isArray(data.queries)) {
+      const queryPurposes = Array.isArray(data.query_purposes) ? data.query_purposes : [];
+      const queries = (data.queries as unknown[]).map((q, idx) => ({
+        query: typeof q === 'string' ? q : '',
+        purpose: typeof queryPurposes[idx] === 'string' ? queryPurposes[idx] : `hybrid_search_${idx}`
+      })).filter(item => item.query);
+      if (queries.length > 0) return queries;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function parseSummary(trace: Trace) {
   if (!trace.output_json) return [];
   try {
     const data = JSON.parse(trace.output_json) as Record<string, unknown>;
     return Object.entries(data)
-      .filter(([key, value]) => key !== 'message' && value !== null && value !== undefined && value !== '')
+      .filter(([key, value]) => key !== 'message' && key !== 'queries' && value !== null && value !== undefined && value !== '')
       .slice(0, 5)
       .map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(', ') : String(value)}`);
   } catch {
@@ -236,6 +266,7 @@ export default function AgentTimeline({ traces, run, compactHeader = false }: Pr
                     {group.children.map((trace) => {
                       const childMessage = parseTraceMessage(trace);
                       const childSummary = parseSummary(trace).slice(0, 2);
+                      const hybridQueries = parseHybridQueries(trace);
                       return (
                         <div key={trace.id} className={`timeline-substep ${trace.status}`}>
                           <div className={`substep-dot ${trace.status}`} />
@@ -245,6 +276,12 @@ export default function AgentTimeline({ traces, run, compactHeader = false }: Pr
                               <span>{trace.status === 'running' ? elapsedFrom(trace.started_at) : formatDuration(trace.duration_ms)}</span>
                             </div>
                             <p>{childMessage ?? stageDescriptions[trace.stage] ?? '执行子步骤'}</p>
+                            {hybridQueries ? (
+                              <HybridQueryVisualizer 
+                                queries={hybridQueries} 
+                                title={trace.stage === 'target_query_planning' ? '目标理解混合检索' : '竞品发现混合检索'} 
+                              />
+                            ) : null}
                             {childSummary.length > 0 ? <p className="muted substep-summary">{childSummary.join(' · ')}</p> : null}
                           </div>
                         </div>

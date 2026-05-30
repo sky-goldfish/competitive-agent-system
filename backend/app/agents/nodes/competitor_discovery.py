@@ -14,6 +14,7 @@ BLOCKED_SOURCE_DOMAINS = {"reddit.com", "www.reddit.com", "linkedin.com", "www.l
 CONTENT_HINTS = ["alternative", "alternatives", "competitor", "competitors", "best", "review", "blog", "vs"]
 INVALID_COMPETITOR_NAMES = {
     "gie", "outscraper", "通用", "視点", "products", "the", "epd", "industrial", "similarweb",
+    "and", "or", "of", "for", "with", "around", "围绕", "同类产品", "的同类产品",
     "亿元", "万元", "百万", "千万", "十亿", "美元", "人民币", "市场规模", "行业",
     "全球", "中国", "国内", "海外", "市场", "赛道", "趋势", "增长", "年的",
 }
@@ -21,7 +22,9 @@ GENERIC_CANDIDATE_TERMS = {
     "竞品", "竞争", "对手", "替代", "方案", "分析", "报告", "用户", "需求", "功能", "场景", "同类", "主要", "工具",
     "图表", "构筑", "护城", "纷纷", "入局", "领域", "机会", "是否", "此外", "其中", "以及", "但是", "因此", "所以",
     "目前", "可以", "通过", "年的", "全球", "市场", "行业", "方面", "这些", "一个", "这个", "那个", "如何", "什么",
+    "围绕", "同类产品", "的同类产品",
     "alternatives", "alternative", "competitors", "competitor", "review", "reviews", "pricing", "product", "products", "top", "best",
+    "and", "or", "of", "for", "with",
 }
 CHINESE_STOPWORDS = {
     "的", "了", "在", "是", "我", "有", "和", "就", "不", "人", "都", "一", "个", "上", "也", "很", "到", "说", "要",
@@ -89,7 +92,11 @@ def competitor_discovery_node(
 ) -> AgentState:
     requirement = state["requirement"]
     target_queries = _plan_target_queries(requirement)
-    _emit(progress, "target_query_planning", "生成目标理解搜索 query", {"query_count": len(target_queries), "queries": [item["query"] for item in target_queries]})
+    _emit(progress, "target_query_planning", "生成目标理解搜索 query", {
+        "query_count": len(target_queries), 
+        "queries": [item["query"] for item in target_queries],
+        "query_purposes": [item["purpose"] for item in target_queries]
+    })
 
     target_search_results = _run_queries(target_queries, search, limit=4)
     _emit(progress, "target_search", "搜索目标产品/想法相关资料", {"query_count": len(target_queries), "result_count": len(target_search_results)})
@@ -107,7 +114,11 @@ def competitor_discovery_node(
     )
 
     competitor_queries = _plan_competitor_queries(requirement, target_understanding)
-    _emit(progress, "competitor_query_planning", "基于目标画像生成竞品发现 query", {"query_count": len(competitor_queries), "queries": [item["query"] for item in competitor_queries]})
+    _emit(progress, "competitor_query_planning", "基于目标画像生成竞品发现 query", {
+        "query_count": len(competitor_queries), 
+        "queries": [item["query"] for item in competitor_queries],
+        "query_purposes": [item["purpose"] for item in competitor_queries]
+    })
 
     search_results = _run_queries(competitor_queries, search, limit=5)
     _emit(progress, "competitor_search", "搜索候选竞品来源", {"query_count": len(competitor_queries), "result_count": len(search_results)})
@@ -115,8 +126,8 @@ def competitor_discovery_node(
     competitors = llm.extract_competitors(requirement, target_understanding, search_results)
     _emit(progress, "candidate_extraction", "抽取候选竞品并解释推荐理由", {"candidate_count": len(competitors), "candidates": [item.get("name") for item in competitors[:6]]})
 
-    filtered_candidates = []
     seen_names = set()
+    valid_candidates = []
     for item in competitors:
         name = str(item.get("name", "")).strip()
         if not name or name.lower() in seen_names or name.lower() in INVALID_COMPETITOR_NAMES or _looks_generic_name(name):
@@ -126,9 +137,8 @@ def competitor_discovery_node(
         if not _is_domain_relevant_candidate(name, target_understanding, requirement):
             continue
         seen_names.add(name.lower())
-        filtered_candidates.append(item)
-        if len(filtered_candidates) >= 4:
-            break
+        valid_candidates.append(item)
+    filtered_candidates = _balanced_candidates(valid_candidates, limit=4)
 
     _emit(progress, "official_site_resolution", "并行解析候选竞品官网", {"names": [c.get("name") for c in filtered_candidates]})
     product_results: dict[str, dict | None] = {}
@@ -146,12 +156,16 @@ def competitor_discovery_node(
             extra_search_results.append(product_result)
         website = product_result.get("url") if product_result else item.get("website")
         evidence_snippet = product_result.get("snippet") if product_result else item.get("description")
+        description_item = {**item}
+        if website and not description_item.get("source_ids"):
+            description_item["source_ids"] = [website]
         normalized.append(
             {
                 "name": name[:80],
                 "website": website,
-                "description": _build_description(name, requirement, target_understanding, evidence_snippet, item),
+                "description": _build_description(name, requirement, target_understanding, evidence_snippet, description_item),
                 "category": item.get("category") or "direct_competitor",
+                "region": _normalize_region(item.get("region")),
                 "confidence": float(item.get("confidence") or 0.7),
                 "discovery_source": item.get("discovery_source") or f"{llm.name}+{search.name}",
             }
@@ -166,7 +180,7 @@ def competitor_discovery_node(
         )
         for item in fallback_competitors:
             name = str(item.get("name", "")).strip()
-            if not name or name.lower() in seen_names or name.lower() in INVALID_COMPETITOR_NAMES:
+            if not name or name.lower() in seen_names or name.lower() in INVALID_COMPETITOR_NAMES or _looks_generic_name(name):
                 continue
             if _is_target_product(name, target_understanding, requirement):
                 continue
@@ -177,6 +191,7 @@ def competitor_discovery_node(
                     "website": item.get("website"),
                     "description": _build_description(name, requirement, target_understanding, item.get("description"), item),
                     "category": item.get("category") or "direct_competitor",
+                    "region": _normalize_region(item.get("region")),
                     "confidence": float(item.get("confidence") or 0.62),
                     "discovery_source": item.get("discovery_source") or f"fallback+{search.name}",
                 }
@@ -200,18 +215,27 @@ def _emit(progress: ProgressCallback | None, stage: str, message: str, metadata:
 
 
 def _plan_target_queries(requirement: dict) -> list[dict]:
+    if requirement.get("queries") and isinstance(requirement["queries"], list) and len(requirement["queries"]) >= 2:
+        queries = []
+        for idx, q in enumerate(requirement["queries"][:3]):
+            queries.append({
+                "query": str(q)[:40],
+                "purpose": f"hybrid_search_{idx}"
+            })
+        return queries
+    
     target_product = requirement.get("target_product")
     domain = requirement.get("possible_market_category") or requirement.get("domain", "")
     if target_product:
         return [
-            {"query": f"{target_product} 官方 功能 定价 目标用户", "purpose": "target_product_understanding"},
-            {"query": f"{target_product} 产品定位 使用场景", "purpose": "target_positioning"},
+            {"query": f'"{target_product}" features pricing 2026', "purpose": "global_target_understanding"},
+            {"query": f"{target_product} 官方 功能 定价 目标用户", "purpose": "local_target_understanding"},
             {"query": f"{target_product} 竞品 替代品 对比", "purpose": "initial_competitor_discovery"},
         ]
     description = requirement.get("product_description") or requirement.get("summary") or domain
     return [
-        {"query": f"{description} 相似产品 竞品", "purpose": "market_category_discovery"},
-        {"query": f"{domain} alternatives competitors products", "purpose": "similar_solution_discovery"},
+        {"query": f'"{domain}" alternatives competitors 2026', "purpose": "global_solution_discovery"},
+        {"query": f"{description} 相似产品 竞品", "purpose": "local_market_discovery"},
     ]
 
 
@@ -221,12 +245,10 @@ def _plan_competitor_queries(requirement: dict, target_understanding: dict) -> l
     capabilities = " ".join(target_understanding.get("core_capabilities", [])[:3])
     use_cases = " ".join(target_understanding.get("primary_use_cases", [])[:2])
     queries = [
-        {"query": f"{name} 竞品 替代品 对比", "purpose": "direct_competitor_discovery"},
-        {"query": f"{name} competitors alternatives vs", "purpose": "direct_competitor_discovery"},
-        {"query": f"{category} 主要产品 品牌 排行 {capabilities}", "purpose": "indirect_competitor_discovery"},
+        {"query": f'"{name}" competitors alternatives 2026', "purpose": "global_competitor_discovery"},
+        {"query": f"{name} 竞品 替代品 对比", "purpose": "local_competitor_discovery"},
+        {"query": f"{category} 主要产品 品牌 排行", "purpose": "local_indirect_discovery"},
     ]
-    if use_cases:
-        queries.append({"query": f"{use_cases} 同类产品 推荐 对比", "purpose": "indirect_competitor_discovery"})
     return queries
 
 
@@ -408,6 +430,36 @@ def _looks_generic_name(name: str) -> bool:
     if cn_chars and any(p in name for p in unit_patterns) and not en_chars:
         return True
     return False
+
+
+def _balanced_candidates(candidates: list[dict], *, limit: int) -> list[dict]:
+    if len(candidates) <= limit:
+        return candidates
+    buckets = {
+        "global": [item for item in candidates if _normalize_region(item.get("region")) == "global"],
+        "china": [item for item in candidates if _normalize_region(item.get("region")) == "china"],
+        "unknown": [item for item in candidates if _normalize_region(item.get("region")) not in {"global", "china"}],
+    }
+    if not buckets["global"] or not buckets["china"]:
+        return candidates[:limit]
+
+    selected: list[dict] = []
+    for region in ("global", "china"):
+        selected.extend(buckets[region][: max(1, limit // 2)])
+
+    selected_ids = {id(item) for item in selected}
+    for item in candidates:
+        if len(selected) >= limit:
+            break
+        if id(item) not in selected_ids:
+            selected.append(item)
+            selected_ids.add(id(item))
+    return selected[:limit]
+
+
+def _normalize_region(value: object) -> str | None:
+    region = str(value or "").strip().lower()
+    return region if region in {"global", "china"} else None
 
 
 def _is_domain_relevant_candidate(name: str, target_understanding: dict, requirement: dict) -> bool:

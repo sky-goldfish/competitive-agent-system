@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
+import { Globe, MapPin } from 'lucide-react';
 import { confirmCompetitors } from '../../lib/api';
 import type { Competitor, CustomCompetitorInput, Run } from '../../lib/types';
 
@@ -17,6 +18,20 @@ const categoryLabels: Record<string, string> = {
 
 export default function CompetitorConfirmPanel({ run, competitors }: Props) {
   const queryClient = useQueryClient();
+  
+  const globalCompetitors = useMemo(() => 
+    competitors.filter((item) => item.region === 'global'), 
+    [competitors]
+  );
+  const chinaCompetitors = useMemo(() => 
+    competitors.filter((item) => item.region === 'china'), 
+    [competitors]
+  );
+  const uncategorizedCompetitors = useMemo(() => 
+    competitors.filter((item) => !item.region), 
+    [competitors]
+  );
+  
   const initialSelected = useMemo(() => competitors.slice(0, 3).map((item) => item.id), [competitors]);
   const [selectedIds, setSelectedIds] = useState<string[]>(initialSelected);
   const [customName, setCustomName] = useState('');
@@ -80,59 +95,150 @@ export default function CompetitorConfirmPanel({ run, competitors }: Props) {
         <h2>候选竞品确认</h2>
         <span>{selectedTotal} selected</span>
       </div>
-      <div className="competitor-grid">
-        {competitors.map((competitor) => (
-          <div key={competitor.id} className={`competitor-card ${selectedIds.includes(competitor.id) ? 'selected' : ''}`}>
-            <div className="competitor-select-row">
-              <input
-                type="checkbox"
-                checked={selectedIds.includes(competitor.id)}
-                onChange={() => toggle(competitor.id)}
-                disabled={run.status !== 'waiting_for_human'}
-              />
-              <button type="button" className="competitor-title-button" onClick={() => setDetailCompetitor(competitor)}>
-                {competitor.name}
-              </button>
+      
+      <div className="competitor-region-grid">
+        {globalCompetitors.length > 0 ? (
+          <div className="region-section global">
+            <div className="region-header">
+              <Globe size={18} />
+              <h3>海外国际产品</h3>
+              <span className="region-count">{globalCompetitors.length} 个</span>
             </div>
-            <div className="competitor-brief">
-              <span>{categoryLabels[competitor.category] ?? competitor.category}</span>
-              <strong>{(competitor.confidence * 100).toFixed(0)}%</strong>
-            </div>
-            <button type="button" className="detail-action" onClick={() => setDetailCompetitor(competitor)}>
-              查看详情
-            </button>
-          </div>
-        ))}
-        {customCompetitors.map((competitor) => (
-          <div key={`custom-${competitor.name}`} className={`competitor-card custom ${selectedCustomNames.includes(competitor.name) ? 'selected' : ''}`}>
-            <div className="competitor-select-row">
-              <input
-                type="checkbox"
-                checked={selectedCustomNames.includes(competitor.name)}
-                onChange={() => toggleCustom(competitor.name)}
-                disabled={run.status !== 'waiting_for_human'}
-              />
-              <button type="button" className="competitor-title-button" onClick={() => setCustomDetail(competitor)}>
-                {competitor.name}
-              </button>
-            </div>
-            <div className="competitor-brief">
-              <span>{categoryLabels[competitor.category] ?? competitor.category}</span>
-              <strong className="custom-confidence">自定义</strong>
-            </div>
-            <div className="custom-row-actions">
-              <button type="button" className="detail-action" onClick={() => setCustomDetail(competitor)}>
-                查看详情
-              </button>
-              {run.status === 'waiting_for_human' ? (
-                <button type="button" className="remove-action" onClick={() => removeCustomCompetitor(competitor.name)}>
-                  移除
-                </button>
-              ) : null}
+            <div className="competitor-grid">
+              {globalCompetitors.map((competitor) => (
+                <div key={competitor.id} className={`competitor-card ${selectedIds.includes(competitor.id) ? 'selected' : ''}`}>
+                  <div className="competitor-select-row">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.includes(competitor.id)}
+                      onChange={() => toggle(competitor.id)}
+                      disabled={run.status !== 'waiting_for_human'}
+                    />
+                    <button type="button" className="competitor-title-button" onClick={() => setDetailCompetitor(competitor)}>
+                      {competitor.name}
+                    </button>
+                  </div>
+                  <div className="competitor-brief">
+                    <span>{categoryLabels[competitor.category] ?? competitor.category}</span>
+                    <strong>{(competitor.confidence * 100).toFixed(0)}%</strong>
+                  </div>
+                  <button type="button" className="detail-action" onClick={() => setDetailCompetitor(competitor)}>
+                    查看详情
+                  </button>
+                </div>
+              ))}
             </div>
           </div>
-        ))}
+        ) : null}
+
+        {chinaCompetitors.length > 0 ? (
+          <div className="region-section china">
+            <div className="region-header">
+              <MapPin size={18} />
+              <h3>中国本土产品</h3>
+              <span className="region-count">{chinaCompetitors.length} 个</span>
+            </div>
+            <div className="competitor-grid">
+              {chinaCompetitors.map((competitor) => (
+                <div key={competitor.id} className={`competitor-card ${selectedIds.includes(competitor.id) ? 'selected' : ''}`}>
+                  <div className="competitor-select-row">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.includes(competitor.id)}
+                      onChange={() => toggle(competitor.id)}
+                      disabled={run.status !== 'waiting_for_human'}
+                    />
+                    <button type="button" className="competitor-title-button" onClick={() => setDetailCompetitor(competitor)}>
+                      {competitor.name}
+                    </button>
+                  </div>
+                  <div className="competitor-brief">
+                    <span>{categoryLabels[competitor.category] ?? competitor.category}</span>
+                    <strong>{(competitor.confidence * 100).toFixed(0)}%</strong>
+                  </div>
+                  <button type="button" className="detail-action" onClick={() => setDetailCompetitor(competitor)}>
+                    查看详情
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </div>
+
+      {uncategorizedCompetitors.length > 0 ? (
+        <div className="region-section uncategorized">
+          <div className="region-header">
+            <h3>其他竞品</h3>
+            <span className="region-count">{uncategorizedCompetitors.length} 个</span>
+          </div>
+          <div className="competitor-grid">
+            {uncategorizedCompetitors.map((competitor) => (
+              <div key={competitor.id} className={`competitor-card ${selectedIds.includes(competitor.id) ? 'selected' : ''}`}>
+                <div className="competitor-select-row">
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.includes(competitor.id)}
+                    onChange={() => toggle(competitor.id)}
+                    disabled={run.status !== 'waiting_for_human'}
+                  />
+                  <button type="button" className="competitor-title-button" onClick={() => setDetailCompetitor(competitor)}>
+                    {competitor.name}
+                  </button>
+                </div>
+                <div className="competitor-brief">
+                  <span>{categoryLabels[competitor.category] ?? competitor.category}</span>
+                  <strong>{(competitor.confidence * 100).toFixed(0)}%</strong>
+                </div>
+                <button type="button" className="detail-action" onClick={() => setDetailCompetitor(competitor)}>
+                  查看详情
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {customCompetitors.length > 0 ? (
+        <div className="region-section custom">
+          <div className="region-header">
+            <h3>用户手动新增</h3>
+            <span className="region-count">{customCompetitors.length} 个</span>
+          </div>
+          <div className="competitor-grid">
+            {customCompetitors.map((competitor) => (
+              <div key={`custom-${competitor.name}`} className={`competitor-card custom ${selectedCustomNames.includes(competitor.name) ? 'selected' : ''}`}>
+                <div className="competitor-select-row">
+                  <input
+                    type="checkbox"
+                    checked={selectedCustomNames.includes(competitor.name)}
+                    onChange={() => toggleCustom(competitor.name)}
+                    disabled={run.status !== 'waiting_for_human'}
+                  />
+                  <button type="button" className="competitor-title-button" onClick={() => setCustomDetail(competitor)}>
+                    {competitor.name}
+                  </button>
+                </div>
+                <div className="competitor-brief">
+                  <span>{categoryLabels[competitor.category] ?? competitor.category}</span>
+                  <strong className="custom-confidence">自定义</strong>
+                </div>
+                <div className="custom-row-actions">
+                  <button type="button" className="detail-action" onClick={() => setCustomDetail(competitor)}>
+                    查看详情
+                  </button>
+                  {run.status === 'waiting_for_human' ? (
+                    <button type="button" className="remove-action" onClick={() => removeCustomCompetitor(competitor.name)}>
+                      移除
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
       {run.status === 'waiting_for_human' ? (
         <button type="button" className="secondary-action add-custom-trigger" onClick={() => setIsCustomModalOpen(true)}>
           手动新增竞品
@@ -237,6 +343,69 @@ export default function CompetitorConfirmPanel({ run, competitors }: Props) {
           </div>
         </div>
       ) : null}
+      <style>{`
+        .competitor-region-grid {
+          display: flex;
+          flex-direction: column;
+          gap: 20px;
+        }
+        .region-section {
+          border-radius: 12px;
+          padding: 16px;
+        }
+        .region-section.global {
+          background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+          border: 1px solid #93c5fd;
+        }
+        .region-section.china {
+          background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+          border: 1px solid #86efac;
+        }
+        .region-section.custom {
+          background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+          border: 1px solid #fcd34d;
+        }
+        .region-section.uncategorized {
+          background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+          border: 1px solid #e2e8f0;
+        }
+        .region-section.uncategorized .region-header h3 {
+          color: #475569;
+        }
+        .region-header {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin-bottom: 12px;
+        }
+        .region-header h3 {
+          margin: 0;
+          font-size: 16px;
+          font-weight: 600;
+        }
+        .region-section.global .region-header h3 {
+          color: #1d4ed8;
+        }
+        .region-section.china .region-header h3 {
+          color: #15803d;
+        }
+        .region-section.custom .region-header h3 {
+          color: #92400e;
+        }
+        .region-count {
+          margin-left: auto;
+          background: white;
+          padding: 3px 10px;
+          border-radius: 20px;
+          font-size: 12px;
+          font-weight: 500;
+        }
+        .competitor-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+          gap: 12px;
+        }
+      `}</style>
     </section>
   );
 }

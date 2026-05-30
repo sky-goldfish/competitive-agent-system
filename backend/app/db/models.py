@@ -58,6 +58,7 @@ class Competitor(Base):
     website: Mapped[str | None] = mapped_column(String, nullable=True)
     description: Mapped[str] = mapped_column(Text, default="")
     category: Mapped[str] = mapped_column(String, default="unknown")
+    region: Mapped[str | None] = mapped_column(String, nullable=True)
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
     selected: Mapped[bool] = mapped_column(Boolean, default=False)
     discovery_source: Mapped[str] = mapped_column(String, default="mock")

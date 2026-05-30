@@ -15,6 +15,7 @@ export type CustomCompetitorInput = {
   name: string;
   website?: string;
   category: string;
+  region?: 'global' | 'china' | null;
 };
 
 export type Competitor = {
@@ -24,6 +25,7 @@ export type Competitor = {
   website: string | null;
   description: string;
   category: string;
+  region: 'global' | 'china' | null;
   confidence: number;
   selected: boolean;
   discovery_source: string;
