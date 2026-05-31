@@ -2,6 +2,7 @@ import re
 from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse
 
@@ -91,16 +92,19 @@ def competitor_discovery_node(
     progress: ProgressCallback | None = None,
 ) -> AgentState:
     requirement = state["requirement"]
+    t0 = datetime.utcnow()
     target_queries = _plan_target_queries(requirement)
     _emit(progress, "target_query_planning", "生成目标理解搜索 query", {
-        "query_count": len(target_queries), 
+        "query_count": len(target_queries),
         "queries": [item["query"] for item in target_queries],
         "query_purposes": [item["purpose"] for item in target_queries]
-    })
+    }, start_time=t0)
 
+    t0 = datetime.utcnow()
     target_search_results = _run_queries(target_queries, search, limit=4)
-    _emit(progress, "target_search", "搜索目标产品/想法相关资料", {"query_count": len(target_queries), "result_count": len(target_search_results)})
+    _emit(progress, "target_search", "搜索目标产品/想法相关资料", {"query_count": len(target_queries), "result_count": len(target_search_results)}, start_time=t0)
 
+    t0 = datetime.utcnow()
     target_understanding = llm.understand_target(requirement, target_search_results)
     _emit(
         progress,
@@ -111,20 +115,24 @@ def competitor_discovery_node(
             "category": target_understanding.get("category") or requirement.get("domain"),
             "capability_count": len(target_understanding.get("core_capabilities", [])),
         },
+        start_time=t0,
     )
 
+    t0 = datetime.utcnow()
     competitor_queries = _plan_competitor_queries(requirement, target_understanding)
     _emit(progress, "competitor_query_planning", "基于目标画像生成竞品发现 query", {
-        "query_count": len(competitor_queries), 
+        "query_count": len(competitor_queries),
         "queries": [item["query"] for item in competitor_queries],
         "query_purposes": [item["purpose"] for item in competitor_queries]
-    })
+    }, start_time=t0)
 
+    t0 = datetime.utcnow()
     search_results = _run_queries(competitor_queries, search, limit=5)
-    _emit(progress, "competitor_search", "搜索候选竞品来源", {"query_count": len(competitor_queries), "result_count": len(search_results)})
+    _emit(progress, "competitor_search", "搜索候选竞品来源", {"query_count": len(competitor_queries), "result_count": len(search_results)}, start_time=t0)
 
+    t0 = datetime.utcnow()
     competitors = llm.extract_competitors(requirement, target_understanding, search_results)
-    _emit(progress, "candidate_extraction", "抽取候选竞品并解释推荐理由", {"candidate_count": len(competitors), "candidates": [item.get("name") for item in competitors[:6]]})
+    _emit(progress, "candidate_extraction", "抽取候选竞品并解释推荐理由", {"candidate_count": len(competitors), "candidates": [item.get("name") for item in competitors[:6]]}, start_time=t0)
 
     seen_names = set()
     valid_candidates = []
@@ -140,12 +148,13 @@ def competitor_discovery_node(
         valid_candidates.append(item)
     filtered_candidates = _balanced_candidates(valid_candidates, limit=4)
 
-    _emit(progress, "official_site_resolution", "并行解析候选竞品官网", {"names": [c.get("name") for c in filtered_candidates]})
+    t0 = datetime.utcnow()
     product_results: dict[str, dict | None] = {}
     with ThreadPoolExecutor(max_workers=min(4, max(1, len(filtered_candidates)))) as executor:
         futures = {executor.submit(_resolve_product_result, item["name"], requirement, search): item["name"] for item in filtered_candidates}
         for future in as_completed(futures):
             product_results[futures[future]] = future.result()
+    _emit(progress, "official_site_resolution", "并行解析候选竞品官网", {"names": [c.get("name") for c in filtered_candidates]}, start_time=t0)
 
     normalized = []
     extra_search_results = []
@@ -171,12 +180,14 @@ def competitor_discovery_node(
             }
         )
     if not normalized:
+        t0 = datetime.utcnow()
         fallback_competitors = _extract_fallback_competitors(requirement, target_understanding, search_results)
         _emit(
             progress,
             "candidate_fallback_extraction",
             "LLM 候选过滤后为空，基于搜索结果进行通用候选兜底",
             {"candidate_count": len(fallback_competitors), "candidates": [item.get("name") for item in fallback_competitors]},
+            start_time=t0,
         )
         for item in fallback_competitors:
             name = str(item.get("name", "")).strip()
@@ -208,8 +219,11 @@ def competitor_discovery_node(
     }
 
 
-def _emit(progress: ProgressCallback | None, stage: str, message: str, metadata: dict[str, Any]) -> None:
+def _emit(progress: ProgressCallback | None, stage: str, message: str, metadata: dict[str, Any], start_time: datetime | None = None) -> None:
     if progress is not None:
+        if start_time is not None:
+            # Pass additional timing info in metadata for progress callback to use
+            metadata = {**metadata, "_start_time": start_time.isoformat()}
         progress(stage, message, metadata)
 
 

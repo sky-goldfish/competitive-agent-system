@@ -13,6 +13,19 @@ from app.providers.llm.factory import get_llm_provider
 from app.providers.search.factory import get_search_provider
 
 
+def _progress_callback(db: Session, run_id: str, stage: str, message: str, metadata: dict) -> None:
+    start_time_iso = metadata.pop("_start_time", None)
+    started_at = None
+    duration_ms = None
+    if start_time_iso:
+        try:
+            started_at = datetime.fromisoformat(start_time_iso)
+            duration_ms = int((datetime.utcnow() - started_at).total_seconds() * 1000)
+        except (ValueError, TypeError):
+            pass
+    record_progress_trace(db, run_id, stage, message, metadata, started_at=started_at, duration_ms=duration_ms)
+
+
 class RunNotFoundError(ValueError):
     pass
 
@@ -54,7 +67,7 @@ def execute_discovery_run(run_id: str) -> None:
                 _trace_input(stage, current_state),
                 action,
             ),
-            progress=lambda stage, message, metadata: record_progress_trace(db, run.id, stage, message, metadata),
+            progress=lambda stage, message, metadata: _progress_callback(db, run.id, stage, message, metadata),
         )
         state = graph.invoke(state)
 

@@ -58,23 +58,30 @@ def record_progress_trace(
     message: str,
     metadata: dict[str, Any] | None = None,
     status: str = "completed",
+    duration_ms: int | None = None,
+    started_at: datetime | None = None,
 ) -> None:
     now = datetime.utcnow()
+    if started_at is None:
+        started_at = now
+    if duration_ms is None:
+        duration_ms = int((now - started_at).total_seconds() * 1000)
+
     payload = {"message": message, **(metadata or {})}
-    
+
     output_payload = metadata or {}
     if metadata and metadata.get("queries"):
         output_payload["queries"] = metadata["queries"]
-    
+
     trace = AgentTrace(
         run_id=run_id,
         stage=stage,
         status=status,
         input_json=json.dumps(payload, ensure_ascii=False, default=str),
         output_json=json.dumps(output_payload, ensure_ascii=False, default=str),
-        started_at=now,
+        started_at=started_at,
         ended_at=now,
-        duration_ms=0,
+        duration_ms=duration_ms,
     )
     db.add(trace)
     db.commit()
