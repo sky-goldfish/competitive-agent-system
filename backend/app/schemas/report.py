@@ -30,3 +30,26 @@ class CitationMapItem(BaseModel):
     source: SourceResponse
     evidence: list[EvidenceResponse]
     analyses: list[CitationAnalysisRef]
+
+
+class CitationBundleEvidenceRef(BaseModel):
+    source_reference_id: int | None = None
+    source_title: str | None = None
+    source_url: str | None = None
+    related_dimension: str | None = None
+    summary: str | None = None
+    quote: str | None = None
+    confidence: float | None = None
+
+
+class CitationBundleClaim(BaseModel):
+    claim_type: str
+    label: str
+    text: str
+    evidence: list[CitationBundleEvidenceRef]
+
+
+class CitationBundleCompetitor(BaseModel):
+    competitor_id: str
+    competitor_name: str
+    claims: list[CitationBundleClaim]

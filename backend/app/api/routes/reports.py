@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import Analysis, Evidence, Report, Run, Source
 from app.db.session import get_db
-from app.schemas.report import CitationAnalysisRef, CitationMapItem, ReportResponse
+from app.schemas.report import CitationAnalysisRef, CitationBundleClaim, CitationBundleCompetitor, CitationBundleEvidenceRef, CitationMapItem, ReportResponse
 
 router = APIRouter(prefix="/runs/{run_id}/report", tags=["reports"])
 
@@ -80,6 +80,94 @@ def _extract_reference_urls(markdown_content: str) -> list[tuple[int, str]]:
     return [(int(reference_id), url) for reference_id, url in matches]
 
 
+CLAIM_DEFINITIONS: list[tuple[str, str]] = [
+    ("positioning", "产品定位"),
+    ("target_users", "目标用户"),
+    ("core_features", "核心功能"),
+    ("pricing", "定价策略"),
+    ("strengths", "优势"),
+    ("weaknesses", "劣势或痛点"),
+    ("opportunities", "机会点"),
+]
+
+CLAIM_DIMENSION_MAP: dict[str, set[str]] = {
+    "positioning": {"产品定位"},
+    "target_users": {"产品定位", "用户评价与痛点"},
+    "core_features": {"核心功能"},
+    "pricing": {"价格与商业模式"},
+    "strengths": {"产品定位", "核心功能"},
+    "weaknesses": {"用户评价与痛点"},
+    "opportunities": set(),
+}
+
+ANALYSIS_FIELD_MAP: dict[str, str] = {
+    "positioning": "positioning",
+    "target_users": "target_users",
+    "core_features": "core_features_json",
+    "pricing": "pricing_summary",
+    "strengths": "strengths_json",
+    "weaknesses": "weaknesses_json",
+    "opportunities": "opportunities_json",
+}
+
+
+@router.get("/citation-bundle", response_model=list[CitationBundleCompetitor])
+def get_report_citation_bundle(run_id: str, db: Session = Depends(get_db)):
+    if db.get(Run, run_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found.")
+
+    sources = db.query(Source).filter(Source.run_id == run_id).all()
+    source_ref_by_id = {s.id: _extract_ref_id(s.metadata_json) for s in sources}
+    source_by_id = {s.id: s for s in sources}
+
+    evidence_items = db.query(Evidence).filter(Evidence.run_id == run_id).all()
+    evidence_by_competitor: dict[str, list[Evidence]] = {}
+    for item in evidence_items:
+        evidence_by_competitor.setdefault(item.related_product, []).append(item)
+
+    analyses = db.query(Analysis).filter(Analysis.run_id == run_id).order_by(Analysis.created_at.asc()).all()
+
+    result: list[CitationBundleCompetitor] = []
+    for analysis in analyses:
+        competitor_name = analysis.competitor.name if analysis.competitor else analysis.competitor_id
+        competitor_evidence = evidence_by_competitor.get(competitor_name, [])
+
+        claims: list[CitationBundleClaim] = []
+        for claim_type, label in CLAIM_DEFINITIONS:
+            field = ANALYSIS_FIELD_MAP[claim_type]
+            text = _analysis_field_text(analysis, field)
+
+            preferred_dims = CLAIM_DIMENSION_MAP.get(claim_type, set())
+            if preferred_dims:
+                matched = [e for e in competitor_evidence if e.related_dimension in preferred_dims]
+            else:
+                matched = []
+            if not matched:
+                matched = competitor_evidence
+
+            ev_refs: list[CitationBundleEvidenceRef] = []
+            for e in matched[:4]:
+                source = source_by_id.get(e.source_id)
+                source_url = source.url if source else ""
+                ev_refs.append(
+                    CitationBundleEvidenceRef(
+                        source_reference_id=source_ref_by_id.get(e.source_id),
+                        source_title=source.title if source else None,
+                        source_url=source_url or None,
+                        related_dimension=e.related_dimension,
+                        summary=e.summary,
+                        quote=e.quote,
+                        confidence=e.confidence,
+                    )
+                )
+
+            claims.append(CitationBundleClaim(claim_type=claim_type, label=label, text=text, evidence=ev_refs))
+
+        result.append(CitationBundleCompetitor(competitor_id=analysis.competitor_id, competitor_name=competitor_name, claims=claims))
+
+    return result
+
+
 def _analysis_refs_by_evidence_id(analyses: list[Analysis]) -> dict[str, list[CitationAnalysisRef]]:
     refs: dict[str, list[CitationAnalysisRef]] = {}
     for analysis in analyses:
@@ -125,3 +213,24 @@ def _json_list(value: str | None) -> list[str]:
     except json.JSONDecodeError:
         return []
     return [str(item) for item in parsed] if isinstance(parsed, list) else []
+
+
+def _analysis_field_text(analysis: Analysis, field: str) -> str:
+    value = getattr(analysis, field, "")
+    if not value:
+        return ""
+    if field.endswith("_json"):
+        items = _json_list(value)
+        return "；".join(items) if items else ""
+    return str(value)
+
+
+def _extract_ref_id(metadata_json: str | None) -> int | None:
+    if not metadata_json:
+        return None
+    try:
+        metadata = json.loads(metadata_json)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    value = metadata.get("reference_id")
+    return int(value) if isinstance(value, (int, float)) else None

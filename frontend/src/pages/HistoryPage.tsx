@@ -1,6 +1,6 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { listRuns } from '../lib/api';
+import { deleteRun, listRuns } from '../lib/api';
 
 const statusLabels: Record<string, string> = {
   running: '执行中',
@@ -24,8 +24,20 @@ function formatTime(value: string) {
 }
 
 export default function HistoryPage() {
+  const queryClient = useQueryClient();
   const runsQuery = useQuery({ queryKey: ['runs'], queryFn: listRuns, refetchInterval: 5000 });
   const runs = runsQuery.data ?? [];
+
+  const deleteMutation = useMutation({
+    mutationFn: deleteRun,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['runs'] }),
+  });
+
+  function handleDelete(runId: string, title: string) {
+    if (window.confirm(`确定要删除「${title}」吗？此操作不可恢复。`)) {
+      deleteMutation.mutate(runId);
+    }
+  }
 
   return (
     <section className="history-page">
@@ -49,12 +61,13 @@ export default function HistoryPage() {
               <th>阶段</th>
               <th>创建时间</th>
               <th>完成时间</th>
+              <th>操作</th>
             </tr>
           </thead>
           <tbody>
             {runs.length === 0 && !runsQuery.isLoading ? (
               <tr>
-                <td colSpan={5}>暂无历史任务。</td>
+                <td colSpan={6}>暂无历史任务。</td>
               </tr>
             ) : null}
             {runs.map((run) => (
@@ -67,6 +80,16 @@ export default function HistoryPage() {
                 <td>{stageLabels[run.current_stage] ?? run.current_stage}</td>
                 <td>{formatTime(run.created_at)}</td>
                 <td>{run.completed_at ? formatTime(run.completed_at) : '-'}</td>
+                <td>
+                  <button
+                    type="button"
+                    className="delete-action"
+                    onClick={() => handleDelete(run.id, run.title)}
+                    disabled={deleteMutation.isPending}
+                  >
+                    删除
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>

@@ -37,6 +37,12 @@ class SourceResponse(BaseModel):
     def classification_reason(self) -> str | None:
         return _metadata_value(self.metadata_json, "classification_reason")
 
+    @computed_field
+    @property
+    def reference_id(self) -> int | None:
+        value = _metadata_value(self.metadata_json, "reference_id")
+        return int(value) if isinstance(value, (int, float)) else None
+
     model_config = {"from_attributes": True}
 
 

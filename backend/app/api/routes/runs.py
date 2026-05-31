@@ -12,6 +12,7 @@ from app.services.run_service import (
     execute_discovery_run,
     execute_report_run,
     get_run_or_raise,
+    regenerate_report,
     start_run,
 )
 
@@ -48,3 +49,29 @@ def confirm_competitors(run_id: str, payload: ConfirmCompetitorsRequest, backgro
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except InvalidRunStateError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.post("/{run_id}/regenerate", response_model=RunResponse)
+def regenerate_run_report(run_id: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    try:
+        run = get_run_or_raise(db, run_id)
+    except RunNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    if run.status not in ("completed", "failed"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Can only regenerate report for completed or failed runs.")
+    run.status = "running"
+    run.current_stage = "report_generation"
+    db.commit()
+    db.refresh(run)
+    background_tasks.add_task(regenerate_report, run_id)
+    return run
+
+
+@router.delete("/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_run(run_id: str, db: Session = Depends(get_db)):
+    try:
+        run = get_run_or_raise(db, run_id)
+    except RunNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    db.delete(run)
+    db.commit()
