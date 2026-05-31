@@ -181,7 +181,7 @@ function getGroupedTraces(traces: Trace[]) {
 
 function getGroupStatus(stage: string, main: Trace | undefined, children: Trace[], run: Run) {
   if (main?.status === 'failed' || children.some((trace) => trace.status === 'failed')) return 'failed';
-  if (main?.status === 'running' || children.some((trace) => trace.status === 'running') || run.current_stage === stage) return 'running';
+  if ((main?.status === 'running' || children.some((trace) => trace.status === 'running') || (run.status === 'running' && run.current_stage === stage))) return 'running';
   if (main?.status === 'completed' || children.length > 0) return 'completed';
   return 'pending';
 }

@@ -560,13 +560,19 @@ button:disabled {
 
 .overlap-dimensions {
   display: grid;
-  gap: 10px;
+  gap: 12px;
   grid-column: 1 / -1;
   font-size: 11px;
-  padding: 10px;
+  padding: 12px;
   background: #f8faff;
   border-radius: 8px;
   border-left: 3px solid #5366d9;
+  margin: 4px 0;
+}
+
+.competitor-detail-list .overlap-dimensions {
+  background: #fafbfc;
+  border-left-color: #465be7;
 }
 
 .overlap-dimensions > strong {

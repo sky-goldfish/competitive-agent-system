@@ -108,29 +108,12 @@ export default function CompetitorConfirmPanel({ run, competitors }: Props) {
             {competitor.name}
           </button>
         </div>
-        {competitor.relationship_type ? (
-          <div className="competitor-relationship">
+        <div className="competitor-brief">
+          {competitor.relationship_type && (
             <span className={`relationship-badge ${competitor.relationship_type}`}>
               {relationshipTypeLabels[competitor.relationship_type] ?? competitor.relationship_type}
             </span>
-            {competitor.relationship_reason && (
-              <p className="relationship-reason">{competitor.relationship_reason}</p>
-            )}
-            {competitor.overlap_dimensions && competitor.overlap_dimensions.length > 0 ? (
-              <div className="overlap-dimensions">
-                <strong>匹配维度：</strong>
-                {competitor.overlap_dimensions.map((item, idx) => (
-                  <div key={idx} className="dimension-item">
-                    <span className="dimension-label">{item.dimension}</span>
-                    <p className="dimension-detail">{item.detail}</p>
-                  </div>
-                ))}
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-        <div className="competitor-brief">
-          <span>{categoryLabels[competitor.category] ?? competitor.category}</span>
+          )}
           <strong>{(competitor.confidence * 100).toFixed(0)}%</strong>
         </div>
         <button type="button" className="detail-action" onClick={() => setDetailCompetitor(competitor)}>
@@ -285,6 +268,37 @@ export default function CompetitorConfirmPanel({ run, competitors }: Props) {
               <button type="button" className="modal-close" onClick={() => setDetailCompetitor(null)}>关闭</button>
             </div>
             <dl className="competitor-detail-list">
+              {detailCompetitor.relationship_type && (
+                <div>
+                  <dt>竞品类型</dt>
+                  <dd>
+                    <span className={`relationship-badge ${detailCompetitor.relationship_type}`}>
+                      {relationshipTypeLabels[detailCompetitor.relationship_type] ?? detailCompetitor.relationship_type}
+                    </span>
+                  </dd>
+                </div>
+              )}
+              {detailCompetitor.relationship_reason && (
+                <div>
+                  <dt>竞争原因</dt>
+                  <dd>{detailCompetitor.relationship_reason}</dd>
+                </div>
+              )}
+              {detailCompetitor.overlap_dimensions && detailCompetitor.overlap_dimensions.length > 0 && (
+                <div>
+                  <dt>匹配维度</dt>
+                  <dd>
+                    <div className="overlap-dimensions">
+                      {detailCompetitor.overlap_dimensions.map((item, idx) => (
+                        <div key={idx} className="dimension-item">
+                          <span className="dimension-label">{item.dimension}</span>
+                          <p className="dimension-detail">{item.detail}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </dd>
+                </div>
+              )}
               <div>
                 <dt>官网</dt>
                 <dd>
