@@ -10,6 +10,7 @@ class CompetitorResponse(BaseModel):
     website: str | None = None
     description: str
     category: str
+    region: str | None = None
     confidence: float
     selected: bool
     discovery_source: str
@@ -23,6 +24,7 @@ class CustomCompetitorInput(BaseModel):
     name: str
     website: str | None = None
     category: str = "direct_competitor"
+    region: str | None = None
 
 
 class ConfirmCompetitorsRequest(BaseModel):

@@ -116,6 +116,19 @@ class ArkLLMProvider:
 
 用户输入：{user_requirement}
 
+=== 内部两步思考逻辑（无需输出） ===
+1. 意图解析：分析用户文本，隐式提取出核心客群 (Target User)、核心能力 (Core Features)、行业领域 (Domain)。
+2. 关键词组装：摒弃自然语言陈述（如"我想做..."、"如何实现..."），将核心标签翻译成精准搜索词组。
+
+=== 混合检索 Query 生成规则 ===
+1. 数量限制：根据用户需求的复杂度，灵活生成 1~3 个并行的搜索 Query。
+2. 长度限制：每个 Query 必须极其严苛地控制在 40 个字符（Characters）以内。
+3. 语言与市场分发策略（核心）：
+   - 严禁在单个 Query 中进行中英文混杂。
+   - 采用混合检索：至少包含 1 个针对全球市场的纯英文 Query（寻找海外前沿技术模型）；以及 1 个针对国内市场的纯中文 Query（寻找本土落地竞品）。
+   - 英文 Query 优先使用英文专业术语，善用双引号精确匹配，可适当加入 2026 获取最新资讯。
+   - 中文 Query 专注本土市场，寻找国内同类产品和竞品。
+
 JSON schema:
 {{
   "input_type": "existing_product | product_idea | mixed | unclear",
@@ -132,7 +145,8 @@ JSON schema:
   "clarification_questions": [],
   "confidence": 0.0,
   "warnings": [],
-  "query": "用于搜索竞品的中文查询词"
+  "queries": ["混合检索Query1（英文）", "混合检索Query2（中文）", "混合检索Query3（可选）"],
+  "query": "用于搜索竞品的中文查询词（兼容旧版）"
 }}
 """
         return self._json_chat(prompt, fallback)
@@ -186,32 +200,38 @@ JSON schema:
 竞品发现搜索结果：{json.dumps(search_results, ensure_ascii=False)}
 
 严格要求：
-1. name 字段必须是一个具体的产品名、品牌名、App名或服务名。例如：”Litter-Robot”、”CATLINK”、”小佩”、”Stripe”、”PayPal”。
+1. name 字段必须是一个具体的产品名、品牌名、App名或服务名。例如："Litter-Robot"、"CATLINK"、"小佩"、"Stripe"、"PayPal"。
 2. name 绝对不能是：
-   - 行业/市场描述（如”宠物智能用品行业”、”全球智能猫砂盒市场”）
-   - 数字/金额（如”亿元”、”年的”、”2024年”）
-   - 句子片段或中文短语（如”此外”、”其中”、”但是”）
-   - 泛概念词（如”竞品”、”替代方案”、”主要玩家”）
+   - 行业/市场描述（如"宠物智能用品行业"、"全球智能猫砂盒市场"）
+   - 数字/金额（如"亿元"、"年的"、"2024年"）
+   - 句子片段或中文短语（如"此外"、"其中"、"但是"）
+   - 泛概念词（如"竞品"、"替代方案"、"主要玩家"）
 3. 优先从搜索结果中出现的品牌名、产品名、公司名提取。
-4. 如果搜索结果中提到了具体品牌（如”CATLINK智能猫砂盆”），提取品牌名”CATLINK”。
+4. 如果搜索结果中提到了具体品牌（如"CATLINK智能猫砂盆"），提取品牌名"CATLINK"。
 5. 排除目标产品自身。
-6. 输出 3-5 个候选竞品。
+6. 分两组输出：
+   - 国外产品组：2~4 个来自海外市场的国际产品
+   - 国内产品组：2~4 个来自中国本土市场的产品
+7. 每个竞品必须增加 region 字段：
+   - "global" 表示国外/海外产品
+   - "china" 表示国内/中国本土产品
 
 输出严格 JSON，不要输出 Markdown 代码块。
 JSON schema:
 {{
-  “competitors”: [
+  "competitors": [
     {{
-      “name”: “具体的产品名或品牌名（2-30个字符）”,
-      “website”: “官网或最相关 URL”,
-      “description”: “用中文解释它是什么产品，以及为什么和目标对象竞争”,
-      “category”: “direct_competitor | indirect_competitor | substitute_solution | adjacent_product”,
-      “reason”: “推荐理由”,
-      “matched_dimensions”: [“产品定位”, “目标用户”, “核心功能”, “使用场景”],
-      “source_ids”: [“支撑来源 URL”],
-      “evidence_ids”: [],
-      “selected_by_default”: true,
-      “confidence”: 0.0
+      "name": "具体的产品名或品牌名（2-30个字符）",
+      "website": "官网或最相关 URL",
+      "description": "用中文解释它是什么产品，以及为什么和目标对象竞争",
+      "category": "direct_competitor | indirect_competitor | substitute_solution | adjacent_product",
+      "region": "global | china",
+      "reason": "推荐理由",
+      "matched_dimensions": ["产品定位", "目标用户", "核心功能", "使用场景"],
+      "source_ids": ["支撑来源 URL"],
+      "evidence_ids": [],
+      "selected_by_default": true,
+      "confidence": 0.0
     }}
   ]
 }}
@@ -221,8 +241,17 @@ JSON schema:
         if not isinstance(competitors, list) or not competitors:
             return fallback
         cleaned = []
+        global_count = 0
+        china_count = 0
         for item in competitors:
             if not isinstance(item, dict) or not item.get("name"):
+                continue
+            region = str(item.get("region", "global")).lower()
+            if region not in {"global", "china"}:
+                region = "global"
+            if region == "global" and global_count >= 4:
+                continue
+            if region == "china" and china_count >= 4:
                 continue
             cleaned.append(
                 {
@@ -230,6 +259,7 @@ JSON schema:
                     "website": item.get("website"),
                     "description": str(item.get("description") or "由真实搜索结果和大模型提取的候选竞品。")[:500],
                     "category": item.get("category") if item.get("category") in {"direct_competitor", "indirect_competitor", "substitute_solution", "adjacent_product"} else "direct_competitor",
+                    "region": region,
                     "reason": str(item.get("reason") or item.get("description") or "基于目标对象理解和搜索结果推荐。")[:500],
                     "matched_dimensions": item.get("matched_dimensions") if isinstance(item.get("matched_dimensions"), list) else [],
                     "source_ids": item.get("source_ids") if isinstance(item.get("source_ids"), list) else [],
@@ -239,7 +269,11 @@ JSON schema:
                     "discovery_source": "ark+search",
                 }
             )
-            if len(cleaned) >= 4:
+            if region == "global":
+                global_count += 1
+            else:
+                china_count += 1
+            if global_count >= 4 and china_count >= 4:
                 break
         return cleaned or fallback
 
@@ -302,8 +336,8 @@ JSON schema:
 3. 不要使用"MVP Mock 数据显示"这类字样
 4. 禁止使用 Markdown 表格；不要输出任何 `| 来源标题 |` 这类表格
 5. 正文中涉及关键结论、事实、数据、价格、功能、用户评价时，必须在对应句子末尾标注可点击引用编号。Markdown 原文必须写成 `[[1]](URL)`、`[[2]](URL)`，这样页面会显示为 `[1]`、`[2]`；禁止写成 `[1](URL)`，因为页面会只显示裸数字 `1`。
-6. 每个正文引用都必须遵守“报告结论 -> citation_bundle.claim -> evidence.evidence_id -> source_reference_id/source_url”的链路。某条结论只能引用同一 claim.evidence 中提供的 source_reference_id 和 source_url，禁止引用该 claim 下不存在的来源编号。
-7. 不要只在段落末尾集中引用；每个关键结论应就近引用其支撑来源，例如：“A 产品采用分层订阅模式[[3]](https://example.com/pricing)。”，不要输出“分层订阅模式3”。
+6. 每个正文引用都必须遵守"报告结论 -> citation_bundle.claim -> evidence.evidence_id -> source_reference_id/source_url"的链路。某条结论只能引用同一 claim.evidence 中提供的 source_reference_id 和 source_url，禁止引用该 claim 下不存在的来源编号。
+7. 不要只在段落末尾集中引用；每个关键结论应就近引用其支撑来源，例如："A 产品采用分层订阅模式[[3]](https://example.com/pricing)。"，不要输出"分层订阅模式3"。
 8. 报告末尾必须使用 `## 参考来源`，用有序列表列出引用来源，编号必须与正文引用一致，格式为 `1. [[1]](URL) [来源标题](URL) - 来源类型/标签，权重 0.xx`
 9. `## 参考来源` 必须列出来源列表中的全部来源，按 reference_id 从小到大排列，不得漏列、重排或改号。
 10. 如果某些信息不确定或缺失，明确说明而不是编造

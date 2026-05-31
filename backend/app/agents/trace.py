@@ -61,12 +61,17 @@ def record_progress_trace(
 ) -> None:
     now = datetime.utcnow()
     payload = {"message": message, **(metadata or {})}
+    
+    output_payload = metadata or {}
+    if metadata and metadata.get("queries"):
+        output_payload["queries"] = metadata["queries"]
+    
     trace = AgentTrace(
         run_id=run_id,
         stage=stage,
         status=status,
         input_json=json.dumps(payload, ensure_ascii=False, default=str),
-        output_json=json.dumps(metadata or {}, ensure_ascii=False, default=str),
+        output_json=json.dumps(output_payload, ensure_ascii=False, default=str),
         started_at=now,
         ended_at=now,
         duration_ms=0,
