@@ -16,6 +16,12 @@ const categoryLabels: Record<string, string> = {
   adjacent_product: '相邻产品',
 };
 
+const relationshipTypeLabels: Record<string, string> = {
+  direct: '直接竞品',
+  indirect: '间接竞品',
+  substitute: '替代方案',
+};
+
 export default function CompetitorConfirmPanel({ run, competitors }: Props) {
   const queryClient = useQueryClient();
   const globalCompetitors = useMemo(
@@ -102,6 +108,27 @@ export default function CompetitorConfirmPanel({ run, competitors }: Props) {
             {competitor.name}
           </button>
         </div>
+        {competitor.relationship_type ? (
+          <div className="competitor-relationship">
+            <span className={`relationship-badge ${competitor.relationship_type}`}>
+              {relationshipTypeLabels[competitor.relationship_type] ?? competitor.relationship_type}
+            </span>
+            {competitor.relationship_reason && (
+              <p className="relationship-reason">{competitor.relationship_reason}</p>
+            )}
+            {competitor.overlap_dimensions && competitor.overlap_dimensions.length > 0 ? (
+              <div className="overlap-dimensions">
+                <strong>匹配维度：</strong>
+                {competitor.overlap_dimensions.map((item, idx) => (
+                  <div key={idx} className="dimension-item">
+                    <span className="dimension-label">{item.dimension}</span>
+                    <p className="dimension-detail">{item.detail}</p>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         <div className="competitor-brief">
           <span>{categoryLabels[competitor.category] ?? competitor.category}</span>
           <strong>{(competitor.confidence * 100).toFixed(0)}%</strong>

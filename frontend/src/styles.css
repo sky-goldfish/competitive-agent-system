@@ -521,6 +521,78 @@ button:disabled {
   color: #1f7a4a;
 }
 
+.competitor-relationship {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 8px;
+}
+
+.relationship-badge {
+  display: inline-block;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 10px;
+  width: fit-content;
+}
+
+.relationship-badge.direct {
+  background: #e7edff;
+  color: #3151a3;
+}
+
+.relationship-badge.indirect {
+  background: #fff3cd;
+  color: #856404;
+}
+
+.relationship-badge.substitute {
+  background: #f0f7ff;
+  color: #004085;
+}
+
+.relationship-reason {
+  margin: 0;
+  font-size: 12px;
+  color: #627086;
+  line-height: 1.5;
+}
+
+.overlap-dimensions {
+  display: grid;
+  gap: 10px;
+  grid-column: 1 / -1;
+  font-size: 11px;
+  padding: 10px;
+  background: #f8faff;
+  border-radius: 8px;
+  border-left: 3px solid #5366d9;
+}
+
+.overlap-dimensions > strong {
+  font-size: 12px;
+  color: #172033;
+  margin-bottom: 4px;
+}
+
+.dimension-item {
+  display: grid;
+  gap: 4px;
+}
+
+.dimension-label {
+  font-weight: 700;
+  color: #465be7;
+  font-size: 11px;
+}
+
+.dimension-detail {
+  margin: 0;
+  color: #627086;
+  line-height: 1.6;
+  font-size: 11px;
+}
+
 .competitor-card span,
 .source-item span,
 .evidence-item span {
@@ -1404,6 +1476,49 @@ button:disabled {
 .report-document p,
 .report-document li {
   line-height: 1.75;
+}
+
+.report-container {
+  display: grid;
+  gap: 0;
+  min-height: 100%;
+}
+
+.report-completion-banner {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 16px;
+  align-items: center;
+  background: linear-gradient(135deg, #eaf8f0 0%, #f5fdfa 100%);
+  border-bottom: 2px solid #2d8a57;
+  padding: 20px 28px;
+  margin-bottom: 0;
+}
+
+.completion-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  background: #2d8a57;
+  color: white;
+  border-radius: 999px;
+  font-size: 28px;
+  font-weight: 800;
+}
+
+.completion-content h3 {
+  margin: 0 0 8px;
+  font-size: 18px;
+  color: #172033;
+  font-weight: 800;
+}
+
+.completion-content p {
+  margin: 0;
+  font-size: 13px;
+  color: #627086;
 }
 
 /* Citation Bundle */

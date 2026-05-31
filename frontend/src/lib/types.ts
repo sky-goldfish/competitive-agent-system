@@ -18,6 +18,11 @@ export type CustomCompetitorInput = {
   region?: 'global' | 'china' | null;
 };
 
+export type OverlapDimension = {
+  dimension: string;
+  detail: string;
+};
+
 export type Competitor = {
   id: string;
   run_id: string;
@@ -29,6 +34,9 @@ export type Competitor = {
   confidence: number;
   selected: boolean;
   discovery_source: string;
+  relationship_type: 'direct' | 'indirect' | 'substitute';
+  relationship_reason: string | null;
+  overlap_dimensions: OverlapDimension[] | null;
   created_at: string;
   updated_at: string;
 };

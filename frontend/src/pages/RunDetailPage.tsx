@@ -120,6 +120,12 @@ export default function RunDetailPage() {
     if (run?.status === 'running' && run.current_stage === 'material_collection') setWorkbenchTab('sources');
   }, [run?.current_stage, run?.status]);
 
+  useEffect(() => {
+    if (run?.status === 'completed' && reportQuery.data) {
+      setMainTab('report');
+    }
+  }, [run?.status, reportQuery.data]);
+
   const traces = timelineQuery.data ?? [];
   const stagePath = useMemo(() => run ? getStagePath(run, traces) : [], [run, traces]);
 
@@ -173,19 +179,30 @@ export default function RunDetailPage() {
           ) : null}
 
           {mainTab === 'report' ? (
-            <article className="report-document">
-              {reportQuery.isLoading ? <p className="loading">加载报告中...</p> : null}
-              {reportQuery.isError ? <p className="error-text">报告加载失败。</p> : null}
-              {canShowReport && report ? (
-                <ReportMarkdown markdown={report.markdown_content} citations={citationsQuery.data ?? []} />
-              ) : null}
-              {!reportQuery.isLoading && !reportQuery.isError && !canShowReport ? (
-                <div className="empty-state">
-                  <p className="empty-state-title">报告尚未生成</p>
-                  <p className="empty-state-desc">请先完成竞品确认和资料采集，报告将在分析完成后自动生成。</p>
+            <div className="report-container">
+              {canShowReport ? (
+                <div className="report-completion-banner">
+                  <div className="completion-icon">✓</div>
+                  <div className="completion-content">
+                    <h3>分析报告已生成</h3>
+                    <p>竞品数：{competitors.length} | 资料采集：{sources.length} | 洞察分析：{evidence.length}</p>
+                  </div>
                 </div>
               ) : null}
-            </article>
+              <article className="report-document">
+                {reportQuery.isLoading ? <p className="loading">加载报告中...</p> : null}
+                {reportQuery.isError ? <p className="error-text">报告加载失败。</p> : null}
+                {canShowReport && report ? (
+                  <ReportMarkdown markdown={report.markdown_content} citations={citationsQuery.data ?? []} />
+                ) : null}
+                {!reportQuery.isLoading && !reportQuery.isError && !canShowReport ? (
+                  <div className="empty-state">
+                    <p className="empty-state-title">报告尚未生成</p>
+                    <p className="empty-state-desc">请先完成竞品确认和资料采集，报告将在分析完成后自动生成。</p>
+                  </div>
+                ) : null}
+              </article>
+            </div>
           ) : null}
         </section>
 

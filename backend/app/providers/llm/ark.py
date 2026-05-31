@@ -313,7 +313,15 @@ JSON schema:
   "strengths_json": ["从证据中提取的优势"],
   "weaknesses_json": ["从证据中提取的劣势或用户痛点"],
   "opportunities_json": ["基于证据分析的机会点"],
-  "evidence_ids_json": ["引用的 evidence_id，必须来自已采集证据中的 evidence_id"]
+  "evidence_ids_json": ["引用的 evidence_id，必须来自已采集证据中的 evidence_id"],
+  "relationship_type": "direct/indirect/substitute 之一。direct=直接竞品，indirect=间接竞品，substitute=替代方案",
+  "relationship_reason": "简要说明为什么是该竞争类型，它竞争的是什么需求或场景，基于证据",
+  "overlap_dimensions": [
+    {{
+      "dimension": "产品定位|目标用户|核心功能|使用场景|商业模式 之一",
+      "detail": "具体说明在该维度上如何与目标产品重叠，需要引用证据中的具体内容。例如：'都专注于团队知识管理场景'或'目标用户都是 25-45 岁的专业知识工作者'"
+    }}
+  ]，必须包含 2-4 个维度的具体重叠点，每个维度必须有具体说明，不能笼统"
 }}
 """
         result = self._json_chat(prompt, fallback)

@@ -12,4 +12,5 @@ router = APIRouter(prefix="/runs/{run_id}/competitors", tags=["competitors"])
 def list_competitors(run_id: str, db: Session = Depends(get_db)):
     if db.get(Run, run_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found.")
-    return db.query(Competitor).filter(Competitor.run_id == run_id).order_by(Competitor.confidence.desc()).all()
+    competitors = db.query(Competitor).filter(Competitor.run_id == run_id).order_by(Competitor.confidence.desc()).all()
+    return [CompetitorResponse.from_orm_with_parsed_dimensions(c) for c in competitors]

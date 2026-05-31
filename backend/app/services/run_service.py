@@ -193,6 +193,15 @@ def execute_report_run(run_id: str) -> None:
                         evidence_ids_json=item["evidence_ids_json"],
                     )
                 )
+                # 更新竞品的关系信息
+                competitor = db.get(Competitor, item["competitor_id"])
+                if competitor:
+                    competitor.relationship_type = item.get("relationship_type", "direct")
+                    competitor.relationship_reason = item.get("relationship_reason")
+                    overlap_dims = item.get("overlap_dimensions")
+                    if overlap_dims:
+                        competitor.overlap_dimensions_json = json.dumps(overlap_dims, ensure_ascii=False)
+                    db.add(competitor)
             run.current_stage = "report_generation"
             db.commit()
 
