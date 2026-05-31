@@ -4,6 +4,21 @@ import { Globe, MapPin } from 'lucide-react';
 import { confirmCompetitors } from '../../lib/api';
 import type { Competitor, CustomCompetitorInput, Run } from '../../lib/types';
 
+function renderTextWithLinks(text: string) {
+  const urlRegex = /(https?:\/\/[^\s]+)/g;
+  const parts = text.split(urlRegex);
+  return parts.map((part, idx) => {
+    if (part.match(urlRegex)) {
+      return (
+        <a key={idx} href={part} target="_blank" rel="noreferrer" className="text-link">
+          {part}
+        </a>
+      );
+    }
+    return part;
+  });
+}
+
 type Props = {
   run: Run;
   competitors: Competitor[];
@@ -281,7 +296,7 @@ export default function CompetitorConfirmPanel({ run, competitors }: Props) {
               {detailCompetitor.relationship_reason && (
                 <div>
                   <dt>竞争原因</dt>
-                  <dd>{detailCompetitor.relationship_reason}</dd>
+                  <dd>{renderTextWithLinks(detailCompetitor.relationship_reason)}</dd>
                 </div>
               )}
               {detailCompetitor.overlap_dimensions && detailCompetitor.overlap_dimensions.length > 0 && (
@@ -292,7 +307,7 @@ export default function CompetitorConfirmPanel({ run, competitors }: Props) {
                       {detailCompetitor.overlap_dimensions.map((item, idx) => (
                         <div key={idx} className="dimension-item">
                           <span className="dimension-label">{item.dimension}</span>
-                          <p className="dimension-detail">{item.detail}</p>
+                          <p className="dimension-detail">{renderTextWithLinks(item.detail)}</p>
                         </div>
                       ))}
                     </div>
@@ -309,11 +324,11 @@ export default function CompetitorConfirmPanel({ run, competitors }: Props) {
               </div>
               <div>
                 <dt>发现来源</dt>
-                <dd>{detailCompetitor.discovery_source}</dd>
+                <dd>{renderTextWithLinks(detailCompetitor.discovery_source)}</dd>
               </div>
               <div>
                 <dt>推荐说明</dt>
-                <dd>{detailCompetitor.description}</dd>
+                <dd>{renderTextWithLinks(detailCompetitor.description)}</dd>
               </div>
             </dl>
           </div>

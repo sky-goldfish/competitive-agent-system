@@ -786,10 +786,17 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
-.competitor-detail-list a {
+.competitor-detail-list a,
+.text-link {
   color: #3151a3;
   font-weight: 800;
   text-decoration: none;
+  cursor: pointer;
+}
+
+.competitor-detail-list a:hover,
+.text-link:hover {
+  text-decoration: underline;
 }
 
 .citation-link {
