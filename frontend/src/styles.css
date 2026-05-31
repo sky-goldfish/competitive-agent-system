@@ -1507,7 +1507,7 @@ button:disabled {
 
 .claim-modal-body {
   padding: 16px 20px 20px;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .claim-modal-conclusion {
@@ -1540,7 +1540,7 @@ button:disabled {
   border: 1px solid #edf1f7;
   border-radius: 8px;
   padding: 8px 10px;
-  overflow: hidden;
+  overflow: visible;
   min-width: 0;
 }
 
@@ -1586,9 +1586,11 @@ button:disabled {
   font-size: 11px;
   line-height: 1.45;
   margin: 4px 0;
-  max-height: 72px;
-  overflow: hidden;
+  max-height: none;
+  overflow: visible;
+  overflow-wrap: anywhere;
   padding-left: 8px;
+  white-space: pre-wrap;
 }
 
 .citation-ev-link {
