@@ -14,6 +14,7 @@ from app.providers.search.base import SearchProvider
 
 TraceCallback = Callable[[str, AgentState, Callable[[], AgentState]], AgentState]
 ProgressCallback = Callable[[str, str, dict], None]
+StageCompleteCallback = Callable[[str, AgentState], None]
 
 
 def build_competitor_discovery_graph(
@@ -48,14 +49,21 @@ def build_report_generation_graph(
     search: SearchProvider,
     trace: TraceCallback | None = None,
     progress: ProgressCallback | None = None,
+    on_stage_complete: StageCompleteCallback | None = None,
 ):
     graph = StateGraph(AgentState)
 
     def material_collection(state: AgentState) -> AgentState:
-        return _run_node(trace, "material_collection", state, lambda: material_collection_node(state, search, progress=progress))
+        result = _run_node(trace, "material_collection", state, lambda: material_collection_node(state, search, progress=progress))
+        if on_stage_complete:
+            on_stage_complete("material_collection", result)
+        return result
 
     def structured_analysis(state: AgentState) -> AgentState:
-        return _run_node(trace, "structured_analysis", state, lambda: structured_analysis_node(state, llm))
+        result = _run_node(trace, "structured_analysis", state, lambda: structured_analysis_node(state, llm))
+        if on_stage_complete:
+            on_stage_complete("structured_analysis", result)
+        return result
 
     def report_generation(state: AgentState) -> AgentState:
         return _run_node(trace, "report_generation", state, lambda: report_generation_node(state, llm))

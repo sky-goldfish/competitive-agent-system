@@ -17,7 +17,12 @@ export default function EvidenceList({ evidence, sources }: Props) {
         <span>{evidence.length} evidence</span>
       </div>
       <div className="evidence-list">
-        {evidence.length === 0 ? <p className="muted">暂无证据片段。</p> : null}
+        {evidence.length === 0 ? (
+          <div className="empty-state">
+            <p className="empty-state-title">暂无证据片段</p>
+            <p className="empty-state-desc">证据将在资料采集完成后自动提取。</p>
+          </div>
+        ) : null}
         {evidence.map((item) => {
           const source = sourceById.get(item.source_id);
           return (

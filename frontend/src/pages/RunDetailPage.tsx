@@ -1,13 +1,13 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import AnalysisList from '../components/analysis/AnalysisList';
 import CompetitorConfirmPanel from '../components/competitors/CompetitorConfirmPanel';
 import EvidenceList from '../components/evidence/EvidenceList';
 import SourceList from '../components/evidence/SourceList';
+import CitationBundleView from '../components/report/CitationBundleView';
 import ReportMarkdown from '../components/report/ReportMarkdown';
 import AgentTimeline from '../components/timeline/AgentTimeline';
-import { getAnalyses, getCompetitors, getEvidence, getReport, getReportCitations, getRun, getSources, getTimeline } from '../lib/api';
+import { getCompetitors, getEvidence, getReport, getReportCitationBundle, getReportCitations, getRun, getSources, getTimeline, regenerateReport } from '../lib/api';
 import type { Run, Trace } from '../lib/types';
 
 const statusLabels: Record<string, string> = {
@@ -79,8 +79,19 @@ function getStagePath(run: Run, traces: Trace[]) {
 export default function RunDetailPage() {
   const { runId } = useParams<{ runId: string }>();
   const id = runId ?? '';
+  const queryClient = useQueryClient();
   const [mainTab, setMainTab] = useState<'process' | 'report'>('process');
-  const [workbenchTab, setWorkbenchTab] = useState<'info' | 'sources' | 'competitors' | 'analysis'>('info');
+  const [workbenchTab, setWorkbenchTab] = useState<'info' | 'sources' | 'competitors' | 'citations'>('info');
+
+  const regenerateMutation = useMutation({
+    mutationFn: () => regenerateReport(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['run', id] });
+      queryClient.invalidateQueries({ queryKey: ['report', id] });
+      queryClient.invalidateQueries({ queryKey: ['report-citations', id] });
+      queryClient.invalidateQueries({ queryKey: ['citation-bundle', id] });
+    },
+  });
 
   const runQuery = useQuery({
     queryKey: ['run', id],
@@ -94,9 +105,15 @@ export default function RunDetailPage() {
   const timelineQuery = useQuery({ queryKey: ['timeline', id], queryFn: () => getTimeline(id), enabled: Boolean(id), refetchInterval: isActive ? 3000 : false });
   const sourcesQuery = useQuery({ queryKey: ['sources', id], queryFn: () => getSources(id), enabled: Boolean(id), refetchInterval: isActive ? 5000 : false });
   const evidenceQuery = useQuery({ queryKey: ['evidence', id], queryFn: () => getEvidence(id), enabled: Boolean(id), refetchInterval: isActive ? 5000 : false });
-  const analysesQuery = useQuery({ queryKey: ['analyses', id], queryFn: () => getAnalyses(id), enabled: Boolean(id), refetchInterval: isActive ? 5000 : false });
   const reportQuery = useQuery({ queryKey: ['report', id], queryFn: () => getReport(id), enabled: Boolean(id) && run?.status === 'completed' });
   const citationsQuery = useQuery({ queryKey: ['report-citations', id], queryFn: () => getReportCitations(id), enabled: Boolean(id) && run?.status === 'completed' });
+  const hasAnalyses = run?.current_stage === 'structured_analysis' || run?.current_stage === 'report_generation' || run?.current_stage === 'completed' || run?.status === 'completed';
+  const citationBundleQuery = useQuery({
+    queryKey: ['citation-bundle', id],
+    queryFn: () => getReportCitationBundle(id),
+    enabled: Boolean(id) && hasAnalyses,
+    refetchInterval: isActive ? 5000 : false,
+  });
 
   useEffect(() => {
     if (run?.status === 'waiting_for_human') setWorkbenchTab('competitors');
@@ -112,7 +129,6 @@ export default function RunDetailPage() {
   const competitors = competitorsQuery.data ?? [];
   const sources = sourcesQuery.data ?? [];
   const evidence = evidenceQuery.data ?? [];
-  const analyses = analysesQuery.data ?? [];
   const report = reportQuery.data;
   const canShowReport = run.status === 'completed' && Boolean(report);
 
@@ -135,8 +151,20 @@ export default function RunDetailPage() {
         <section className="workbench-main">
           <div className="workspace-tabs">
             <button type="button" className={mainTab === 'process' ? 'active' : ''} onClick={() => setMainTab('process')}>任务过程</button>
+            <button type="button" className={mainTab === 'report' ? 'active' : ''} onClick={() => setMainTab('report')}>分析报告</button>
             {run.status === 'completed' ? (
-              <button type="button" className={mainTab === 'report' ? 'active' : ''} onClick={() => setMainTab('report')}>分析报告</button>
+              <button
+                type="button"
+                className="workspace-regenerate"
+                onClick={() => {
+                  if (window.confirm('确定要重新生成报告吗？将使用现有的搜索和分析结果重新生成。')) {
+                    regenerateMutation.mutate();
+                  }
+                }}
+                disabled={regenerateMutation.isPending}
+              >
+                {regenerateMutation.isPending ? '生成中...' : '重新生成'}
+              </button>
             ) : null}
           </div>
 
@@ -151,6 +179,12 @@ export default function RunDetailPage() {
               {canShowReport && report ? (
                 <ReportMarkdown markdown={report.markdown_content} citations={citationsQuery.data ?? []} />
               ) : null}
+              {!reportQuery.isLoading && !reportQuery.isError && !canShowReport ? (
+                <div className="empty-state">
+                  <p className="empty-state-title">报告尚未生成</p>
+                  <p className="empty-state-desc">请先完成竞品确认和资料采集，报告将在分析完成后自动生成。</p>
+                </div>
+              ) : null}
             </article>
           ) : null}
         </section>
@@ -158,9 +192,9 @@ export default function RunDetailPage() {
         <aside className="workbench-side">
           <div className="workbench-tabs">
             <button type="button" className={workbenchTab === 'info' ? 'active' : ''} onClick={() => setWorkbenchTab('info')}>任务信息</button>
-            <button type="button" className={workbenchTab === 'sources' ? 'active' : ''} onClick={() => setWorkbenchTab('sources')}>搜索结果</button>
             <button type="button" className={workbenchTab === 'competitors' ? 'active' : ''} onClick={() => setWorkbenchTab('competitors')}>竞品确认</button>
-            <button type="button" className={workbenchTab === 'analysis' ? 'active' : ''} onClick={() => setWorkbenchTab('analysis')}>结构化分析</button>
+            <button type="button" className={workbenchTab === 'sources' ? 'active' : ''} onClick={() => setWorkbenchTab('sources')}>搜索结果</button>
+            <button type="button" className={workbenchTab === 'citations' ? 'active' : ''} onClick={() => setWorkbenchTab('citations')}>结构化分析</button>
           </div>
 
           <div className="workbench-pane">
@@ -193,7 +227,7 @@ export default function RunDetailPage() {
               </div>
             ) : null}
             {workbenchTab === 'competitors' ? <CompetitorConfirmPanel run={run} competitors={competitors} /> : null}
-            {workbenchTab === 'analysis' ? <AnalysisList analyses={analyses} competitors={competitors} evidence={evidence} sources={sources} /> : null}
+            {workbenchTab === 'citations' ? <CitationBundleView bundle={citationBundleQuery.data ?? []} /> : null}
           </div>
         </aside>
       </div>

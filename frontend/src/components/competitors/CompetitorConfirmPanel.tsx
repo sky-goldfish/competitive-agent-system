@@ -18,21 +18,22 @@ const categoryLabels: Record<string, string> = {
 
 export default function CompetitorConfirmPanel({ run, competitors }: Props) {
   const queryClient = useQueryClient();
-  
-  const globalCompetitors = useMemo(() => 
-    competitors.filter((item) => item.region === 'global'), 
-    [competitors]
+  const globalCompetitors = useMemo(
+    () => competitors.filter((item) => item.region === 'global'),
+    [competitors],
   );
-  const chinaCompetitors = useMemo(() => 
-    competitors.filter((item) => item.region === 'china'), 
-    [competitors]
+  const chinaCompetitors = useMemo(
+    () => competitors.filter((item) => item.region === 'china'),
+    [competitors],
   );
-  const uncategorizedCompetitors = useMemo(() => 
-    competitors.filter((item) => !item.region), 
-    [competitors]
+  const uncategorizedCompetitors = useMemo(
+    () => competitors.filter((item) => !item.region),
+    [competitors],
   );
-  
-  const initialSelected = useMemo(() => competitors.slice(0, 3).map((item) => item.id), [competitors]);
+  const initialSelected = useMemo(() => {
+    const selected = competitors.filter((item) => item.selected).map((item) => item.id);
+    return selected.length > 0 ? selected : competitors.slice(0, 3).map((item) => item.id);
+  }, [competitors]);
   const [selectedIds, setSelectedIds] = useState<string[]>(initialSelected);
   const [customName, setCustomName] = useState('');
   const [customWebsite, setCustomWebsite] = useState('');
@@ -44,7 +45,7 @@ export default function CompetitorConfirmPanel({ run, competitors }: Props) {
   const [isCustomModalOpen, setIsCustomModalOpen] = useState(false);
 
   useEffect(() => {
-    setSelectedIds((current) => current.length > 0 ? current : initialSelected);
+    setSelectedIds((current) => (current.length > 0 ? current : initialSelected));
   }, [initialSelected]);
 
   const mutation = useMutation({
@@ -61,11 +62,11 @@ export default function CompetitorConfirmPanel({ run, competitors }: Props) {
   });
 
   function toggle(id: string) {
-    setSelectedIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
+    setSelectedIds((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
   }
 
   function toggleCustom(name: string) {
-    setSelectedCustomNames((current) => current.includes(name) ? current.filter((item) => item !== name) : [...current, name]);
+    setSelectedCustomNames((current) => (current.includes(name) ? current.filter((item) => item !== name) : [...current, name]));
   }
 
   function addCustomCompetitor() {
@@ -75,7 +76,7 @@ export default function CompetitorConfirmPanel({ run, competitors }: Props) {
       ...current,
       { name, website: customWebsite.trim() || undefined, category: customCategory },
     ]);
-    setSelectedCustomNames((current) => current.includes(name) ? current : [...current, name]);
+    setSelectedCustomNames((current) => (current.includes(name) ? current : [...current, name]));
     setCustomName('');
     setCustomWebsite('');
     setCustomCategory('direct_competitor');
@@ -87,6 +88,31 @@ export default function CompetitorConfirmPanel({ run, competitors }: Props) {
     setSelectedCustomNames((current) => current.filter((item) => item !== name));
   }
 
+  function renderCompetitorCard(competitor: Competitor) {
+    return (
+      <div key={competitor.id} className={`competitor-card ${selectedIds.includes(competitor.id) ? 'selected' : ''}`}>
+        <div className="competitor-select-row">
+          <input
+            type="checkbox"
+            checked={selectedIds.includes(competitor.id)}
+            onChange={() => toggle(competitor.id)}
+            disabled={run.status !== 'waiting_for_human'}
+          />
+          <button type="button" className="competitor-title-button" onClick={() => setDetailCompetitor(competitor)}>
+            {competitor.name}
+          </button>
+        </div>
+        <div className="competitor-brief">
+          <span>{categoryLabels[competitor.category] ?? competitor.category}</span>
+          <strong>{(competitor.confidence * 100).toFixed(0)}%</strong>
+        </div>
+        <button type="button" className="detail-action" onClick={() => setDetailCompetitor(competitor)}>
+          查看详情
+        </button>
+      </div>
+    );
+  }
+
   const selectedTotal = selectedIds.length + selectedCustomNames.length;
 
   return (
@@ -95,7 +121,14 @@ export default function CompetitorConfirmPanel({ run, competitors }: Props) {
         <h2>候选竞品确认</h2>
         <span>{selectedTotal} selected</span>
       </div>
-      
+
+      {competitors.length === 0 && customCompetitors.length === 0 ? (
+        <div className="empty-state">
+          <p className="empty-state-title">暂无候选竞品</p>
+          <p className="empty-state-desc">Agent 尚未完成竞品发现，或未找到匹配的竞品。</p>
+        </div>
+      ) : null}
+
       <div className="competitor-region-grid">
         {globalCompetitors.length > 0 ? (
           <div className="region-section global">
@@ -104,30 +137,7 @@ export default function CompetitorConfirmPanel({ run, competitors }: Props) {
               <h3>海外国际产品</h3>
               <span className="region-count">{globalCompetitors.length} 个</span>
             </div>
-            <div className="competitor-grid">
-              {globalCompetitors.map((competitor) => (
-                <div key={competitor.id} className={`competitor-card ${selectedIds.includes(competitor.id) ? 'selected' : ''}`}>
-                  <div className="competitor-select-row">
-                    <input
-                      type="checkbox"
-                      checked={selectedIds.includes(competitor.id)}
-                      onChange={() => toggle(competitor.id)}
-                      disabled={run.status !== 'waiting_for_human'}
-                    />
-                    <button type="button" className="competitor-title-button" onClick={() => setDetailCompetitor(competitor)}>
-                      {competitor.name}
-                    </button>
-                  </div>
-                  <div className="competitor-brief">
-                    <span>{categoryLabels[competitor.category] ?? competitor.category}</span>
-                    <strong>{(competitor.confidence * 100).toFixed(0)}%</strong>
-                  </div>
-                  <button type="button" className="detail-action" onClick={() => setDetailCompetitor(competitor)}>
-                    查看详情
-                  </button>
-                </div>
-              ))}
-            </div>
+            <div className="competitor-grid">{globalCompetitors.map(renderCompetitorCard)}</div>
           </div>
         ) : null}
 
@@ -138,30 +148,7 @@ export default function CompetitorConfirmPanel({ run, competitors }: Props) {
               <h3>中国本土产品</h3>
               <span className="region-count">{chinaCompetitors.length} 个</span>
             </div>
-            <div className="competitor-grid">
-              {chinaCompetitors.map((competitor) => (
-                <div key={competitor.id} className={`competitor-card ${selectedIds.includes(competitor.id) ? 'selected' : ''}`}>
-                  <div className="competitor-select-row">
-                    <input
-                      type="checkbox"
-                      checked={selectedIds.includes(competitor.id)}
-                      onChange={() => toggle(competitor.id)}
-                      disabled={run.status !== 'waiting_for_human'}
-                    />
-                    <button type="button" className="competitor-title-button" onClick={() => setDetailCompetitor(competitor)}>
-                      {competitor.name}
-                    </button>
-                  </div>
-                  <div className="competitor-brief">
-                    <span>{categoryLabels[competitor.category] ?? competitor.category}</span>
-                    <strong>{(competitor.confidence * 100).toFixed(0)}%</strong>
-                  </div>
-                  <button type="button" className="detail-action" onClick={() => setDetailCompetitor(competitor)}>
-                    查看详情
-                  </button>
-                </div>
-              ))}
-            </div>
+            <div className="competitor-grid">{chinaCompetitors.map(renderCompetitorCard)}</div>
           </div>
         ) : null}
       </div>
@@ -172,30 +159,7 @@ export default function CompetitorConfirmPanel({ run, competitors }: Props) {
             <h3>其他竞品</h3>
             <span className="region-count">{uncategorizedCompetitors.length} 个</span>
           </div>
-          <div className="competitor-grid">
-            {uncategorizedCompetitors.map((competitor) => (
-              <div key={competitor.id} className={`competitor-card ${selectedIds.includes(competitor.id) ? 'selected' : ''}`}>
-                <div className="competitor-select-row">
-                  <input
-                    type="checkbox"
-                    checked={selectedIds.includes(competitor.id)}
-                    onChange={() => toggle(competitor.id)}
-                    disabled={run.status !== 'waiting_for_human'}
-                  />
-                  <button type="button" className="competitor-title-button" onClick={() => setDetailCompetitor(competitor)}>
-                    {competitor.name}
-                  </button>
-                </div>
-                <div className="competitor-brief">
-                  <span>{categoryLabels[competitor.category] ?? competitor.category}</span>
-                  <strong>{(competitor.confidence * 100).toFixed(0)}%</strong>
-                </div>
-                <button type="button" className="detail-action" onClick={() => setDetailCompetitor(competitor)}>
-                  查看详情
-                </button>
-              </div>
-            ))}
-          </div>
+          <div className="competitor-grid">{uncategorizedCompetitors.map(renderCompetitorCard)}</div>
         </div>
       ) : null}
 
@@ -248,9 +212,7 @@ export default function CompetitorConfirmPanel({ run, competitors }: Props) {
         <button className="primary-action" onClick={() => mutation.mutate()} disabled={selectedTotal === 0 || mutation.isPending}>
           {mutation.isPending ? '已提交，Agent 正在采集资料...' : '确认竞品并生成报告'}
         </button>
-      ) : (
-        <p className="muted">竞品已确认，后续 Agent 已继续执行。</p>
-      )}
+      ) : null}
       {mutation.isError ? <p className="error-text">确认失败：{String(mutation.error.message)}</p> : null}
       {isCustomModalOpen ? (
         <div className="modal-backdrop" role="presentation" onClick={() => setIsCustomModalOpen(false)}>
