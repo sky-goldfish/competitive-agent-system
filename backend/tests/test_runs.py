@@ -4,7 +4,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.services.run_service as run_service
-from app.db.session import init_db
+from app.db.models import Report, Run, Source
+from app.db.session import SessionLocal, init_db
 from app.main import app
 from app.providers.llm.mock import MockLLMProvider
 from app.providers.search.mock import MockSearchProvider
@@ -100,6 +101,89 @@ def test_run_lifecycle():
     stages = {item["stage"] for item in timeline_response.json()}
     assert {"requirement_understanding", "competitor_discovery", "human_confirm_competitors", "material_collection", "structured_analysis", "report_generation"}.issubset(stages)
     assert {"quart_planning", "material_query_planning", "source_search", "source_classification", "evidence_extraction", "coverage_checking"}.issubset(stages)
+
+
+def test_report_citations_follow_selected_report_iteration():
+    init_db()
+    db = SessionLocal()
+    try:
+        run = Run(user_requirement="验证报告版本引用", status="completed", current_stage="completed")
+        db.add(run)
+        db.flush()
+
+        first_source = Source(
+            run_id=run.id,
+            title="First version source",
+            url="https://example.com/report-version-0",
+            snippet="First version source snippet",
+            source_type="official_site",
+            provider="test",
+            metadata_json='{"reference_id": 1}',
+        )
+        latest_source = Source(
+            run_id=run.id,
+            title="Latest version source",
+            url="https://example.com/report-version-1",
+            snippet="Latest version source snippet",
+            source_type="official_site",
+            provider="test",
+            metadata_json='{"reference_id": 1}',
+        )
+        db.add_all([first_source, latest_source])
+        db.flush()
+
+        db.add_all(
+            [
+                Report(
+                    run_id=run.id,
+                    iteration=0,
+                    title="First report",
+                    summary="First report summary",
+                    markdown_content=(
+                        "# First report\n\n"
+                        "First conclusion [[1]](https://example.com/report-version-0).\n\n"
+                        "## 参考来源\n\n"
+                        "1. [[1]](https://example.com/report-version-0) [First version source](https://example.com/report-version-0)"
+                    ),
+                ),
+                Report(
+                    run_id=run.id,
+                    iteration=1,
+                    title="Latest report",
+                    summary="Latest report summary",
+                    markdown_content=(
+                        "# Latest report\n\n"
+                        "Latest conclusion [[1]](https://example.com/report-version-1).\n\n"
+                        "## 参考来源\n\n"
+                        "1. [[1]](https://example.com/report-version-1) [Latest version source](https://example.com/report-version-1)"
+                    ),
+                ),
+            ]
+        )
+        db.commit()
+        run_id = run.id
+        first_source_id = first_source.id
+        latest_source_id = latest_source.id
+    finally:
+        db.close()
+
+    latest_report = client.get(f"/api/runs/{run_id}/report")
+    latest_citations = client.get(f"/api/runs/{run_id}/report/citations")
+    first_report = client.get(f"/api/runs/{run_id}/report?iteration=0")
+    first_citations = client.get(f"/api/runs/{run_id}/report/citations?iteration=0")
+    missing_citations = client.get(f"/api/runs/{run_id}/report/citations?iteration=99")
+
+    assert latest_report.status_code == 200
+    assert latest_report.json()["iteration"] == 1
+    assert latest_citations.status_code == 200
+    assert [item["source"]["id"] for item in latest_citations.json()] == [latest_source_id]
+
+    assert first_report.status_code == 200
+    assert first_report.json()["iteration"] == 0
+    assert first_citations.status_code == 200
+    assert [item["source"]["id"] for item in first_citations.json()] == [first_source_id]
+
+    assert missing_citations.status_code == 404
 
 
 def test_confirm_rejects_competitor_ids_from_other_runs():

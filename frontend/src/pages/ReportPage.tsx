@@ -11,7 +11,12 @@ export default function ReportPage() {
   const id = runId ?? '';
   const queryClient = useQueryClient();
   const reportQuery = useQuery({ queryKey: ['report', id], queryFn: () => getReport(id), enabled: Boolean(id) });
-  const citationsQuery = useQuery({ queryKey: ['report-citations', id], queryFn: () => getReportCitations(id), enabled: Boolean(id) });
+  const displayedReportIteration = reportQuery.data?.iteration;
+  const citationsQuery = useQuery({
+    queryKey: ['report-citations', id, displayedReportIteration],
+    queryFn: () => getReportCitations(id, displayedReportIteration),
+    enabled: Boolean(id) && displayedReportIteration != null,
+  });
   const sourcesQuery = useQuery({ queryKey: ['sources', id], queryFn: () => getSources(id), enabled: Boolean(id) });
   const evidenceQuery = useQuery({ queryKey: ['evidence', id], queryFn: () => getEvidence(id), enabled: Boolean(id) });
   const citationBundleQuery = useQuery({ queryKey: ['citation-bundle', id], queryFn: () => getReportCitationBundle(id), enabled: Boolean(id) });

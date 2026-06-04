@@ -69,8 +69,9 @@ export function getReportVersions(runId: string): Promise<Report[]> {
   return request<Report[]>(`/runs/${runId}/report/versions`);
 }
 
-export function getReportCitations(runId: string): Promise<CitationMapItem[]> {
-  return request<CitationMapItem[]>(`/runs/${runId}/report/citations`);
+export function getReportCitations(runId: string, iteration?: number): Promise<CitationMapItem[]> {
+  const params = iteration != null ? `?iteration=${iteration}` : '';
+  return request<CitationMapItem[]>(`/runs/${runId}/report/citations${params}`);
 }
 
 export function getReportCitationBundle(runId: string): Promise<CitationBundleCompetitor[]> {

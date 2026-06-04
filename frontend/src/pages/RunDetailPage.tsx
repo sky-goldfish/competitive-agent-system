@@ -91,8 +91,10 @@ export default function RunDetailPage() {
   const regenerateMutation = useMutation({
     mutationFn: () => regenerateReport(id),
     onSuccess: () => {
+      setSelectedIteration(undefined);
       queryClient.invalidateQueries({ queryKey: ['run', id] });
       queryClient.invalidateQueries({ queryKey: ['report', id] });
+      queryClient.invalidateQueries({ queryKey: ['report-versions', id] });
       queryClient.invalidateQueries({ queryKey: ['report-citations', id] });
       queryClient.invalidateQueries({ queryKey: ['citation-bundle', id] });
     },
@@ -113,7 +115,12 @@ export default function RunDetailPage() {
   const hasReport = run?.status === 'completed' || run?.current_stage === 'report_generation' || run?.current_stage === 'quality_check';
   const reportQuery = useQuery({ queryKey: ['report', id, selectedIteration], queryFn: () => getReport(id, selectedIteration), enabled: Boolean(id) && Boolean(hasReport) });
   const reportVersionsQuery = useQuery({ queryKey: ['report-versions', id], queryFn: () => getReportVersions(id), enabled: Boolean(id) && Boolean(hasReport) });
-  const citationsQuery = useQuery({ queryKey: ['report-citations', id], queryFn: () => getReportCitations(id), enabled: Boolean(id) && Boolean(hasReport) });
+  const displayedReportIteration = reportQuery.data?.iteration;
+  const citationsQuery = useQuery({
+    queryKey: ['report-citations', id, displayedReportIteration],
+    queryFn: () => getReportCitations(id, displayedReportIteration),
+    enabled: Boolean(id) && displayedReportIteration != null,
+  });
   const hasAnalyses = run?.current_stage === 'structured_analysis' || run?.current_stage === 'report_generation' || run?.current_stage === 'quality_check' || run?.current_stage === 'completed' || run?.status === 'completed';
   const citationBundleQuery = useQuery({
     queryKey: ['citation-bundle', id],

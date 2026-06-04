@@ -15,11 +15,7 @@ router = APIRouter(prefix="/runs/{run_id}/report", tags=["reports"])
 def get_report(run_id: str, iteration: int | None = None, db: Session = Depends(get_db)):
     if db.get(Run, run_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found.")
-    query = db.query(Report).filter(Report.run_id == run_id)
-    if iteration is not None:
-        report = query.filter(Report.iteration == iteration).first()
-    else:
-        report = query.order_by(Report.iteration.desc()).first()
+    report = _get_report_version(db, run_id, iteration)
     if report is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found.")
     return report
@@ -33,10 +29,10 @@ def get_report_versions(run_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/citations", response_model=list[CitationMapItem])
-def get_report_citations(run_id: str, db: Session = Depends(get_db)):
+def get_report_citations(run_id: str, iteration: int | None = None, db: Session = Depends(get_db)):
     if db.get(Run, run_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found.")
-    report = db.query(Report).filter(Report.run_id == run_id).first()
+    report = _get_report_version(db, run_id, iteration)
     if report is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found.")
 
@@ -77,6 +73,13 @@ def get_report_citations(run_id: str, db: Session = Depends(get_db)):
             )
         )
     return citation_items
+
+
+def _get_report_version(db: Session, run_id: str, iteration: int | None) -> Report | None:
+    query = db.query(Report).filter(Report.run_id == run_id)
+    if iteration is not None:
+        return query.filter(Report.iteration == iteration).first()
+    return query.order_by(Report.iteration.desc()).first()
 
 
 def _extract_reference_urls(markdown_content: str) -> list[tuple[int, str]]:
