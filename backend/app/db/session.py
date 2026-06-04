@@ -35,7 +35,12 @@ def _ensure_compatible_schema() -> None:
     if "competitors" not in inspector.get_table_names():
         return
     competitor_columns = {column["name"] for column in inspector.get_columns("competitors")}
-    if "region" in competitor_columns:
-        return
     with engine.begin() as connection:
-        connection.execute(text("ALTER TABLE competitors ADD COLUMN region VARCHAR"))
+        if "region" not in competitor_columns:
+            connection.execute(text("ALTER TABLE competitors ADD COLUMN region VARCHAR"))
+        if "relationship_type" not in competitor_columns:
+            connection.execute(text("ALTER TABLE competitors ADD COLUMN relationship_type VARCHAR NOT NULL DEFAULT 'direct'"))
+        if "relationship_reason" not in competitor_columns:
+            connection.execute(text("ALTER TABLE competitors ADD COLUMN relationship_reason TEXT"))
+        if "overlap_dimensions_json" not in competitor_columns:
+            connection.execute(text("ALTER TABLE competitors ADD COLUMN overlap_dimensions_json TEXT"))
