@@ -9,6 +9,7 @@ from app.schemas.source import SourceResponse
 class ReportResponse(BaseModel):
     id: str
     run_id: str
+    iteration: int = 0
     title: str
     markdown_content: str
     summary: str
@@ -52,4 +53,5 @@ class CitationBundleClaim(BaseModel):
 class CitationBundleCompetitor(BaseModel):
     competitor_id: str
     competitor_name: str
+    analysis_iteration: int = 0
     claims: list[CitationBundleClaim]

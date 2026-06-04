@@ -5,6 +5,7 @@ from langgraph.graph import END, StateGraph
 from app.agents.nodes.competitor_discovery import competitor_discovery_node
 from app.agents.nodes.human_confirm_competitors import human_confirm_competitors_node
 from app.agents.nodes.material_collection import material_collection_node
+from app.agents.nodes.quality_check import quality_check_node, qa_route
 from app.agents.nodes.report_generation import report_generation_node
 from app.agents.nodes.requirement_understanding import requirement_understanding_node
 from app.agents.nodes.structured_analysis import structured_analysis_node
@@ -66,15 +67,34 @@ def build_report_generation_graph(
         return result
 
     def report_generation(state: AgentState) -> AgentState:
-        return _run_node(trace, "report_generation", state, lambda: report_generation_node(state, llm))
+        result = _run_node(trace, "report_generation", state, lambda: report_generation_node(state, llm))
+        if on_stage_complete:
+            on_stage_complete("report_generation", result)
+        return result
+
+    def quality_check(state: AgentState) -> AgentState:
+        result = _run_node(trace, "quality_check", state, lambda: quality_check_node(state, llm))
+        if on_stage_complete:
+            on_stage_complete("quality_check", result)
+        return result
 
     graph.add_node("material_collection", material_collection)
     graph.add_node("structured_analysis", structured_analysis)
     graph.add_node("report_generation", report_generation)
+    graph.add_node("quality_check", quality_check)
     graph.set_entry_point("material_collection")
     graph.add_edge("material_collection", "structured_analysis")
     graph.add_edge("structured_analysis", "report_generation")
-    graph.add_edge("report_generation", END)
+    graph.add_edge("report_generation", "quality_check")
+    graph.add_conditional_edges(
+        "quality_check",
+        qa_route,
+        {
+            "end": END,
+            "retry_collection": "material_collection",
+            "retry_analysis": "structured_analysis",
+        },
+    )
     return graph.compile()
 
 

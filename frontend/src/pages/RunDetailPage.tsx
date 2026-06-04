@@ -4,10 +4,12 @@ import { useParams } from 'react-router-dom';
 import CompetitorConfirmPanel from '../components/competitors/CompetitorConfirmPanel';
 import EvidenceList from '../components/evidence/EvidenceList';
 import SourceList from '../components/evidence/SourceList';
+import QAResultsPanel from '../components/qa/QAResultsPanel';
+import QASummaryBanner from '../components/qa/QASummaryBanner';
 import CitationBundleView from '../components/report/CitationBundleView';
 import ReportMarkdown from '../components/report/ReportMarkdown';
 import AgentTimeline from '../components/timeline/AgentTimeline';
-import { getCompetitors, getEvidence, getReport, getReportCitationBundle, getReportCitations, getRun, getSources, getTimeline, regenerateReport } from '../lib/api';
+import { getCompetitors, getEvidence, getReport, getReportCitationBundle, getReportCitations, getReportVersions, getRun, getSources, getTimeline, regenerateReport } from '../lib/api';
 import type { Run, Trace } from '../lib/types';
 
 const statusLabels: Record<string, string> = {
@@ -23,6 +25,7 @@ const stageOrder = [
   'material_collection',
   'structured_analysis',
   'report_generation',
+  'quality_check',
   'completed',
 ];
 
@@ -33,6 +36,7 @@ const stageLabels: Record<string, string> = {
   material_collection: '资料采集',
   structured_analysis: '结构化分析',
   report_generation: '报告生成',
+  quality_check: '质量检查',
   completed: '完成',
   failed: '失败',
 };
@@ -81,7 +85,8 @@ export default function RunDetailPage() {
   const id = runId ?? '';
   const queryClient = useQueryClient();
   const [mainTab, setMainTab] = useState<'process' | 'report'>('process');
-  const [workbenchTab, setWorkbenchTab] = useState<'info' | 'sources' | 'competitors' | 'citations'>('info');
+  const [selectedIteration, setSelectedIteration] = useState<number | undefined>(undefined);
+  const [workbenchTab, setWorkbenchTab] = useState<'info' | 'sources' | 'competitors' | 'citations' | 'qa'>('info');
 
   const regenerateMutation = useMutation({
     mutationFn: () => regenerateReport(id),
@@ -105,9 +110,11 @@ export default function RunDetailPage() {
   const timelineQuery = useQuery({ queryKey: ['timeline', id], queryFn: () => getTimeline(id), enabled: Boolean(id), refetchInterval: isActive ? 3000 : false });
   const sourcesQuery = useQuery({ queryKey: ['sources', id], queryFn: () => getSources(id), enabled: Boolean(id), refetchInterval: isActive ? 5000 : false });
   const evidenceQuery = useQuery({ queryKey: ['evidence', id], queryFn: () => getEvidence(id), enabled: Boolean(id), refetchInterval: isActive ? 5000 : false });
-  const reportQuery = useQuery({ queryKey: ['report', id], queryFn: () => getReport(id), enabled: Boolean(id) && run?.status === 'completed' });
-  const citationsQuery = useQuery({ queryKey: ['report-citations', id], queryFn: () => getReportCitations(id), enabled: Boolean(id) && run?.status === 'completed' });
-  const hasAnalyses = run?.current_stage === 'structured_analysis' || run?.current_stage === 'report_generation' || run?.current_stage === 'completed' || run?.status === 'completed';
+  const hasReport = run?.status === 'completed' || run?.current_stage === 'report_generation' || run?.current_stage === 'quality_check';
+  const reportQuery = useQuery({ queryKey: ['report', id, selectedIteration], queryFn: () => getReport(id, selectedIteration), enabled: Boolean(id) && Boolean(hasReport) });
+  const reportVersionsQuery = useQuery({ queryKey: ['report-versions', id], queryFn: () => getReportVersions(id), enabled: Boolean(id) && Boolean(hasReport) });
+  const citationsQuery = useQuery({ queryKey: ['report-citations', id], queryFn: () => getReportCitations(id), enabled: Boolean(id) && Boolean(hasReport) });
+  const hasAnalyses = run?.current_stage === 'structured_analysis' || run?.current_stage === 'report_generation' || run?.current_stage === 'quality_check' || run?.current_stage === 'completed' || run?.status === 'completed';
   const citationBundleQuery = useQuery({
     queryKey: ['citation-bundle', id],
     queryFn: () => getReportCitationBundle(id),
@@ -136,7 +143,7 @@ export default function RunDetailPage() {
   const sources = sourcesQuery.data ?? [];
   const evidence = evidenceQuery.data ?? [];
   const report = reportQuery.data;
-  const canShowReport = run.status === 'completed' && Boolean(report);
+  const canShowReport = Boolean(hasReport) && Boolean(report);
 
   return (
     <div className="workbench-page">
@@ -189,6 +196,28 @@ export default function RunDetailPage() {
                   </div>
                 </div>
               ) : null}
+              {Boolean(hasReport) ? <QASummaryBanner runId={id} /> : null}
+              {(() => {
+                const versions = reportVersionsQuery.data ?? [];
+                if (versions.length > 1) {
+                  return (
+                    <div className="report-version-selector">
+                      <span className="report-version-label">报告版本：</span>
+                      {versions.map((v) => (
+                        <button
+                          key={v.id}
+                          type="button"
+                          className={`report-version-btn ${(selectedIteration ?? versions[versions.length - 1].iteration) === v.iteration ? 'active' : ''}`}
+                          onClick={() => setSelectedIteration(v.iteration)}
+                        >
+                          {v.iteration === 0 ? '初始版本' : `第 ${v.iteration} 轮`}
+                        </button>
+                      ))}
+                    </div>
+                  );
+                }
+                return null;
+              })()}
               <article className="report-document">
                 {reportQuery.isLoading ? <p className="loading">加载报告中...</p> : null}
                 {reportQuery.isError ? <p className="error-text">报告加载失败。</p> : null}
@@ -211,7 +240,8 @@ export default function RunDetailPage() {
             <button type="button" className={workbenchTab === 'info' ? 'active' : ''} onClick={() => setWorkbenchTab('info')}>任务信息</button>
             <button type="button" className={workbenchTab === 'competitors' ? 'active' : ''} onClick={() => setWorkbenchTab('competitors')}>竞品确认</button>
             <button type="button" className={workbenchTab === 'sources' ? 'active' : ''} onClick={() => setWorkbenchTab('sources')}>搜索结果</button>
-            <button type="button" className={workbenchTab === 'citations' ? 'active' : ''} onClick={() => setWorkbenchTab('citations')}>结构化分析</button>
+            <button type="button" className={workbenchTab === 'citations' ? 'active' : ''} onClick={() => setWorkbenchTab('citations')}>分析汇总</button>
+            <button type="button" className={workbenchTab === 'qa' ? 'active' : ''} onClick={() => setWorkbenchTab('qa')}>质量检查</button>
           </div>
 
           <div className="workbench-pane">
@@ -245,6 +275,7 @@ export default function RunDetailPage() {
             ) : null}
             {workbenchTab === 'competitors' ? <CompetitorConfirmPanel run={run} competitors={competitors} /> : null}
             {workbenchTab === 'citations' ? <CitationBundleView bundle={citationBundleQuery.data ?? []} /> : null}
+            {workbenchTab === 'qa' ? <QAResultsPanel runId={id} /> : null}
           </div>
         </aside>
       </div>

@@ -6,6 +6,26 @@ type Props = {
   isCollecting?: boolean;
 };
 
+function parseCollectionIteration(metadataJson: string | null): number | null {
+  if (!metadataJson) return null;
+  try {
+    const meta = JSON.parse(metadataJson) as Record<string, unknown>;
+    const val = meta.collection_iteration;
+    return typeof val === 'number' ? val : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseMetadata(metadataJson: string | null): Record<string, unknown> | null {
+  if (!metadataJson) return null;
+  try {
+    return JSON.parse(metadataJson) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
 export default function SourceList({ sources, isCollecting = false }: Props) {
   const [detailSource, setDetailSource] = useState<Source | null>(null);
 
@@ -22,18 +42,24 @@ export default function SourceList({ sources, isCollecting = false }: Props) {
             <p className="empty-state-desc">{isCollecting ? 'Agent 正在搜索和采集，请稍候。' : '可能采集失败或来源不足，请检查任务状态。'}</p>
           </div>
         ) : null}
-        {sources.map((source) => (
+        {sources.map((source) => {
+          const iteration = parseCollectionIteration(source.metadata_json);
+          return (
             <article key={source.id} className="source-item">
               <div className="source-meta-row">
                 <span>
                   {source.reference_id != null ? <strong className="source-ref-badge">[{source.reference_id}]</strong> : null}
                   {source.source_type_label ?? source.source_type}
+                  {iteration != null && iteration > 0 ? (
+                    <span className="source-iteration-badge">第{iteration}轮重采集</span>
+                  ) : null}
                 </span>
                 {source.credibility_score !== null ? <strong>权重 {(source.credibility_score * 100).toFixed(0)}%</strong> : null}
               </div>
               <button type="button" className="summary-title-button" onClick={() => setDetailSource(source)}>{source.title}</button>
             </article>
-          ))}
+          );
+        })}
       </div>
       {detailSource ? (
         <div className="modal-backdrop" role="presentation" onClick={() => setDetailSource(null)}>
@@ -52,6 +78,18 @@ export default function SourceList({ sources, isCollecting = false }: Props) {
                   <dd>[{detailSource.reference_id}]</dd>
                 </div>
               ) : null}
+              {(() => {
+                const iter = parseCollectionIteration(detailSource.metadata_json);
+                if (iter != null) {
+                  return (
+                    <div>
+                      <dt>采集轮次</dt>
+                      <dd>{iter === 0 ? '初始采集' : `第 ${iter} 轮重采集`}</dd>
+                    </div>
+                  );
+                }
+                return null;
+              })()}
               <div>
                 <dt>URL</dt>
                 <dd><a href={detailSource.url} target="_blank" rel="noreferrer">{detailSource.url}</a></dd>

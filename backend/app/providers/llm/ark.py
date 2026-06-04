@@ -93,8 +93,6 @@ def _normalize_inline_citations(markdown_content: str, max_reference_id: int | N
 
 def _ensure_reference_section(markdown_content: str, sources: list[dict[str, Any]]) -> str:
     stripped = markdown_content.strip()
-    # Strip existing reference section before extracting cited IDs,
-    # so self-referencing [[N]] in the reference section are not counted.
     body_only = re.sub(r"\n*##\s*(?:(?:\d+|[一二三四五六七八九十]+)[\.、]\s*)?(?:参考来源|参考文献|References)\s*\n[\s\S]*$", "", stripped).strip()
     cited_ids = {int(m) for m in re.findall(r"\[\[(\d+)\]\]", body_only)}
     reference_section = _format_reference_section(sources, cited_ids if cited_ids else None)
@@ -293,6 +291,16 @@ JSON schema:
             f"- evidence_id={e.get('id', '')}；维度={e.get('related_dimension', '未知')}；来源={e.get('source_url', '')}；摘要={e.get('summary', '')[:300]}"
             for e in evidence[:12]
         )
+        qa_feedback_section = ""
+        qa_feedback = competitor.get("_qa_feedback")
+        if qa_feedback:
+            qa_feedback_section = f"""
+
+【质检反馈——请务必改进以下问题】
+{qa_feedback}
+
+请特别注意：上次分析存在上述问题，请务必在本次分析中改进。
+"""
         prompt = f"""
 你是竞品分析师 Agent。请仔细阅读以下证据材料，基于证据中的真实信息对竞品进行分析。
 不要编造证据中没有的信息。如果某个字段在证据中没有找到相关内容，请如实写"证据中未涉及"。
@@ -302,7 +310,7 @@ JSON schema:
 
 已采集证据（请基于这些内容分析）：
 {evidence_summary}
-
+{qa_feedback_section}
 输出严格 JSON，不要输出 Markdown。
 JSON schema:
 {{
@@ -366,6 +374,111 @@ JSON schema:
         result["markdown_content"] = _ensure_reference_section(result.get("markdown_content", ""), sources)
         return result
 
+    def qa_check_report(
+        self,
+        report: dict[str, str],
+        analyses: list[dict[str, Any]],
+        evidence: list[dict[str, Any]],
+        sources: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        fallback = self.fallback.qa_check_report(report, analyses, evidence, sources)
+        analyses_summary = "\n".join(
+            f"- 竞品={a.get('competitor_name', '')}；定位={a.get('positioning', '')[:100]}；"
+            f"定价={a.get('pricing_summary', '')[:80]}；证据数={len(_json_list(a.get('evidence_ids_json')))}"
+            for a in analyses
+        )
+        evidence_summary = "\n".join(
+            f"- 竞品={e.get('related_product', '')}；维度={e.get('related_dimension', '')}；"
+            f"置信度={e.get('confidence', 0)}；摘要={e.get('summary', '')[:150]}"
+            for e in evidence[:30]
+        )
+        sources_summary = "\n".join(
+            f"- [{s.get('reference_id', '')}] {s.get('title', '')[:60]} ({s.get('source_type', '')})"
+            for s in sources[:20]
+        )
+        report_content = report.get("markdown_content", "")[:4000]
+        prompt = f"""
+你是竞品分析系统的质检 Agent。请对以下报告和支撑数据进行多维度质量检查。
+
+## 报告内容（截取前4000字符）
+{report_content}
+
+## 分析摘要
+{analyses_summary}
+
+## 证据摘要（前30条）
+{evidence_summary}
+
+## 来源列表（前20条）
+{sources_summary}
+
+## 质检维度
+
+请从以下 6 个维度评估，每个维度打分 0.0-1.0：
+
+1. **evidence_grounding（证据支撑度）**：分析结论是否被证据支撑？是否有幻觉内容？
+2. **citation_accuracy（引用准确性）**：报告中的 `[[N]](URL)` 引用是否指向真实来源？
+3. **schema_completeness（Schema 完整度）**：每个竞品的 7 个分析字段是否都有实质内容？
+4. **coverage_gaps（覆盖缺口）**：每个竞品的 4 个核心维度（产品定位、核心功能、价格与商业模式、用户评价与痛点）证据是否充足？
+5. **cross_competitor_consistency（跨竞品一致性）**：各竞品分析深度是否一致？
+6. **factual_plausibility（事实合理性）**：是否有明显不合理内容？
+
+## 决策规则
+- overall_score = 6 个维度加权平均（权重：evidence_grounding 0.25, citation_accuracy 0.15, schema_completeness 0.2, coverage_gaps 0.2, cross_competitor_consistency 0.1, factual_plausibility 0.1）
+- 如果 overall_score >= 0.7 → decision = "pass"
+- 如果 overall_score < 0.7 且有 coverage_gaps 或 evidence_grounding 的 critical 问题 → decision = "retry_collection"
+- 否则 → decision = "retry_analysis"
+
+输出严格 JSON，不要输出 Markdown 代码块。
+JSON schema:
+{{
+  "overall_score": 0.0,
+  "dimension_scores": {{
+    "evidence_grounding": 0.0,
+    "citation_accuracy": 0.0,
+    "schema_completeness": 0.0,
+    "coverage_gaps": 0.0,
+    "cross_competitor_consistency": 0.0,
+    "factual_plausibility": 0.0
+  }},
+  "decision": "pass | retry_collection | retry_analysis",
+  "retry_instructions": "具体的改进指导（仅 decision 非 pass 时填写，面向人类阅读）",
+  "retry_queries": [
+    {{
+      "competitor_name": "竞品名称",
+      "slot": "core_features | pricing | positioning | user_feedback | market_signal | risk_opportunity | relationship_evidence",
+      "query": "用于搜索引擎的具体检索关键词，15-40字，精准有效"
+    }}
+  ],
+  "issues": [
+    {{
+      "dimension": "维度名",
+      "severity": "critical | major | minor",
+      "competitor_name": "相关竞品名或 report",
+      "description": "问题描述",
+      "fix_suggestion": "修复建议"
+    }}
+  ]
+}}
+
+【retry_queries 生成规则】
+- 仅当 decision 非 "pass" 时填写
+- 每个 issue 对应生成 1-2 条 query
+- query 必须是有效的搜索关键词，不要包含自然语言指令（如"补充搜索"）
+- 根据竞品名称的语言选择中英文 query：英文竞品用英文，中文竞品用中文
+- 每条 query 控制在 15-40 个字符，精准命中信息缺口
+- 示例：{{"competitor_name": "Otter.ai", "slot": "core_features", "query": "Otter.ai feature list integrations API documentation"}}
+"""
+        result = self._json_chat(prompt, fallback)
+        if result is fallback:
+            return fallback
+        score = float(result.get("overall_score", 0))
+        result["overall_score"] = min(1.0, max(0.0, score))
+        issues = result.get("issues")
+        if not isinstance(issues, list):
+            result["issues"] = []
+        return result
+
     def _json_chat(self, prompt: str, fallback: dict[str, Any]) -> dict[str, Any]:
         try:
             response = self.client.chat.completions.create(
@@ -395,3 +508,15 @@ JSON schema:
         except Exception:
             logger.exception("LLM API call failed, using fallback")
             return fallback
+
+
+def _json_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if not isinstance(value, str) or not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    return [str(item) for item in parsed] if isinstance(parsed, list) else []

@@ -78,6 +78,7 @@ export type Analysis = {
   weaknesses_json: string;
   opportunities_json: string;
   evidence_ids_json: string;
+  analysis_iteration: number;
   created_at: string;
 };
 
@@ -102,6 +103,7 @@ export type Source = {
 export type Report = {
   id: string;
   run_id: string;
+  iteration: number;
   title: string;
   markdown_content: string;
   summary: string;
@@ -143,5 +145,25 @@ export type CitationBundleClaim = {
 export type CitationBundleCompetitor = {
   competitor_id: string;
   competitor_name: string;
+  analysis_iteration: number;
   claims: CitationBundleClaim[];
+};
+
+export type QAIssue = {
+  dimension: string;
+  severity: string;
+  competitor_name: string;
+  description: string;
+  fix_suggestion: string;
+};
+
+export type QAResult = {
+  id: string;
+  run_id: string;
+  iteration: number;
+  overall_score: number;
+  decision: string;
+  issues: QAIssue[];
+  retry_instructions: string | null;
+  created_at: string;
 };

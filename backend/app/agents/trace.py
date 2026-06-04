@@ -116,4 +116,12 @@ def _summarize_output(stage: str, output: dict[str, Any]) -> dict[str, Any]:
     if stage == "report_generation":
         report = output.get("report", {})
         return {"title": report.get("title"), "summary": report.get("summary")}
+    if stage == "quality_check":
+        qa = output.get("qa_result", {})
+        return {
+            "overall_score": qa.get("overall_score"),
+            "decision": qa.get("decision"),
+            "issue_count": len(qa.get("issues", [])),
+            "iteration": qa.get("iteration"),
+        }
     return {"stage": stage, "status": "completed"}

@@ -379,6 +379,91 @@ class MockLLMProvider(LLMProvider):
             "markdown_content": "\n".join(lines),
         }
 
+    def qa_check_report(
+        self,
+        report: dict[str, str],
+        analyses: list[dict[str, Any]],
+        evidence: list[dict[str, Any]],
+        sources: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        issues: list[dict[str, Any]] = []
+        source_urls = {s.get("url") for s in sources if s.get("url")}
+        competitor_evidence_count: dict[str, int] = {}
+        for item in evidence:
+            cid = item.get("competitor_id", "unknown")
+            competitor_evidence_count[cid] = competitor_evidence_count.get(cid, 0) + 1
+
+        for analysis in analyses:
+            name = analysis.get("competitor_name", analysis.get("name", "未知"))
+            cid = analysis.get("competitor_id", "")
+            ev_count = competitor_evidence_count.get(cid, 0)
+            if ev_count < 3:
+                issues.append({
+                    "dimension": "coverage_gaps",
+                    "severity": "critical" if ev_count == 0 else "major",
+                    "competitor_name": name,
+                    "description": f"{name} 仅有 {ev_count} 条证据，覆盖不足",
+                    "fix_suggestion": f"补充搜索 {name} 的核心功能和定价信息",
+                })
+            pricing = str(analysis.get("pricing_summary", ""))
+            if not pricing or "未涉及" in pricing or "Mock" in pricing:
+                issues.append({
+                    "dimension": "schema_completeness",
+                    "severity": "major",
+                    "competitor_name": name,
+                    "description": f"{name} 的定价信息缺失或为占位文本",
+                    "fix_suggestion": f"补充搜索 {name} pricing plans",
+                })
+
+        markdown = report.get("markdown_content", "")
+        import re
+        cited_refs = re.findall(r"\[\[(\d+)\]\]", markdown)
+        for ref_str in cited_refs:
+            ref_id = int(ref_str)
+            if ref_id > len(sources):
+                issues.append({
+                    "dimension": "citation_accuracy",
+                    "severity": "minor",
+                    "competitor_name": "report",
+                    "description": f"报告引用了不存在的来源 [[{ref_id}]]",
+                    "fix_suggestion": "移除或修正无效引用",
+                })
+
+        overall_score = max(0.3, 1.0 - len(issues) * 0.12)
+        has_critical = any(i["severity"] == "critical" for i in issues)
+        has_coverage_issue = any(i["dimension"] == "coverage_gaps" for i in issues)
+
+        if overall_score >= 0.7:
+            decision = "pass"
+            retry_instructions = None
+        elif has_coverage_issue and has_critical:
+            decision = "retry_collection"
+            retry_instructions = "; ".join(i["fix_suggestion"] for i in issues if i["dimension"] == "coverage_gaps")
+        else:
+            decision = "retry_analysis"
+            retry_instructions = "; ".join(i["fix_suggestion"] for i in issues if i["dimension"] != "coverage_gaps")
+
+        retry_queries = []
+        if decision != "pass":
+            for issue in issues:
+                comp = issue.get("competitor_name", "")
+                if comp in {"report", "system", ""}:
+                    continue
+                dim = issue.get("dimension", "")
+                if dim == "coverage_gaps":
+                    retry_queries.append({"competitor_name": comp, "slot": "core_features", "query": f"{comp} core features capabilities detailed"})
+                    retry_queries.append({"competitor_name": comp, "slot": "pricing", "query": f"{comp} pricing plans detailed cost"})
+                elif dim == "schema_completeness":
+                    retry_queries.append({"competitor_name": comp, "slot": "pricing", "query": f"{comp} pricing plans tiers comparison"})
+
+        return {
+            "overall_score": round(overall_score, 2),
+            "decision": decision,
+            "retry_instructions": retry_instructions,
+            "retry_queries": retry_queries,
+            "issues": issues,
+        }
+
     def search(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
         return [
             {

@@ -82,7 +82,13 @@ def material_collection_node(state: AgentState, search: SearchProvider, progress
     requirement = state.get("requirement", {})
     if state.get("target_understanding"):
         requirement = {**requirement, **{k: v for k, v in state["target_understanding"].items() if v}}
-    product_queries = _plan_material_queries(state["selected_competitors"], requirement, state.get("evidence", []), state.get("sources", []))
+    competitors = state["selected_competitors"]
+    qa_retry_queries = state.get("qa_retry_queries")
+
+    if qa_retry_queries:
+        product_queries = _build_retry_product_queries(competitors, qa_retry_queries, requirement)
+    else:
+        product_queries = _plan_material_queries(competitors, requirement, state.get("evidence", []), state.get("sources", []))
     quarts = [quart for item in product_queries for quart in item["queries"]]
     product_types = sorted({quart["product_type"] for quart in quarts})
     missing_slots = sorted({quart["target_slot"] for quart in quarts})
@@ -104,9 +110,12 @@ def material_collection_node(state: AgentState, search: SearchProvider, progress
     )
     _emit(progress, "material_query_planning", "为已确认竞品按检索 Quart 规划资料采集 query", {"product_count": len(product_queries), "query_count": len(quarts), "source_weights": SOURCE_WEIGHTS})
 
-    sources = []
-    evidence = []
-    seen_urls = set()
+    existing_sources = state.get("sources", [])
+    existing_evidence = state.get("evidence", [])
+    sources = list(existing_sources)
+    evidence = list(existing_evidence)
+    seen_urls = {f"{s.get('competitor_id', '')}::{s.get('url', '')}" for s in existing_sources if s.get("url")}
+    collection_iteration = state.get("feedback_loop_count", 0)
     for product_query in product_queries:
         competitor = product_query["competitor"]
         product_source_count = 0
@@ -142,7 +151,7 @@ def material_collection_node(state: AgentState, search: SearchProvider, progress
                             "provider": search.name,
                             "raw_content": result.raw_content,
                             "reference_id": len(sources) + 1,
-                            "metadata_json": _metadata_json(credibility_score, ranked_result["rank_score"], source_type, ranked_result["label"], ranked_result["reason"], query_item),
+                            "metadata_json": _metadata_json(credibility_score, ranked_result["rank_score"], source_type, ranked_result["label"], ranked_result["reason"], query_item, collection_iteration),
                         }
                         sources.append(source)
                         product_source_count += 1
@@ -183,6 +192,50 @@ def _plan_material_queries(competitors: list[dict], requirement: dict, evidence:
     return planned
 
 
+def _build_retry_product_queries(competitors: list[dict], retry_queries: list[dict], requirement: dict) -> list[dict]:
+    competitor_by_name: dict[str, dict] = {}
+    for comp in competitors:
+        competitor_by_name[comp["name"].lower()] = comp
+        competitor_by_name[comp["name"]] = comp
+    product_map: dict[str, list[dict]] = {}
+    for rq in retry_queries:
+        comp_name = rq.get("competitor_name", "")
+        comp = competitor_by_name.get(comp_name.lower()) or competitor_by_name.get(comp_name)
+        if not comp:
+            continue
+        product_type = _detect_product_type(requirement)
+        competitor_type = comp.get("category") or "direct_competitor"
+        relationship_model = _build_relationship_model(comp, requirement)
+        slot = rq.get("slot", "core_features")
+        query = rq.get("query", "")
+        if not query:
+            continue
+        quart = {
+            "competitor_id": comp["id"],
+            "competitor_name": comp["name"],
+            "product_type": product_type,
+            "competitor_type": competitor_type,
+            "relation_claim": relationship_model["relation_claim"],
+            "competed_need": relationship_model["competed_need"],
+            "overlap_points": relationship_model["overlap_points"],
+            "target_slot": slot,
+            "dimension": SCHEMA_SLOT_DIMENSIONS.get(slot, "核心功能"),
+            "query": query,
+            "query_locale": _query_locale_for_competitor(comp, product_type),
+            "preferred_source_types": _preferred_source_types(product_type, competitor_type, slot),
+            "avoid_source_types": ["unknown"],
+            "priority": "high",
+            "limit": 4,
+            "success_criteria": _success_criteria(slot, relationship_model),
+        }
+        product_map.setdefault(comp["id"], {"competitor": comp, "queries": []})
+        product_map[comp["id"]]["queries"].append(quart)
+    for comp in competitors:
+        if comp["id"] not in product_map:
+            product_map[comp["id"]] = {"competitor": comp, "queries": []}
+    return list(product_map.values())
+
+
 def _plan_retrieval_quarts(competitors: list[dict], requirement: dict, evidence: list[dict] | None = None, sources: list[dict] | None = None) -> list[dict]:
     quarts = []
     evidence = evidence or []
@@ -197,7 +250,7 @@ def _plan_retrieval_quarts(competitors: list[dict], requirement: dict, evidence:
             for slot in ["market_signal", "risk_opportunity"]:
                 if slot not in covered_slots and slot not in candidate_slots:
                     candidate_slots.append(slot)
-        for slot in candidate_slots[:5]:
+        for slot in candidate_slots:
             quarts.append(_build_retrieval_quart(competitor, product_type, competitor_type, slot, relationship_model))
     return quarts
 
@@ -576,7 +629,7 @@ def _looks_official_domain(domain: str) -> bool:
     return not any(item in domain for item in noise_domains)
 
 
-def _metadata_json(credibility_score: float, rank_score: float, source_type: str, source_label: str, classification_reason: str, query_item: dict) -> str:
+def _metadata_json(credibility_score: float, rank_score: float, source_type: str, source_label: str, classification_reason: str, query_item: dict, collection_iteration: int = 0) -> str:
     import json
 
     return json.dumps(
@@ -584,6 +637,7 @@ def _metadata_json(credibility_score: float, rank_score: float, source_type: str
             "credibility_score": credibility_score,
             "rank_score": rank_score,
             "source_type_label": source_label,
+            "collection_iteration": collection_iteration,
             "query": query_item["query"],
             "dimension": query_item["dimension"],
             "target_slot": query_item.get("target_slot"),

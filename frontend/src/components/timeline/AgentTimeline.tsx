@@ -9,6 +9,7 @@ const stageLabels: Record<string, string> = {
   material_collection: '资料采集',
   structured_analysis: '结构化分析',
   report_generation: '报告生成',
+  quality_check: '质量检查',
   completed: '已完成',
   target_query_planning: '规划目标搜索',
   target_search: '搜索目标资料',
@@ -32,6 +33,7 @@ const mainStages = [
   'material_collection',
   'structured_analysis',
   'report_generation',
+  'quality_check',
 ];
 
 const childStageGroups: Record<string, string[]> = {
@@ -65,6 +67,7 @@ const stageDescriptions: Record<string, string> = {
   material_collection: '围绕已确认竞品采集公开资料和证据',
   structured_analysis: '按维度整理定位、功能、价格和机会点',
   report_generation: '生成 Markdown 报告并关联来源证据',
+  quality_check: '对报告进行多维度质检，判断是否需要重做采集或分析',
   target_query_planning: '为目标产品或产品想法规划搜索关键词',
   target_search: '调用搜索工具采集目标相关公开资料',
   target_understanding: '归纳目标对象的定位、用户和核心能力',

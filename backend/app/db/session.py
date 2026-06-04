@@ -44,3 +44,49 @@ def _ensure_compatible_schema() -> None:
             connection.execute(text("ALTER TABLE competitors ADD COLUMN relationship_reason TEXT"))
         if "overlap_dimensions_json" not in competitor_columns:
             connection.execute(text("ALTER TABLE competitors ADD COLUMN overlap_dimensions_json TEXT"))
+    run_columns = {column["name"] for column in inspector.get_columns("runs")}
+    with engine.begin() as connection:
+        if "feedback_loop_count" not in run_columns:
+            connection.execute(text("ALTER TABLE runs ADD COLUMN feedback_loop_count INTEGER NOT NULL DEFAULT 0"))
+    if "analyses" in inspector.get_table_names():
+        analysis_columns = {column["name"] for column in inspector.get_columns("analyses")}
+        with engine.begin() as connection:
+            if "analysis_iteration" not in analysis_columns:
+                connection.execute(text("ALTER TABLE analyses ADD COLUMN analysis_iteration INTEGER NOT NULL DEFAULT 0"))
+    if "reports" in inspector.get_table_names():
+        report_columns = {column["name"] for column in inspector.get_columns("reports")}
+        with engine.begin() as connection:
+            if "iteration" not in report_columns:
+                _recreate_reports_table_without_unique(connection)
+            else:
+                _drop_reports_unique_if_exists(connection)
+
+
+def _has_reports_unique(connection) -> bool:
+    row = connection.execute(text("SELECT sql FROM sqlite_master WHERE type='table' AND name='reports'")).fetchone()
+    if not row or not row[0]:
+        return False
+    return "UNIQUE" in row[0].upper() and "RUN_ID" in row[0].upper()
+
+
+def _drop_reports_unique_if_exists(connection) -> None:
+    if not _has_reports_unique(connection):
+        return
+    _recreate_reports_table_without_unique(connection)
+
+
+def _recreate_reports_table_without_unique(connection) -> None:
+    connection.execute(text("CREATE TABLE IF NOT EXISTS reports_new ("
+        "id VARCHAR NOT NULL PRIMARY KEY, "
+        "run_id VARCHAR NOT NULL REFERENCES runs(id), "
+        "iteration INTEGER NOT NULL DEFAULT 0, "
+        "title VARCHAR NOT NULL, "
+        "markdown_content TEXT NOT NULL, "
+        "summary TEXT NOT NULL DEFAULT '', "
+        "created_at DATETIME, "
+        "updated_at DATETIME"
+    ")"))
+    connection.execute(text("INSERT INTO reports_new (id, run_id, iteration, title, markdown_content, summary, created_at, updated_at) "
+        "SELECT id, run_id, COALESCE(iteration, 0), title, markdown_content, summary, created_at, updated_at FROM reports"))
+    connection.execute(text("DROP TABLE reports"))
+    connection.execute(text("ALTER TABLE reports_new RENAME TO reports"))

@@ -28,3 +28,13 @@ class LLMProvider(Protocol):
     def generate_report(self, run: dict[str, Any], analyses: list[dict[str, Any]], sources: list[dict[str, Any]]) -> dict[str, str]:
         """Generate a markdown report."""
         ...
+
+    def qa_check_report(
+        self,
+        report: dict[str, str],
+        analyses: list[dict[str, Any]],
+        evidence: list[dict[str, Any]],
+        sources: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Quality-check a report and its supporting data. Returns structured QA verdict."""
+        ...

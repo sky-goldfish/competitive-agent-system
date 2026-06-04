@@ -52,7 +52,12 @@ export default function AnalysisList({ analyses, competitors, evidence, sources 
           return (
             <article key={analysis.id} className="analysis-item">
               <div className="source-meta-row">
-                <span>{competitor?.name ?? analysis.competitor_id}</span>
+                <span>
+                  {competitor?.name ?? analysis.competitor_id}
+                  {analysis.analysis_iteration > 0 ? (
+                    <span className="source-iteration-badge">第{analysis.analysis_iteration}轮重分析</span>
+                  ) : null}
+                </span>
                 <strong>{linkedEvidence.length} evidence</strong>
               </div>
               <button type="button" className="summary-title-button" onClick={() => setDetailAnalysis(analysis)}>
@@ -71,7 +76,12 @@ export default function AnalysisList({ analyses, competitors, evidence, sources 
           <div className="competitor-modal" role="dialog" aria-modal="true" aria-labelledby="analysis-detail-title" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <div>
-                <h3 id="analysis-detail-title">{competitorById.get(detailAnalysis.competitor_id)?.name ?? detailAnalysis.competitor_id}</h3>
+                <h3 id="analysis-detail-title">
+                  {competitorById.get(detailAnalysis.competitor_id)?.name ?? detailAnalysis.competitor_id}
+                  {detailAnalysis.analysis_iteration > 0 ? (
+                    <span className="source-iteration-badge" style={{ marginLeft: 8 }}>第{detailAnalysis.analysis_iteration}轮重分析</span>
+                  ) : null}
+                </h3>
                 <p>结构化分析 · {getLinkedEvidence(detailAnalysis).length} 条关联证据</p>
               </div>
               <button type="button" className="modal-close" onClick={() => setDetailAnalysis(null)}>关闭</button>

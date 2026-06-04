@@ -25,7 +25,7 @@ export default function CitationBundleView({ bundle }: Props) {
     return (
       <section className="panel">
         <div className="panel-header">
-          <h2>结构化分析</h2>
+          <h2>分析汇总</h2>
         </div>
         <div className="empty-state">
           <p className="empty-state-title">暂无结构化分析</p>
@@ -38,7 +38,7 @@ export default function CitationBundleView({ bundle }: Props) {
   return (
     <section className="panel">
       <div className="panel-header">
-        <h2>结构化分析</h2>
+        <h2>分析汇总</h2>
         <span>{bundle.length} 竞品</span>
       </div>
       <div className="citation-bundle-list">
@@ -52,7 +52,12 @@ export default function CitationBundleView({ bundle }: Props) {
                 className={`citation-bundle-trigger ${isOpen ? 'open' : ''}`}
                 onClick={() => toggle(competitor.competitor_id)}
               >
-                <span className="citation-bundle-name">{competitor.competitor_name}</span>
+                <span className="citation-bundle-name">
+                  {competitor.competitor_name}
+                  {competitor.analysis_iteration > 0 ? (
+                    <span className="source-iteration-badge">第{competitor.analysis_iteration}轮重分析</span>
+                  ) : null}
+                </span>
                 <span className="citation-bundle-count">{totalRefs} 来源</span>
               </button>
               {isOpen ? (

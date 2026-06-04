@@ -14,3 +14,6 @@ class AgentState(TypedDict, total=False):
     evidence: list[dict[str, Any]]
     analyses: list[dict[str, Any]]
     report: dict[str, str]
+    qa_result: dict[str, Any]
+    qa_retry_queries: list[dict[str, Any]]
+    feedback_loop_count: int

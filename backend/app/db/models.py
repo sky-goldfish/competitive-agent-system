@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -23,6 +23,7 @@ class Run(Base):
     status: Mapped[str] = mapped_column(String, default="created")
     current_stage: Mapped[str] = mapped_column(String, default="created")
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    feedback_loop_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -33,7 +34,8 @@ class Run(Base):
     evidence_items: Mapped[list["Evidence"]] = relationship(back_populates="run", cascade="all, delete-orphan")
     analyses: Mapped[list["Analysis"]] = relationship(back_populates="run", cascade="all, delete-orphan")
     traces: Mapped[list["AgentTrace"]] = relationship(back_populates="run", cascade="all, delete-orphan")
-    report: Mapped["Report"] = relationship(back_populates="run", cascade="all, delete-orphan", uselist=False)
+    qa_results: Mapped[list["QAResult"]] = relationship(back_populates="run", cascade="all, delete-orphan")
+    reports: Mapped[list["Report"]] = relationship(back_populates="run", cascade="all, delete-orphan")
 
 
 class Message(Base):
@@ -123,6 +125,7 @@ class Analysis(Base):
     weaknesses_json: Mapped[str] = mapped_column(Text, default="[]")
     opportunities_json: Mapped[str] = mapped_column(Text, default="[]")
     evidence_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    analysis_iteration: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     run: Mapped[Run] = relationship(back_populates="analyses")
@@ -151,11 +154,27 @@ class Report(Base):
     __tablename__ = "reports"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("rep"))
-    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), unique=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"))
+    iteration: Mapped[int] = mapped_column(Integer, default=0)
     title: Mapped[str] = mapped_column(String)
     markdown_content: Mapped[str] = mapped_column(Text)
     summary: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    run: Mapped[Run] = relationship(back_populates="report")
+    run: Mapped[Run] = relationship(back_populates="reports")
+
+
+class QAResult(Base):
+    __tablename__ = "qa_results"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: new_id("qa"))
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"))
+    iteration: Mapped[int] = mapped_column(Integer, default=1)
+    overall_score: Mapped[float] = mapped_column(Float, default=0.0)
+    decision: Mapped[str] = mapped_column(String, default="pass")
+    issues_json: Mapped[str] = mapped_column(Text, default="[]")
+    retry_instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    run: Mapped[Run] = relationship(back_populates="qa_results")

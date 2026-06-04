@@ -12,13 +12,24 @@ router = APIRouter(prefix="/runs/{run_id}/report", tags=["reports"])
 
 
 @router.get("", response_model=ReportResponse)
-def get_report(run_id: str, db: Session = Depends(get_db)):
+def get_report(run_id: str, iteration: int | None = None, db: Session = Depends(get_db)):
     if db.get(Run, run_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found.")
-    report = db.query(Report).filter(Report.run_id == run_id).first()
+    query = db.query(Report).filter(Report.run_id == run_id)
+    if iteration is not None:
+        report = query.filter(Report.iteration == iteration).first()
+    else:
+        report = query.order_by(Report.iteration.desc()).first()
     if report is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found.")
     return report
+
+
+@router.get("/versions", response_model=list[ReportResponse])
+def get_report_versions(run_id: str, db: Session = Depends(get_db)):
+    if db.get(Run, run_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found.")
+    return db.query(Report).filter(Report.run_id == run_id).order_by(Report.iteration.asc()).all()
 
 
 @router.get("/citations", response_model=list[CitationMapItem])
@@ -163,7 +174,7 @@ def get_report_citation_bundle(run_id: str, db: Session = Depends(get_db)):
 
             claims.append(CitationBundleClaim(claim_type=claim_type, label=label, text=text, evidence=ev_refs))
 
-        result.append(CitationBundleCompetitor(competitor_id=analysis.competitor_id, competitor_name=competitor_name, claims=claims))
+        result.append(CitationBundleCompetitor(competitor_id=analysis.competitor_id, competitor_name=competitor_name, analysis_iteration=analysis.analysis_iteration, claims=claims))
 
     return result
 

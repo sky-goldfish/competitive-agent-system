@@ -1,13 +1,14 @@
 import json
 from datetime import datetime
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.agents.graph import build_competitor_discovery_graph, build_report_generation_graph
 from app.agents.nodes.report_generation import report_generation_node
 from app.agents.state import AgentState
 from app.agents.trace import record_progress_trace, run_traced_stage
-from app.db.models import Analysis, Competitor, Evidence, Report, Run, Source
+from app.db.models import Analysis, Competitor, Evidence, QAResult, Report, Run, Source
 from app.db.session import SessionLocal
 from app.providers.llm.factory import get_llm_provider
 from app.providers.search.factory import get_search_provider
@@ -150,7 +151,17 @@ def execute_report_run(run_id: str) -> None:
             raise InvalidRunStateError(f"Run not found: {run_id}")
 
         if stage == "material_collection":
+            existing_source_urls = {s.url for s in db.query(Source.url).filter(Source.run_id == run_id).all()}
+            existing_evidence_ids = {e.id for e in db.query(Evidence.id).filter(Evidence.run_id == run_id).all()}
             for item in state["sources"]:
+                if item.get("url") in existing_source_urls:
+                    source = db.query(Source).filter(Source.run_id == run_id, Source.url == item["url"]).first()
+                    if source:
+                        source_by_key[_source_key_for_source(item)] = source
+                        if item.get("competitor_id"):
+                            source_by_competitor_url[_competitor_url_key(item.get("competitor_id"), item.get("url"))] = source
+                        source_by_url.setdefault(item["url"], source)
+                        continue
                 metadata = _merge_reference_id(item.get("metadata_json"), item.get("reference_id"))
                 source_data = {key: value for key, value in item.items() if key != "reference_id"}
                 source_data["metadata_json"] = metadata
@@ -164,6 +175,9 @@ def execute_report_run(run_id: str) -> None:
 
             persisted_evidence = []
             for item in state["evidence"]:
+                if item.get("id") and item["id"] in existing_evidence_ids:
+                    persisted_evidence.append(item)
+                    continue
                 source = _source_for_evidence(item, source_by_key, source_by_competitor_url, source_by_url)
                 source_url = item.get("source_url")
                 if source is None:
@@ -177,6 +191,12 @@ def execute_report_run(run_id: str) -> None:
             run.current_stage = "structured_analysis"
             db.commit()
         elif stage == "structured_analysis":
+            new_competitor_ids = {item["competitor_id"] for item in state["analyses"]}
+            if new_competitor_ids:
+                db.query(Analysis).filter(
+                    Analysis.run_id == run_id,
+                    Analysis.competitor_id.in_(new_competitor_ids),
+                ).delete(synchronize_session=False)
             for item in state["analyses"]:
                 db.add(
                     Analysis(
@@ -191,6 +211,7 @@ def execute_report_run(run_id: str) -> None:
                         weaknesses_json=item["weaknesses_json"],
                         opportunities_json=item["opportunities_json"],
                         evidence_ids_json=item["evidence_ids_json"],
+                        analysis_iteration=item.get("analysis_iteration", 0),
                     )
                 )
                 # 更新竞品的关系信息
@@ -203,6 +224,24 @@ def execute_report_run(run_id: str) -> None:
                         competitor.overlap_dimensions_json = json.dumps(overlap_dims, ensure_ascii=False)
                     db.add(competitor)
             run.current_stage = "report_generation"
+            db.commit()
+        elif stage == "report_generation":
+            existing_count = db.query(Report).filter(Report.run_id == run_id).count()
+            db.add(Report(run_id=run_id, iteration=existing_count, **state["report"]))
+            db.commit()
+        elif stage == "quality_check":
+            qa_result = state.get("qa_result", {})
+            db.add(
+                QAResult(
+                    run_id=run_id,
+                    iteration=qa_result.get("iteration", 1),
+                    overall_score=qa_result.get("overall_score", 0),
+                    decision=qa_result.get("decision", "pass"),
+                    issues_json=json.dumps(qa_result.get("issues", []), ensure_ascii=False),
+                    retry_instructions=qa_result.get("retry_instructions"),
+                )
+            )
+            run.feedback_loop_count = state.get("feedback_loop_count", 0)
             db.commit()
 
     try:
@@ -253,14 +292,6 @@ def execute_report_run(run_id: str) -> None:
             on_stage_complete=on_stage_complete,
         )
         state = graph.invoke(state)
-
-        existing_report = db.query(Report).filter(Report.run_id == run_id).first()
-        if existing_report is None:
-            db.add(Report(run_id=run_id, **state["report"]))
-        else:
-            existing_report.title = state["report"]["title"]
-            existing_report.summary = state["report"]["summary"]
-            existing_report.markdown_content = state["report"]["markdown_content"]
 
         run.status = "completed"
         run.current_stage = "completed"
@@ -347,13 +378,8 @@ def regenerate_report(run_id: str) -> None:
 
         state = report_generation_node(state, llm)
 
-        existing_report = db.query(Report).filter(Report.run_id == run_id).first()
-        if existing_report is None:
-            db.add(Report(run_id=run_id, **state["report"]))
-        else:
-            existing_report.title = state["report"]["title"]
-            existing_report.summary = state["report"]["summary"]
-            existing_report.markdown_content = state["report"]["markdown_content"]
+        max_iteration = db.query(func.max(Report.iteration)).filter(Report.run_id == run_id).scalar() or 0
+        db.add(Report(run_id=run_id, iteration=max_iteration + 1, **state["report"]))
 
         run.status = "completed"
         run.current_stage = "completed"
@@ -404,6 +430,14 @@ def _trace_input(stage: str, state: AgentState) -> dict:
         return {"evidence_count": len(state.get("evidence", []))}
     if stage == "report_generation":
         return {"analysis_count": len(state.get("analyses", []))}
+    if stage == "quality_check":
+        prev = state.get("qa_result", {})
+        return {
+            "report_title": state.get("report", {}).get("title"),
+            "analysis_count": len(state.get("analyses", [])),
+            "feedback_loop_count": state.get("feedback_loop_count", 0),
+            "previous_decision": prev.get("decision") if isinstance(prev, dict) else None,
+        }
     return {}
 
 

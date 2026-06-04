@@ -1,4 +1,4 @@
-import type { Analysis, CitationBundleCompetitor, CitationMapItem, Competitor, CustomCompetitorInput, Evidence, Report, Run, Source, Trace } from './types';
+import type { Analysis, CitationBundleCompetitor, CitationMapItem, Competitor, CustomCompetitorInput, Evidence, QAResult, Report, Run, Source, Trace } from './types';
 
 const API_BASE = '/api';
 
@@ -60,8 +60,13 @@ export function getSources(runId: string): Promise<Source[]> {
   return request<Source[]>(`/runs/${runId}/sources`);
 }
 
-export function getReport(runId: string): Promise<Report> {
-  return request<Report>(`/runs/${runId}/report`);
+export function getReport(runId: string, iteration?: number): Promise<Report> {
+  const params = iteration != null ? `?iteration=${iteration}` : '';
+  return request<Report>(`/runs/${runId}/report${params}`);
+}
+
+export function getReportVersions(runId: string): Promise<Report[]> {
+  return request<Report[]>(`/runs/${runId}/report/versions`);
 }
 
 export function getReportCitations(runId: string): Promise<CitationMapItem[]> {
@@ -78,4 +83,8 @@ export function getEvidence(runId: string): Promise<Evidence[]> {
 
 export function getAnalyses(runId: string): Promise<Analysis[]> {
   return request<Analysis[]>(`/runs/${runId}/analyses`);
+}
+
+export function getQAResults(runId: string): Promise<QAResult[]> {
+  return request<QAResult[]>(`/runs/${runId}/qa/results`);
 }
