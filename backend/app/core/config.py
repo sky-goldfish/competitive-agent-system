@@ -11,6 +11,10 @@ class Settings(BaseSettings):
     ark_endpoint_id: str | None = None
     ark_model: str = "doubao-seed-2-0-lite"
     ark_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
+    openai_api_key: str | None = None
+    openai_model: str | None = None
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_temperature: float | None = None
     search_provider: str = "mock"
     tavily_api_key: str | None = None
     bocha_api_key: str | None = None

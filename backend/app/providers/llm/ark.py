@@ -115,6 +115,7 @@ class ArkLLMProvider:
             raise ValueError("ARK_API_KEY is required when LLM_PROVIDER=ark.")
         self.model = settings.ark_endpoint_id or settings.ark_model
         self.client = OpenAI(api_key=settings.ark_api_key, base_url=settings.ark_base_url)
+        self.temperature: float | None = 0.2
         self.fallback = MockLLMProvider()
 
     def understand_requirement(self, user_requirement: str) -> dict[str, Any]:
@@ -274,7 +275,7 @@ JSON schema:
                     "evidence_ids": item.get("evidence_ids") if isinstance(item.get("evidence_ids"), list) else [],
                     "selected_by_default": bool(item.get("selected_by_default", len(cleaned) < 3)),
                     "confidence": _safe_confidence(item.get("confidence")),
-                    "discovery_source": "ark+search",
+                    "discovery_source": f"{self.name}+search",
                 }
             )
             if region == "global":
@@ -481,14 +482,16 @@ JSON schema:
 
     def _json_chat(self, prompt: str, fallback: dict[str, Any]) -> dict[str, Any]:
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
+            request: dict[str, Any] = {
+                "model": self.model,
+                "messages": [
                     {"role": "system", "content": "你是严谨的竞品分析多 Agent 系统。必须只输出纯 JSON，不要包含 ```json 代码块标记，不要输出任何解释文字。"},
                     {"role": "user", "content": prompt},
                 ],
-                temperature=0.2,
-            )
+            }
+            if self.temperature is not None:
+                request["temperature"] = self.temperature
+            response = self.client.chat.completions.create(**request)
             content = (response.choices[0].message.content or "").strip()
             if content.startswith("```"):
                 content = content.split("\n", 1)[-1] if "\n" in content else content[3:]
