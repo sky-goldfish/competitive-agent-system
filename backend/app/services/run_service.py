@@ -5,10 +5,11 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.agents.graph import build_competitor_discovery_graph, build_report_generation_graph
+from app.agents.nodes.focus_profile import normalize_focus_profile
 from app.agents.nodes.report_generation import report_generation_node
 from app.agents.state import AgentState
 from app.agents.trace import record_progress_trace, run_traced_stage
-from app.db.models import Analysis, Competitor, Evidence, QAResult, Report, Run, Source
+from app.db.models import Analysis, Competitor, Evidence, Message, QAResult, Report, Run, Source
 from app.db.session import SessionLocal
 from app.providers.llm.factory import get_llm_provider
 from app.providers.search.factory import get_search_provider
@@ -57,6 +58,8 @@ def execute_discovery_run(run_id: str) -> None:
         llm = get_llm_provider()
         search = get_search_provider()
         state: AgentState = {"run_id": run.id, "user_requirement": run.user_requirement}
+        if run.requirement_json:
+            state["requirement"] = json.loads(run.requirement_json)
 
         graph = build_competitor_discovery_graph(
             llm,
@@ -75,6 +78,22 @@ def execute_discovery_run(run_id: str) -> None:
         run.requirement_summary = state["requirement"]["summary"]
         run.title = state["requirement"]["domain"]
         run.requirement_json = json.dumps(state["requirement"], ensure_ascii=False)
+        if state["requirement"].get("focus_profile", {}).get("clarification_needed"):
+            focus_profile = state["requirement"].get("focus_profile", {})
+            question = str(focus_profile.get("clarifying_question") or "").strip()
+            if question:
+                db.add(
+                    Message(
+                        run_id=run.id,
+                        role="assistant",
+                        content=question,
+                        metadata_json=json.dumps({"kind": "focus_clarification"}, ensure_ascii=False),
+                    )
+                )
+            run.status = "waiting_for_clarification"
+            run.current_stage = "requirement_clarification"
+            db.commit()
+            return
         if state.get("target_understanding"):
             run.target_understanding_json = json.dumps(state["target_understanding"], ensure_ascii=False)
         for item in state["competitors"]:
@@ -90,6 +109,38 @@ def execute_discovery_run(run_id: str) -> None:
             db.commit()
     finally:
         db.close()
+
+
+def answer_requirement_clarification(db: Session, run_id: str, answer: str) -> Run:
+    run = get_run_or_raise(db, run_id)
+    if run.status != "waiting_for_clarification":
+        raise InvalidRunStateError("Run is not waiting for requirement clarification.")
+    answer = answer.strip()
+    if len(answer) < 1:
+        raise InvalidRunStateError("Clarification answer cannot be empty.")
+
+    requirement = json.loads(run.requirement_json or "{}")
+    llm = get_llm_provider()
+    combined_requirement = f"{run.user_requirement}\n\n用户补充侧重点：{answer}"
+    focus_profile = normalize_focus_profile(llm.extract_focus_profile(combined_requirement, requirement))
+    focus_profile["clarification_needed"] = False
+    focus_profile["clarifying_question"] = None
+    requirement["focus_profile"] = focus_profile
+
+    db.add(
+        Message(
+            run_id=run.id,
+            role="user",
+            content=answer,
+            metadata_json=json.dumps({"kind": "focus_clarification_answer"}, ensure_ascii=False),
+        )
+    )
+    run.requirement_json = json.dumps(requirement, ensure_ascii=False)
+    run.status = "running"
+    run.current_stage = "competitor_discovery"
+    db.commit()
+    db.refresh(run)
+    return run
 
 
 def confirm_and_continue_run(db: Session, run_id: str, competitor_ids: list[str], custom_competitors: list[dict] | None = None) -> Run:
@@ -210,6 +261,7 @@ def execute_report_run(run_id: str) -> None:
                         strengths_json=item["strengths_json"],
                         weaknesses_json=item["weaknesses_json"],
                         opportunities_json=item["opportunities_json"],
+                        custom_focus_analysis_json=item.get("custom_focus_analysis_json", "[]"),
                         evidence_ids_json=item["evidence_ids_json"],
                         analysis_iteration=item.get("analysis_iteration", 0),
                     )
@@ -363,14 +415,20 @@ def regenerate_report(run_id: str) -> None:
                 "strengths_json": analysis.strengths_json,
                 "weaknesses_json": analysis.weaknesses_json,
                 "opportunities_json": analysis.opportunities_json,
+                "custom_focus_analysis_json": analysis.custom_focus_analysis_json,
                 "evidence_ids_json": analysis.evidence_ids_json,
             }
             for analysis in analyses
         ]
+        requirement = json.loads(run.requirement_json) if run.requirement_json else {
+            "domain": run.title,
+            "summary": run.requirement_summary,
+        }
 
         state: AgentState = {
             "run_id": run_id,
             "user_requirement": run.user_requirement,
+            "requirement": requirement,
             "sources": source_list,
             "evidence": evidence_list,
             "analyses": analysis_list,
@@ -424,6 +482,8 @@ def _extract_reference_id(metadata_json: str | None) -> int | None:
 def _trace_input(stage: str, state: AgentState) -> dict:
     if stage == "requirement_understanding":
         return {"user_requirement": state.get("user_requirement")}
+    if stage == "focus_profile":
+        return {"domain": state.get("requirement", {}).get("domain")}
     if stage == "competitor_discovery":
         return {"query": state.get("requirement", {}).get("query")}
     if stage == "human_confirm_competitors":

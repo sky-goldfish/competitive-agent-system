@@ -8,6 +8,10 @@ class LLMProvider(Protocol):
         """Extract a structured requirement summary."""
         ...
 
+    def extract_focus_profile(self, user_requirement: str, requirement: dict[str, Any]) -> dict[str, Any]:
+        """Extract user-specific priorities and optional clarification question."""
+        ...
+
     def understand_target(self, requirement: dict[str, Any], target_search_results: list[dict[str, Any]]) -> dict[str, Any]:
         """Summarize target product or product idea before competitor discovery."""
         ...

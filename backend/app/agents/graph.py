@@ -3,6 +3,7 @@ from collections.abc import Callable
 from langgraph.graph import END, StateGraph
 
 from app.agents.nodes.competitor_discovery import competitor_discovery_node
+from app.agents.nodes.focus_profile import focus_profile_node, focus_profile_route
 from app.agents.nodes.human_confirm_competitors import human_confirm_competitors_node
 from app.agents.nodes.material_collection import material_collection_node
 from app.agents.nodes.quality_check import quality_check_node, qa_route
@@ -29,6 +30,9 @@ def build_competitor_discovery_graph(
     def requirement_understanding(state: AgentState) -> AgentState:
         return _run_node(trace, "requirement_understanding", state, lambda: requirement_understanding_node(state, llm))
 
+    def focus_profile(state: AgentState) -> AgentState:
+        return _run_node(trace, "focus_profile", state, lambda: focus_profile_node(state, llm))
+
     def competitor_discovery(state: AgentState) -> AgentState:
         return _run_node(trace, "competitor_discovery", state, lambda: competitor_discovery_node(state, llm, search, progress=progress))
 
@@ -36,10 +40,19 @@ def build_competitor_discovery_graph(
         return _run_node(trace, "human_confirm_competitors", state, lambda: human_confirm_competitors_node(state))
 
     graph.add_node("requirement_understanding", requirement_understanding)
+    graph.add_node("focus_profile", focus_profile)
     graph.add_node("competitor_discovery", competitor_discovery)
     graph.add_node("human_confirm_competitors", human_confirm_competitors)
     graph.set_entry_point("requirement_understanding")
-    graph.add_edge("requirement_understanding", "competitor_discovery")
+    graph.add_edge("requirement_understanding", "focus_profile")
+    graph.add_conditional_edges(
+        "focus_profile",
+        focus_profile_route,
+        {
+            "clarify": END,
+            "continue": "competitor_discovery",
+        },
+    )
     graph.add_edge("competitor_discovery", "human_confirm_competitors")
     graph.add_edge("human_confirm_competitors", END)
     return graph.compile()

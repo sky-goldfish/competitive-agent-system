@@ -4,6 +4,7 @@ import re
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.schemas.analysis import parse_focus_analysis_json
 from app.db.models import Analysis, Evidence, Report, Run, Source
 from app.db.session import get_db
 from app.schemas.report import CitationAnalysisRef, CitationBundleClaim, CitationBundleCompetitor, CitationBundleEvidenceRef, CitationMapItem, ReportResponse
@@ -177,6 +178,15 @@ def get_report_citation_bundle(run_id: str, db: Session = Depends(get_db)):
 
             claims.append(CitationBundleClaim(claim_type=claim_type, label=label, text=text, evidence=ev_refs))
 
+        claims.extend(
+            _custom_focus_claims(
+                analysis,
+                evidence_items,
+                source_by_id,
+                source_ref_by_id,
+                competitor_evidence,
+            )
+        )
         result.append(CitationBundleCompetitor(competitor_id=analysis.competitor_id, competitor_name=competitor_name, analysis_iteration=analysis.analysis_iteration, claims=claims))
 
     return result
@@ -216,15 +226,65 @@ def _claim_types_for_analysis(analysis: Analysis) -> list[str]:
         claims.append("劣势或痛点")
     if _json_list(analysis.opportunities_json):
         claims.append("机会点")
+    for item in parse_focus_analysis_json(analysis.custom_focus_analysis_json):
+        label = str(item.get("label") or "").strip()
+        if label:
+            claims.append(label)
     return claims
 
 
-def _json_list(value: str | None) -> list[str]:
+def _custom_focus_claims(
+    analysis: Analysis,
+    evidence_items: list[Evidence],
+    source_by_id: dict[str, Source],
+    source_ref_by_id: dict[str, int | None],
+    fallback_evidence: list[Evidence],
+) -> list[CitationBundleClaim]:
+    evidence_by_id = {item.id: item for item in evidence_items}
+    claims: list[CitationBundleClaim] = []
+    for item in parse_focus_analysis_json(analysis.custom_focus_analysis_json):
+        label = str(item.get("label") or "").strip()
+        if not label:
+            continue
+        evidence_ids = _json_list(item.get("evidence_ids"))
+        matched = [evidence_by_id[evidence_id] for evidence_id in evidence_ids if evidence_id in evidence_by_id]
+        if not matched:
+            matched = [evidence for evidence in fallback_evidence if label in evidence.related_dimension]
+        ev_refs = []
+        for evidence in matched[:4]:
+            source = source_by_id.get(evidence.source_id)
+            ev_refs.append(
+                CitationBundleEvidenceRef(
+                    source_reference_id=source_ref_by_id.get(evidence.source_id),
+                    source_title=source.title if source else None,
+                    source_url=source.url if source else None,
+                    related_dimension=evidence.related_dimension,
+                    summary=evidence.summary,
+                    quote=evidence.quote,
+                    confidence=evidence.confidence,
+                )
+            )
+        claims.append(
+            CitationBundleClaim(
+                claim_type=f"focus:{item.get('focus_key') or len(claims) + 1}",
+                label=label,
+                text=str(item.get("verdict") or "证据中未涉及"),
+                evidence=ev_refs,
+            )
+        )
+    return claims
+
+
+def _json_list(value: object) -> list[str]:
     if not value:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if not isinstance(value, str):
         return []
     try:
         parsed = json.loads(value)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, TypeError):
         return []
     return [str(item) for item in parsed] if isinstance(parsed, list) else []
 

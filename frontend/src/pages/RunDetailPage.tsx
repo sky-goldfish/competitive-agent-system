@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import CompetitorConfirmPanel from '../components/competitors/CompetitorConfirmPanel';
 import EvidenceList from '../components/evidence/EvidenceList';
@@ -9,11 +9,12 @@ import QASummaryBanner from '../components/qa/QASummaryBanner';
 import CitationBundleView from '../components/report/CitationBundleView';
 import ReportMarkdown from '../components/report/ReportMarkdown';
 import AgentTimeline from '../components/timeline/AgentTimeline';
-import { getCompetitors, getEvidence, getReport, getReportCitationBundle, getReportCitations, getReportVersions, getRun, getSources, getTimeline, regenerateReport } from '../lib/api';
+import { answerRunClarification, getCompetitors, getEvidence, getReport, getReportCitationBundle, getReportCitations, getReportVersions, getRun, getSources, getTimeline, regenerateReport } from '../lib/api';
 import type { Run, Trace } from '../lib/types';
 
 const statusLabels: Record<string, string> = {
   running: '执行中',
+  waiting_for_clarification: '等待需求补充',
   waiting_for_human: '等待人工确认',
   completed: '报告已生成',
   failed: '执行失败',
@@ -21,6 +22,7 @@ const statusLabels: Record<string, string> = {
 
 const stageOrder = [
   'requirement_understanding',
+  'requirement_clarification',
   'human_confirm_competitors',
   'material_collection',
   'structured_analysis',
@@ -31,6 +33,8 @@ const stageOrder = [
 
 const stageLabels: Record<string, string> = {
   requirement_understanding: '需求理解',
+  requirement_clarification: '需求澄清',
+  focus_profile: '识别个性化关注点',
   competitor_discovery: '竞品发现',
   human_confirm_competitors: '人工确认',
   material_collection: '资料采集',
@@ -69,6 +73,7 @@ function getStagePath(run: Run, traces: Trace[]) {
   });
   reached.add(normalizeStage(run.current_stage));
   if (run.status === 'waiting_for_human') reached.add('human_confirm_competitors');
+  if (run.status === 'waiting_for_clarification') reached.add('requirement_clarification');
   if (run.status === 'completed') {
     stageOrder.forEach((stage) => reached.add(stage));
   }
@@ -87,6 +92,7 @@ export default function RunDetailPage() {
   const [mainTab, setMainTab] = useState<'process' | 'report'>('process');
   const [selectedIteration, setSelectedIteration] = useState<number | undefined>(undefined);
   const [workbenchTab, setWorkbenchTab] = useState<'info' | 'sources' | 'competitors' | 'citations' | 'qa'>('info');
+  const [clarificationAnswer, setClarificationAnswer] = useState('');
 
   const regenerateMutation = useMutation({
     mutationFn: () => regenerateReport(id),
@@ -99,15 +105,23 @@ export default function RunDetailPage() {
       queryClient.invalidateQueries({ queryKey: ['citation-bundle', id] });
     },
   });
+  const clarificationMutation = useMutation({
+    mutationFn: () => answerRunClarification(id, clarificationAnswer.trim()),
+    onSuccess: () => {
+      setClarificationAnswer('');
+      queryClient.invalidateQueries({ queryKey: ['run', id] });
+      queryClient.invalidateQueries({ queryKey: ['timeline', id] });
+    },
+  });
 
   const runQuery = useQuery({
     queryKey: ['run', id],
     queryFn: () => getRun(id),
     enabled: Boolean(id),
-    refetchInterval: (query) => ['running', 'waiting_for_human'].includes(query.state.data?.status ?? '') ? 3000 : false,
+    refetchInterval: (query) => ['running', 'waiting_for_human', 'waiting_for_clarification'].includes(query.state.data?.status ?? '') ? 3000 : false,
   });
   const run = runQuery.data;
-  const isActive = run?.status === 'running' || run?.status === 'waiting_for_human';
+  const isActive = run?.status === 'running' || run?.status === 'waiting_for_human' || run?.status === 'waiting_for_clarification';
   const competitorsQuery = useQuery({ queryKey: ['competitors', id], queryFn: () => getCompetitors(id), enabled: Boolean(id), refetchInterval: isActive ? 5000 : false });
   const timelineQuery = useQuery({ queryKey: ['timeline', id], queryFn: () => getTimeline(id), enabled: Boolean(id), refetchInterval: isActive ? 3000 : false });
   const sourcesQuery = useQuery({ queryKey: ['sources', id], queryFn: () => getSources(id), enabled: Boolean(id), refetchInterval: isActive ? 5000 : false });
@@ -130,6 +144,7 @@ export default function RunDetailPage() {
   });
 
   useEffect(() => {
+    if (run?.status === 'waiting_for_clarification') setWorkbenchTab('info');
     if (run?.status === 'waiting_for_human') setWorkbenchTab('competitors');
     if (run?.status === 'running' && run.current_stage === 'material_collection') setWorkbenchTab('sources');
   }, [run?.current_stage, run?.status]);
@@ -254,6 +269,17 @@ export default function RunDetailPage() {
           <div className="workbench-pane">
             {workbenchTab === 'info' ? (
               <section className="task-info-pane">
+                {run.status === 'waiting_for_clarification' ? (
+                  <ClarificationPanel
+                    run={run}
+                    value={clarificationAnswer}
+                    onChange={setClarificationAnswer}
+                    onSubmit={() => clarificationMutation.mutate()}
+                    isPending={clarificationMutation.isPending}
+                    error={clarificationMutation.error}
+                    compact
+                  />
+                ) : null}
                 <dl>
                   <div>
                     <dt>任务 ID</dt>
@@ -287,5 +313,48 @@ export default function RunDetailPage() {
         </aside>
       </div>
     </div>
+  );
+}
+
+function ClarificationPanel({
+  run,
+  value,
+  onChange,
+  onSubmit,
+  isPending,
+  error,
+  compact = false,
+}: {
+  run: Run;
+  value: string;
+  onChange: (value: string) => void;
+  onSubmit: () => void;
+  isPending: boolean;
+  error: unknown;
+  compact?: boolean;
+}) {
+  function handleSubmit(event: FormEvent) {
+    event.preventDefault();
+    if (!value.trim()) return;
+    onSubmit();
+  }
+
+  return (
+    <form className={`clarification-panel${compact ? ' compact' : ''}`} onSubmit={handleSubmit}>
+      <div className="clarification-header">
+        <span>补充关注点</span>
+      </div>
+      <p>{run.clarification_question ?? '请补充这份报告最需要关注的判断维度。'}</p>
+      <textarea
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder="例如：重点关注本地存储、隐私安全和迁移成本"
+        rows={compact ? 4 : 3}
+      />
+      {error ? <span className="error-text">提交失败：{String((error as Error).message ?? error)}</span> : null}
+      <button type="submit" disabled={isPending || !value.trim()}>
+        {isPending ? '继续分析中...' : '提交并继续'}
+      </button>
+    </form>
   );
 }

@@ -53,6 +53,8 @@ def _ensure_compatible_schema() -> None:
         with engine.begin() as connection:
             if "analysis_iteration" not in analysis_columns:
                 connection.execute(text("ALTER TABLE analyses ADD COLUMN analysis_iteration INTEGER NOT NULL DEFAULT 0"))
+            if "custom_focus_analysis_json" not in analysis_columns:
+                connection.execute(text("ALTER TABLE analyses ADD COLUMN custom_focus_analysis_json TEXT NOT NULL DEFAULT '[]'"))
     if "reports" in inspector.get_table_names():
         report_columns = {column["name"] for column in inspector.get_columns("reports")}
         with engine.begin() as connection:

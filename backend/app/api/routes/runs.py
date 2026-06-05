@@ -4,10 +4,11 @@ from sqlalchemy.orm import Session
 from app.db.models import Run
 from app.db.session import get_db
 from app.schemas.competitor import ConfirmCompetitorsRequest
-from app.schemas.run import RunCreateRequest, RunResponse
+from app.schemas.run import ClarificationAnswerRequest, RunCreateRequest, RunResponse
 from app.services.run_service import (
     InvalidRunStateError,
     RunNotFoundError,
+    answer_requirement_clarification,
     confirm_and_continue_run,
     execute_discovery_run,
     execute_report_run,
@@ -24,6 +25,18 @@ def create_run(payload: RunCreateRequest, background_tasks: BackgroundTasks, db:
     run = start_run(db, payload.user_requirement)
     background_tasks.add_task(execute_discovery_run, run.id)
     return run
+
+
+@router.post("/{run_id}/clarification", response_model=RunResponse)
+def answer_clarification(run_id: str, payload: ClarificationAnswerRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    try:
+        run = answer_requirement_clarification(db, run_id, payload.answer)
+        background_tasks.add_task(execute_discovery_run, run.id)
+        return run
+    except RunNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except InvalidRunStateError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @router.get("", response_model=list[RunResponse])

@@ -3,6 +3,7 @@ from typing import Any
 
 from app.agents.state import AgentState
 from app.providers.llm.base import LLMProvider
+from app.schemas.analysis import parse_focus_analysis_json
 
 
 def report_generation_node(state: AgentState, llm: LLMProvider) -> AgentState:
@@ -45,7 +46,7 @@ def _build_citation_bundle(analyses: list[dict[str, Any]], evidence: list[dict[s
                     _claim("strengths", "优势", _join_json_list(analysis.get("strengths_json")), linked_evidence, {"产品定位", "核心功能"}),
                     _claim("weaknesses", "劣势或痛点", _join_json_list(analysis.get("weaknesses_json")), linked_evidence, {"用户评价与痛点"}),
                     _claim("opportunities", "机会点", _join_json_list(analysis.get("opportunities_json")), linked_evidence, set()),
-                ],
+                ] + _custom_focus_claims(analysis, evidence_by_id, linked_evidence),
             }
         )
     return bundle
@@ -75,6 +76,35 @@ def _evidence_ref(evidence_item: dict[str, Any]) -> dict[str, Any]:
         "source_title": evidence_item.get("source_title"),
         "source_url": evidence_item.get("source_url"),
     }
+
+
+def _custom_focus_claims(
+    analysis: dict[str, Any],
+    evidence_by_id: dict[Any, dict[str, Any]],
+    fallback_evidence: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    claims = []
+    for item in parse_focus_analysis_json(analysis.get("custom_focus_analysis_json")):
+        label = str(item.get("label") or "").strip()
+        if not label:
+            continue
+        evidence_ids = _json_list(item.get("evidence_ids"))
+        matched = [evidence_by_id[evidence_id] for evidence_id in evidence_ids if evidence_id in evidence_by_id]
+        if not matched:
+            matched = [
+                evidence
+                for evidence in fallback_evidence
+                if label in str(evidence.get("related_dimension", ""))
+            ]
+        claims.append(
+            {
+                "claim_type": f"focus:{item.get('focus_key') or len(claims) + 1}",
+                "label": label,
+                "text": str(item.get("verdict") or "证据中未涉及"),
+                "evidence": [_evidence_ref(evidence) for evidence in matched[:4]],
+            }
+        )
+    return claims
 
 
 def _json_list(value: Any) -> list[str]:

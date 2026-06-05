@@ -229,6 +229,7 @@ def _emit(progress: ProgressCallback | None, stage: str, message: str, metadata:
 
 
 def _plan_target_queries(requirement: dict) -> list[dict]:
+    focus_terms = _focus_query_terms(requirement)
     if requirement.get("queries") and isinstance(requirement["queries"], list) and len(requirement["queries"]) >= 2:
         queries = []
         for idx, q in enumerate(requirement["queries"][:3]):
@@ -236,6 +237,8 @@ def _plan_target_queries(requirement: dict) -> list[dict]:
                 "query": str(q)[:40],
                 "purpose": f"hybrid_search_{idx}"
             })
+        if focus_terms:
+            queries.append({"query": f"{requirement.get('domain', '')} {focus_terms[0]}"[:40], "purpose": "focus_target_understanding"})
         return queries
     
     target_product = requirement.get("target_product")
@@ -263,7 +266,27 @@ def _plan_competitor_queries(requirement: dict, target_understanding: dict) -> l
         {"query": f"{name} 竞品 替代品 对比", "purpose": "local_competitor_discovery"},
         {"query": f"{category} 主要产品 品牌 排行", "purpose": "local_indirect_discovery"},
     ]
+    for idx, term in enumerate(_focus_query_terms(requirement)[:2]):
+        queries.append({"query": f"{name} {term} alternatives"[:60], "purpose": f"focus_competitor_discovery_{idx}"})
     return queries
+
+
+def _focus_query_terms(requirement: dict) -> list[str]:
+    profile = requirement.get("focus_profile") if isinstance(requirement.get("focus_profile"), dict) else {}
+    focuses = []
+    if isinstance(profile, dict):
+        focuses.extend(profile.get("explicit_focuses") or [])
+        focuses.extend(profile.get("inferred_focuses") or [])
+    terms = []
+    for focus in focuses:
+        if not isinstance(focus, dict):
+            continue
+        query_terms = focus.get("query_terms") if isinstance(focus.get("query_terms"), list) else []
+        if query_terms:
+            terms.append(str(query_terms[0]))
+        elif focus.get("label"):
+            terms.append(str(focus["label"]))
+    return [term for term in terms if term.strip()]
 
 
 def _run_queries(queries: list[dict], search: SearchProvider, *, limit: int) -> list[dict]:

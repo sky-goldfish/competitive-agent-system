@@ -33,6 +33,13 @@ export function getRun(runId: string): Promise<Run> {
   return request<Run>(`/runs/${runId}`);
 }
 
+export function answerRunClarification(runId: string, answer: string): Promise<Run> {
+  return request<Run>(`/runs/${runId}/clarification`, {
+    method: 'POST',
+    body: JSON.stringify({ answer }),
+  });
+}
+
 export function deleteRun(runId: string): Promise<void> {
   return request<void>(`/runs/${runId}`, { method: 'DELETE' });
 }

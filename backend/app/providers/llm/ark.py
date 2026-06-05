@@ -160,6 +160,55 @@ JSON schema:
 """
         return self._json_chat(prompt, fallback)
 
+    def extract_focus_profile(self, user_requirement: str, requirement: dict[str, Any]) -> dict[str, Any]:
+        fallback = self.fallback.extract_focus_profile(user_requirement, requirement)
+        prompt = f"""
+你是竞品分析系统的个性化关注点识别 Agent。请根据用户原始输入和已结构化需求，判断报告是否需要围绕特定侧重点展开。
+
+用户原始输入：{user_requirement}
+结构化需求：{json.dumps(requirement, ensure_ascii=False)}
+
+判断规则：
+- 如果用户明确表达了关注点，例如本地存储、隐私安全、AI 能力、价格、团队协作、迁移成本、开放 API、特定人群等，放入 explicit_focuses。
+- 如果用户没有明确表达，但领域天然暗示常见决策维度，可以放入 inferred_focuses，priority 用 medium，不要过度臆测。
+- 判断是否反问，不要依据文本长度，而要依据“缺少偏好是否会改变竞品选择、资料检索方向、报告排序和最终建议”。
+- 如果用户只给出一个宽泛品类或赛道，并要求做竞品分析，但没有说明决策场景或关注维度，必须设置 clarification_needed=true。典型例子：
+  - “我想分析笔记软件的竞品” -> 必须反问，因为本地存储/隐私、AI 能力、团队协作、价格、迁移成本会导向不同竞品和证据。
+  - “分析 AI 会议纪要工具竞品” -> 必须反问，因为转写质量、CRM 集成、数据安全、团队协作、价格会导向不同报告重点。
+  - “帮我看看 CRM 工具竞品” -> 必须反问，因为销售团队规模、集成生态、价格、行业方案会改变分析口径。
+- 如果用户已经给出足够清晰的目标和侧重点，例如“重点关注笔记软件是否本地存储和隐私安全”，不要反问，直接放入 explicit_focuses。
+- 如果用户没有明确侧重点，但需求已经包含具体决策目标，例如“给 20 人销售团队选便宜的会议纪要工具”，可以不反问，并把“价格/团队落地”放入 inferred_focuses 或 explicit_focuses。
+- 反问只能问 1 个问题，且要给出 4-6 个可选方向，方便用户快速回答。
+- 如果 clarification_needed=true，clarifying_question 不能为空；如果 clarification_needed=false，clarifying_question 必须为 null。
+
+输出严格 JSON，不要输出 Markdown。
+JSON schema:
+{{
+  "explicit_focuses": [
+    {{
+      "key": "snake_case_key",
+      "label": "用户可读的关注点名称",
+      "priority": "high|medium|low",
+      "evidence_expectation": "需要什么类型证据来回答这个关注点",
+      "query_terms": ["用于检索的中文或英文关键词"]
+    }}
+  ],
+  "inferred_focuses": [
+    {{
+      "key": "snake_case_key",
+      "label": "推断关注点名称",
+      "priority": "high|medium|low",
+      "evidence_expectation": "证据要求",
+      "query_terms": ["关键词"]
+    }}
+  ],
+  "clarification_needed": false,
+  "clarifying_question": null,
+  "assumptions": ["继续分析时采用的假设"]
+}}
+"""
+        return self._json_chat(prompt, fallback)
+
     def understand_target(self, requirement: dict[str, Any], target_search_results: list[dict[str, Any]]) -> dict[str, Any]:
         fallback = self.fallback.understand_target(requirement, target_search_results)
         prompt = f"""
@@ -294,6 +343,16 @@ JSON schema:
             f"来源={e.get('source_url', '')}；摘要={e.get('summary', '')[:300]}"
             for e in evidence[:12]
         )
+        focus_schema = competitor.get("_focus_schema") if isinstance(competitor.get("_focus_schema"), list) else []
+        focus_schema_section = ""
+        if focus_schema:
+            focus_schema_section = f"""
+
+动态关注点 Schema：
+{json.dumps(focus_schema, ensure_ascii=False)}
+
+请为动态关注点 Schema 中的每一项生成一条 custom_focus_analysis_json。它们是结构化分析的动态字段，必须基于证据，不要新增 Schema 外的关注点。
+"""
         qa_feedback_section = ""
         qa_feedback = competitor.get("_qa_feedback")
         if qa_feedback:
@@ -313,6 +372,7 @@ JSON schema:
 
 已采集证据（请基于这些内容分析）：
 {evidence_summary}
+{focus_schema_section}
 {qa_feedback_section}
 输出严格 JSON，不要输出 Markdown。
 JSON schema:
@@ -324,6 +384,15 @@ JSON schema:
   "strengths_json": ["从证据中提取的优势"],
   "weaknesses_json": ["从证据中提取的劣势或用户痛点"],
   "opportunities_json": ["基于证据分析的机会点"],
+  "custom_focus_analysis_json": [
+    {{
+      "focus_key": "必须来自动态关注点 Schema 的 key",
+      "label": "必须来自动态关注点 Schema 的 label",
+      "verdict": "围绕该关注点的结构化结论；如果证据不足，写'证据中未涉及'",
+      "evidence_ids": ["支撑该结论的 evidence_id，必须来自已采集证据"],
+      "confidence": 0.0
+    }}
+  ],
   "evidence_ids_json": ["引用的 evidence_id，必须来自已采集证据中的 evidence_id"],
   "relationship_type": "direct/indirect/substitute 之一。direct=直接竞品，indirect=间接竞品，substitute=替代方案",
   "relationship_reason": "简要说明为什么是该竞争类型，它竞争的是什么需求或场景，基于证据",
@@ -336,7 +405,7 @@ JSON schema:
 }}
 """
         result = self._json_chat(prompt, fallback)
-        for key in ["target_users", "core_features_json", "strengths_json", "weaknesses_json", "opportunities_json", "evidence_ids_json"]:
+        for key in ["target_users", "core_features_json", "strengths_json", "weaknesses_json", "opportunities_json", "evidence_ids_json", "custom_focus_analysis_json"]:
             if isinstance(result.get(key), list):
                 result[key] = json.dumps(result[key], ensure_ascii=False)
         if result is fallback:
@@ -364,7 +433,7 @@ citation_bundle：{citation_bundle}{qa_guidance_section}
 
 报告要求：
 1. 标题应该准确反映分析对象和领域，不要用"通用产品"这种泛泛标题
-2. 每个竞品的分析必须严格按照 citation_bundle 中的 7 个 claim（产品定位、目标用户、核心功能、定价策略、优势、劣势或痛点、机会点）逐项撰写，每个 claim 的内容来自 claim.text
+2. 每个竞品的分析必须覆盖 citation_bundle 中提供的全部 claims。claims 来自结构化分析结果，可能包含默认字段和用户关注点动态字段；不得自行新增 citation_bundle 之外的分析维度
 3. 不要使用"MVP Mock 数据显示"这类字样
 4. 禁止使用 Markdown 表格；不要输出任何 `| 来源标题 |` 这类表格
 5. 每个 claim 的关键结论必须引用该 claim 下 evidence 中提供的 source_reference_id。Markdown 原文写成 `[[1]](URL)`；禁止写成 `[1](URL)`

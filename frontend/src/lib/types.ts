@@ -6,6 +6,7 @@ export type Run = {
   status: string;
   current_stage: string;
   error_message: string | null;
+  clarification_question: string | null;
   feedback_loop_count: number;
   created_at: string;
   updated_at: string;
@@ -78,6 +79,7 @@ export type Analysis = {
   strengths_json: string;
   weaknesses_json: string;
   opportunities_json: string;
+  custom_focus_analysis_json: string;
   evidence_ids_json: string;
   analysis_iteration: number;
   created_at: string;

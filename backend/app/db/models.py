@@ -1,4 +1,5 @@
 from datetime import datetime
+import json
 from uuid import uuid4
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
@@ -36,6 +37,22 @@ class Run(Base):
     traces: Mapped[list["AgentTrace"]] = relationship(back_populates="run", cascade="all, delete-orphan")
     qa_results: Mapped[list["QAResult"]] = relationship(back_populates="run", cascade="all, delete-orphan")
     reports: Mapped[list["Report"]] = relationship(back_populates="run", cascade="all, delete-orphan")
+
+    @property
+    def clarification_question(self) -> str | None:
+        if self.status != "waiting_for_clarification":
+            return None
+        messages = sorted(self.messages, key=lambda item: item.created_at, reverse=True)
+        for message in messages:
+            if message.role != "assistant":
+                continue
+            try:
+                metadata = json.loads(message.metadata_json or "{}")
+            except (json.JSONDecodeError, TypeError):
+                metadata = {}
+            if metadata.get("kind") == "focus_clarification":
+                return message.content
+        return None
 
 
 class Message(Base):
@@ -124,6 +141,7 @@ class Analysis(Base):
     strengths_json: Mapped[str] = mapped_column(Text, default="[]")
     weaknesses_json: Mapped[str] = mapped_column(Text, default="[]")
     opportunities_json: Mapped[str] = mapped_column(Text, default="[]")
+    custom_focus_analysis_json: Mapped[str] = mapped_column(Text, default="[]")
     evidence_ids_json: Mapped[str] = mapped_column(Text, default="[]")
     analysis_iteration: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

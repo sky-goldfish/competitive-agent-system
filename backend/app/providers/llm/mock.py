@@ -21,9 +21,9 @@ class MockLLMProvider(LLMProvider):
         core_capabilities = ["核心流程自动化", "信息整理", "报告生成"]
         analysis_dimensions = ["产品定位", "核心功能", "价格与商业模式", "用户评价与痛点"]
 
-        if any(keyword in text for keyword in ["notion", "notion ai", "飞书文档", "语雀", "协作文档", "知识管理"]):
+        if any(keyword in text for keyword in ["notion", "notion ai", "飞书文档", "语雀", "协作文档", "知识管理", "笔记", "obsidian", "logseq"]):
             input_type = "existing_product"
-            target_product = "Notion AI" if "notion" in text else "飞书文档"
+            target_product = "Notion AI" if "notion" in text else "笔记软件"
             domain = "AI 知识管理"
             target_users = ["知识工作者", "团队协作成员", "内容创作者"]
             core_capabilities = ["文档生成", "内容总结", "知识库问答", "团队协作"]
@@ -81,6 +81,80 @@ class MockLLMProvider(LLMProvider):
                 f"{target_product or domain} 竞品 替代品 对比"
             ],
             "query": f"{target_product or domain} 竞品 替代品 对比",
+        }
+
+    def extract_focus_profile(self, user_requirement: str, requirement: dict[str, Any]) -> dict[str, Any]:
+        text = user_requirement.lower()
+        explicit_focuses = []
+        focus_specs = [
+            (
+                "local_storage",
+                ["本地", "离线", "local", "offline", "local-first", "local first"],
+                "本地存储/离线可用",
+                "优先查找官方文档、帮助中心或产品说明中关于本地存储、离线能力和数据同步方式的证据。",
+                ["local storage", "offline", "local-first", "本地存储", "离线"],
+            ),
+            (
+                "privacy_security",
+                ["隐私", "安全", "加密", "数据所有权", "privacy", "security", "encryption"],
+                "隐私、安全与数据所有权",
+                "优先查找官方安全说明、隐私政策、加密和数据控制相关文档。",
+                ["privacy", "security", "encryption", "data ownership", "隐私", "安全", "加密"],
+            ),
+            (
+                "pricing",
+                ["价格", "定价", "收费", "预算", "pricing", "price", "cost"],
+                "价格与套餐",
+                "优先查找官方价格页、套餐说明和企业版收费信息。",
+                ["pricing", "plans", "价格", "收费", "套餐"],
+            ),
+            (
+                "collaboration",
+                ["协作", "团队", "共享", "多人", "collaboration", "team"],
+                "团队协作能力",
+                "优先查找协作、权限、评论、共享和团队空间相关功能证据。",
+                ["collaboration", "team workspace", "sharing", "协作", "权限", "共享"],
+            ),
+            (
+                "ai_capability",
+                ["ai", "智能", "生成", "总结", "问答", "agent"],
+                "AI 能力",
+                "优先查找生成、总结、问答、自动化和模型能力相关官方说明或测评。",
+                ["AI", "assistant", "summary", "automation", "智能", "总结", "问答"],
+            ),
+        ]
+        for key, keywords, label, evidence_expectation, query_terms in focus_specs:
+            if any(keyword in text for keyword in keywords):
+                explicit_focuses.append(
+                    {
+                        "key": key,
+                        "label": label,
+                        "priority": "high",
+                        "evidence_expectation": evidence_expectation,
+                        "query_terms": query_terms,
+                    }
+                )
+
+        inferred_focuses = []
+        domain_text = f"{requirement.get('domain', '')} {requirement.get('possible_market_category', '')}"
+        if not explicit_focuses and any(keyword in domain_text for keyword in ["会议", "协作", "办公"]):
+            inferred_focuses.append(
+                {
+                    "key": "workflow_integration",
+                    "label": "工作流集成与团队落地",
+                    "priority": "medium",
+                    "evidence_expectation": "关注集成、权限、团队空间和实际工作流落地证据。",
+                    "query_terms": ["integrations", "workflow", "team", "集成", "团队协作"],
+                }
+            )
+
+        needs_clarification = not explicit_focuses and _should_mock_ask_clarification(user_requirement, requirement)
+        return {
+            "explicit_focuses": explicit_focuses,
+            "inferred_focuses": inferred_focuses,
+            "clarification_needed": needs_clarification,
+            "clarifying_question": _clarifying_question(requirement) if needs_clarification else None,
+            "assumptions": [] if explicit_focuses else ["如果用户未补充侧重点，报告将按功能、价格、评价和市场定位进行均衡分析。"],
         }
 
     def understand_target(self, requirement: dict[str, Any], target_search_results: list[dict[str, Any]]) -> dict[str, Any]:
@@ -265,6 +339,7 @@ class MockLLMProvider(LLMProvider):
     def analyze_competitor(self, competitor: dict[str, Any], evidence: list[dict[str, Any]]) -> dict[str, Any]:
         name = competitor["name"]
         evidence_ids = [item.get("id") or item.get("source_url") or item.get("related_dimension", "evidence") for item in evidence]
+        focus_analysis = _mock_focus_analysis(competitor.get("_focus_schema"), evidence)
         return {
             "positioning": f"{name} 面向目标用户提供较完整的相关工作流，强调效率提升和团队协作。",
             "target_users": json.dumps(["业务团队", "产品团队", "管理者"], ensure_ascii=False),
@@ -273,13 +348,14 @@ class MockLLMProvider(LLMProvider):
             "strengths_json": json.dumps(["功能覆盖较完整", "使用门槛较低", "适合快速试用"], ensure_ascii=False),
             "weaknesses_json": json.dumps(["深度定制能力有限", "不同来源信息仍需人工复核"], ensure_ascii=False),
             "opportunities_json": json.dumps(["可在垂直场景、证据可信度和中文本地化体验上做差异化"], ensure_ascii=False),
+            "custom_focus_analysis_json": json.dumps(focus_analysis, ensure_ascii=False),
             "evidence_ids_json": json.dumps(evidence_ids, ensure_ascii=False),
         }
 
     def generate_report(self, run: dict[str, Any], analyses: list[dict[str, Any]], sources: list[dict[str, Any]]) -> dict[str, str]:
         title = f"{run.get('title', '竞品分析任务')}报告"
-        citations_by_competitor = {
-            item.get("competitor_id"): _first_bundle_citation(item)
+        bundle_by_competitor = {
+            item.get("competitor_id"): item
             for item in run.get("citation_bundle", [])
             if isinstance(item, dict)
         }
@@ -299,6 +375,7 @@ class MockLLMProvider(LLMProvider):
         ]
         for analysis in analyses:
             competitor_name = analysis.get("competitor_name", "未知竞品")
+            dynamic_claims = _dynamic_bundle_claims(bundle_by_competitor.get(analysis.get("competitor_id")))
             lines.extend([
                 f"## {competitor_name}",
                 "",
@@ -361,6 +438,11 @@ class MockLLMProvider(LLMProvider):
                     lines.append(f"- {o}")
             except (json.JSONDecodeError, TypeError):
                 lines.append(analysis.get("opportunities_json", "暂无机会点信息"))
+            if dynamic_claims:
+                lines.extend(["", "### 用户关注点动态字段", ""])
+                for claim in dynamic_claims:
+                    citation = _claim_citation(claim)
+                    lines.append(f"- {claim.get('label')}: {claim.get('text')}{citation}")
             lines.append("")
         lines.extend([
             "## 参考来源",
@@ -576,5 +658,78 @@ def _matched_dimensions(target_understanding: dict[str, Any]) -> list[str]:
     return ["产品定位", "目标用户", "核心功能", "使用场景"]
 
 
-def _first_bundle_citation(item: dict[str, Any]) -> dict[str, Any]:
-    return item
+def _dynamic_bundle_claims(bundle_item: object) -> list[dict[str, Any]]:
+    if not isinstance(bundle_item, dict):
+        return []
+    claims = bundle_item.get("claims")
+    if not isinstance(claims, list):
+        return []
+    return [
+        claim
+        for claim in claims
+        if isinstance(claim, dict) and str(claim.get("claim_type", "")).startswith("focus:")
+    ]
+
+
+def _claim_citation(claim: dict[str, Any]) -> str:
+    evidence = claim.get("evidence")
+    if not isinstance(evidence, list):
+        return ""
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+        ref_id = item.get("source_reference_id")
+        url = item.get("source_url")
+        if ref_id and url:
+            return f" [[{ref_id}]]({url})"
+    return ""
+
+
+def _mock_focus_analysis(focus_schema: object, evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not isinstance(focus_schema, list):
+        return []
+    results = []
+    for focus in focus_schema[:6]:
+        if not isinstance(focus, dict) or not focus.get("label"):
+            continue
+        label = str(focus["label"])
+        matched = [
+            item
+            for item in evidence
+            if label in str(item.get("related_dimension", "")) or label in str(item.get("summary", ""))
+        ]
+        if not matched:
+            matched = evidence[:2]
+        evidence_ids = [item.get("id") for item in matched if item.get("id")]
+        verdict = f"围绕“{label}”，现有证据显示该产品已有相关信息，但仍需结合真实来源复核。"
+        if not evidence_ids:
+            verdict = "证据中未涉及"
+        results.append(
+            {
+                "focus_key": str(focus.get("key") or f"focus_{len(results) + 1}"),
+                "label": label,
+                "verdict": verdict,
+                "evidence_ids": evidence_ids[:4],
+                "confidence": 0.72 if evidence_ids else 0.0,
+            }
+        )
+    return results
+
+
+def _should_mock_ask_clarification(user_requirement: str, requirement: dict[str, Any]) -> bool:
+    text = user_requirement.strip().lower()
+    if any(keyword in text for keyword in ["关注", "侧重", "重点", "尤其", "比较", "是否", "privacy", "pricing", "local"]):
+        return False
+    domain = str(requirement.get("domain") or requirement.get("possible_market_category") or "")
+    return any(keyword in domain for keyword in ["知识管理", "会议", "办公", "通用产品", "竞品分析"]) or any(
+        keyword in text for keyword in ["笔记", "文档", "工具", "软件", "竞品"]
+    )
+
+
+def _clarifying_question(requirement: dict[str, Any]) -> str:
+    domain = str(requirement.get("domain") or requirement.get("possible_market_category") or "这个方向")
+    if any(keyword in domain for keyword in ["知识管理", "文档", "笔记"]):
+        return "你希望这份竞品报告重点关注哪类差异：本地存储/隐私、AI 能力、团队协作、价格，还是迁移成本？"
+    if any(keyword in domain for keyword in ["会议", "办公", "协作"]):
+        return "你希望这份竞品报告重点关注哪类差异：转写/总结质量、团队协作、CRM/日程集成、数据安全，还是价格？"
+    return "你希望这份竞品报告优先回答什么问题？例如功能差异、价格、用户痛点、隐私安全、落地成本或市场机会。"

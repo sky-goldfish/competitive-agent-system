@@ -4,6 +4,7 @@ import HybridQueryVisualizer from '../query/HybridQueryVisualizer';
 
 const stageLabels: Record<string, string> = {
   requirement_understanding: '需求理解',
+  focus_profile: '识别个性化关注点',
   competitor_discovery: '竞品发现',
   human_confirm_competitors: '人工确认',
   material_collection: '资料采集',

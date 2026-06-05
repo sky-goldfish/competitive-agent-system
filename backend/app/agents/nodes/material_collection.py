@@ -249,6 +249,7 @@ def _plan_retrieval_quarts(competitors: list[dict], requirement: dict, evidence:
     evidence = evidence or []
     sources = sources or []
     product_type = _detect_product_type(requirement)
+    focus_items = _focus_items(requirement)
     for competitor in competitors:
         competitor_type = competitor.get("category") or "direct_competitor"
         relationship_model = _build_relationship_model(competitor, requirement)
@@ -260,6 +261,8 @@ def _plan_retrieval_quarts(competitors: list[dict], requirement: dict, evidence:
                     candidate_slots.append(slot)
         for slot in candidate_slots:
             quarts.append(_build_retrieval_quart(competitor, product_type, competitor_type, slot, relationship_model))
+        for focus in focus_items:
+            quarts.append(_build_focus_quart(competitor, product_type, competitor_type, focus, relationship_model))
     return quarts
 
 
@@ -380,6 +383,61 @@ def _build_retrieval_quart(competitor: dict, product_type: str, competitor_type:
         "limit": 4,
         "success_criteria": _success_criteria(slot, relationship_model),
     }
+
+
+def _build_focus_quart(competitor: dict, product_type: str, competitor_type: str, focus: dict, relationship_model: dict) -> dict:
+    name = competitor["name"]
+    query_locale = _query_locale_for_competitor(competitor, product_type)
+    query = _focus_query(name, focus, query_locale)
+    support_slot = _slot_for_focus(focus)
+    return {
+        "competitor_id": competitor["id"],
+        "competitor_name": name,
+        "product_type": product_type,
+        "competitor_type": competitor_type,
+        "relation_claim": relationship_model["relation_claim"],
+        "competed_need": relationship_model["competed_need"],
+        "overlap_points": relationship_model["overlap_points"],
+        "target_slot": f"focus:{focus.get('key', 'custom')}",
+        "dimension": f"个性化关注点：{focus.get('label', '用户关注点')}",
+        "query": query,
+        "query_locale": query_locale,
+        "preferred_source_types": _preferred_source_types(product_type, competitor_type, support_slot),
+        "avoid_source_types": ["unknown"],
+        "priority": focus.get("priority") or "high",
+        "limit": 4,
+        "success_criteria": focus.get("evidence_expectation") or f"找到可回答“{focus.get('label', '用户关注点')}”的公开证据。",
+        "focus_label": focus.get("label"),
+    }
+
+
+def _focus_items(requirement: dict) -> list[dict]:
+    profile = requirement.get("focus_profile") if isinstance(requirement.get("focus_profile"), dict) else {}
+    if not isinstance(profile, dict):
+        return []
+    items = []
+    for focus in (profile.get("explicit_focuses") or []) + (profile.get("inferred_focuses") or []):
+        if isinstance(focus, dict) and focus.get("label"):
+            items.append(focus)
+    return items[:4]
+
+
+def _focus_query(name: str, focus: dict, query_locale: str) -> str:
+    terms = focus.get("query_terms") if isinstance(focus.get("query_terms"), list) else []
+    label = str(focus.get("label") or "用户关注点")
+    term_text = " ".join(str(term) for term in terms[:3]) if terms else label
+    if query_locale == "china":
+        return f"{name} {term_text} 官方 文档 评价"
+    return f"{name} {term_text} official docs reviews"
+
+
+def _slot_for_focus(focus: dict) -> str:
+    text = f"{focus.get('key', '')} {focus.get('label', '')}".lower()
+    if any(token in text for token in ["price", "pricing", "价格", "收费", "套餐"]):
+        return "pricing"
+    if any(token in text for token in ["review", "pain", "评价", "痛点", "迁移", "成本"]):
+        return "user_feedback"
+    return "core_features"
 
 
 def _query_locale_for_competitor(competitor: dict, product_type: str) -> str:
@@ -517,6 +575,8 @@ def _evidence_summary(query_item: dict, snippet: str) -> str:
             f"关系假设：{query_item.get('relation_claim')} "
             f"竞争需求：{query_item.get('competed_need')}。证据摘要：{snippet}"
         )
+    if str(query_item.get("target_slot", "")).startswith("focus:"):
+        return f"用户关注点“{query_item.get('focus_label') or query_item.get('dimension')}”：{snippet}"
     return snippet
 
 
@@ -653,6 +713,7 @@ def _metadata_json(credibility_score: float, rank_score: float, source_type: str
             "relation_claim": query_item.get("relation_claim"),
             "competed_need": query_item.get("competed_need"),
             "overlap_points": query_item.get("overlap_points"),
+            "focus_label": query_item.get("focus_label"),
             "query_locale": query_item.get("query_locale"),
             "success_criteria": query_item.get("success_criteria"),
             "classification_reason": classification_reason,

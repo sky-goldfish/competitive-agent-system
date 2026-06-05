@@ -17,6 +17,20 @@ class RunCreateRequest(BaseModel):
         return v
 
 
+class ClarificationAnswerRequest(BaseModel):
+    answer: str
+
+    @field_validator("answer")
+    @classmethod
+    def validate_answer(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("补充说明不能为空")
+        if len(v) > 1000:
+            raise ValueError("补充说明不能超过 1000 字")
+        return v
+
+
 class RunResponse(BaseModel):
     id: str
     title: str
@@ -25,6 +39,7 @@ class RunResponse(BaseModel):
     status: str
     current_stage: str
     error_message: str | None = None
+    clarification_question: str | None = None
     feedback_loop_count: int = 0
     created_at: datetime
     updated_at: datetime

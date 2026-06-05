@@ -22,6 +22,33 @@ function compactList(items: string[], fallback = '证据中未涉及') {
   return items.length > 0 ? items.slice(0, 3).join('、') : fallback;
 }
 
+type CustomFocusAnalysis = {
+  focus_key: string;
+  label: string;
+  verdict: string;
+  evidence_ids: string[];
+  confidence: number;
+};
+
+function parseCustomFocusAnalysis(value: string): CustomFocusAnalysis[] {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
+      .map((item) => ({
+        focus_key: String(item.focus_key ?? ''),
+        label: String(item.label ?? ''),
+        verdict: String(item.verdict ?? '证据中未涉及'),
+        evidence_ids: Array.isArray(item.evidence_ids) ? item.evidence_ids.map((id) => String(id)) : [],
+        confidence: Number(item.confidence ?? 0),
+      }))
+      .filter((item) => item.label);
+  } catch {
+    return [];
+  }
+}
+
 export default function AnalysisList({ analyses, competitors, evidence, sources }: Props) {
   const [detailAnalysis, setDetailAnalysis] = useState<Analysis | null>(null);
   const competitorById = useMemo(() => new Map(competitors.map((item) => [item.id, item])), [competitors]);
@@ -48,6 +75,7 @@ export default function AnalysisList({ analyses, competitors, evidence, sources 
           const features = parseJsonList(analysis.core_features_json);
           const strengths = parseJsonList(analysis.strengths_json);
           const weaknesses = parseJsonList(analysis.weaknesses_json);
+          const customFocusAnalysis = parseCustomFocusAnalysis(analysis.custom_focus_analysis_json);
           const linkedEvidence = getLinkedEvidence(analysis);
           return (
             <article key={analysis.id} className="analysis-item">
@@ -66,6 +94,9 @@ export default function AnalysisList({ analyses, competitors, evidence, sources 
               <p className="analysis-compact">功能：{compactList(features)}</p>
               <p className="analysis-compact">优势：{compactList(strengths)}</p>
               <p className="analysis-compact">风险：{compactList(weaknesses)}</p>
+              {customFocusAnalysis.length > 0 ? (
+                <p className="analysis-compact">动态字段：{customFocusAnalysis.map((item) => item.label).slice(0, 3).join('、')}</p>
+              ) : null}
             </article>
           );
         })}
@@ -115,6 +146,17 @@ export default function AnalysisList({ analyses, competitors, evidence, sources 
                 <dt>机会点</dt>
                 <dd>{compactList(parseJsonList(detailAnalysis.opportunities_json))}</dd>
               </div>
+              {parseCustomFocusAnalysis(detailAnalysis.custom_focus_analysis_json).map((item) => (
+                <div key={item.focus_key || item.label}>
+                  <dt>{item.label}</dt>
+                  <dd>
+                    {item.verdict}
+                    {item.confidence > 0 ? (
+                      <span className="source-iteration-badge" style={{ marginLeft: 8 }}>可信度 {Math.round(item.confidence * 100)}%</span>
+                    ) : null}
+                  </dd>
+                </div>
+              ))}
               <div>
                 <dt>关联证据</dt>
                 <dd>
