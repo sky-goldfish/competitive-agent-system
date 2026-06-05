@@ -344,11 +344,21 @@ JSON schema:
     def generate_report(self, run: dict[str, Any], analyses: list[dict[str, Any]], sources: list[dict[str, Any]]) -> dict[str, str]:
         fallback = self.fallback.generate_report(run, analyses, sources)
         citation_bundle = json.dumps(run.get("citation_bundle", []), ensure_ascii=False)
+        qa_guidance = run.get("qa_report_guidance")
+        qa_guidance_section = ""
+        if qa_guidance:
+            qa_guidance_section = f"""
+
+【上次质检反馈——请务必在本次报告中改进以下问题】
+{qa_guidance}
+
+请特别注意：上次报告存在上述问题，请在本次报告中针对性改进。
+"""
         prompt = f"""
 你是报告撰写 Agent。请基于以下 citation_bundle 生成一份专业的中文 Markdown 竞品分析报告。
 
 用户需求：{run.get('user_requirement', '')}
-citation_bundle：{citation_bundle}
+citation_bundle：{citation_bundle}{qa_guidance_section}
 
 报告要求：
 1. 标题应该准确反映分析对象和领域，不要用"通用产品"这种泛泛标题

@@ -47,11 +47,14 @@ def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
     retry_guidance_map = None
     retry_queries = None
     retry_analysis_ids = None
+    retry_report_guidance = None
     if decision == "retry_collection":
         retry_queries = qa_raw.get("retry_queries") or []
-        retry_guidance_map = _build_retry_guidance_map(issues, qa_raw.get("retry_instructions"))
+        retry_guidance_map = _build_retry_guidance_map(issues)
+        retry_report_guidance = qa_raw.get("retry_instructions")
     elif decision == "retry_analysis":
         retry_analysis_ids = _identify_retry_analyses(issues, state.get("analyses", []))
+        retry_report_guidance = qa_raw.get("retry_instructions")
 
     qa_result: dict[str, Any] = {
         "overall_score": overall_score,
@@ -79,6 +82,8 @@ def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
         new_state["qa_retry_queries"] = retry_queries
     if retry_analysis_ids is not None:
         new_state["qa_retry_analysis_ids"] = retry_analysis_ids
+    if retry_report_guidance is not None:
+        new_state["qa_report_guidance"] = retry_report_guidance
     return new_state  # type: ignore[return-value]
 
 
@@ -101,7 +106,7 @@ def _infer_decision(issues: list[dict[str, Any]]) -> str:
     return "retry_analysis"
 
 
-def _build_retry_guidance_map(issues: list[dict[str, Any]], retry_instructions: str | None) -> dict[str, str]:
+def _build_retry_guidance_map(issues: list[dict[str, Any]]) -> dict[str, str]:
     result: dict[str, str] = {}
     for issue in issues:
         name = issue.get("competitor_name", "")
@@ -109,9 +114,6 @@ def _build_retry_guidance_map(issues: list[dict[str, Any]], retry_instructions: 
         if name and name not in {"report", "system"} and suggestion:
             result.setdefault(name, "")
             result[name] += f"- {suggestion}\n"
-    if retry_instructions:
-        for name in set(result.keys()):
-            result[name] = f"{retry_instructions}\n{result[name]}"
     return result
 
 

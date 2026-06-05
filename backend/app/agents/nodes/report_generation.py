@@ -14,6 +14,7 @@ def report_generation_node(state: AgentState, llm: LLMProvider) -> AgentState:
             "user_requirement": state["user_requirement"],
             "requirement_summary": state.get("requirement", {}).get("summary"),
             "citation_bundle": citation_bundle,
+            "qa_report_guidance": state.get("qa_report_guidance"),
         },
         state["analyses"],
         sources,
