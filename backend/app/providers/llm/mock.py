@@ -429,36 +429,37 @@ class MockLLMProvider(LLMProvider):
                     "fix_suggestion": "移除或修正无效引用",
                 })
 
-        overall_score = max(0.3, 1.0 - len(issues) * 0.12)
-        has_critical = any(i["severity"] == "critical" for i in issues)
-        has_coverage_issue = any(i["dimension"] == "coverage_gaps" for i in issues)
+        dimension_scores = {
+            "evidence_grounding": 0.82,
+            "citation_accuracy": 0.92,
+            "schema_completeness": 0.88,
+            "coverage_gaps": 0.9,
+            "cross_competitor_consistency": 0.86,
+            "factual_plausibility": 0.9,
+        }
+        for issue in issues:
+            dimension = issue.get("dimension")
+            if dimension not in dimension_scores:
+                continue
+            penalty = 0.28 if issue.get("severity") == "critical" else 0.18 if issue.get("severity") == "major" else 0.08
+            dimension_scores[dimension] = max(0.3, dimension_scores[dimension] - penalty)
 
-        if overall_score >= 0.7:
-            decision = "pass"
-            retry_instructions = None
-        elif has_coverage_issue and has_critical:
-            decision = "retry_collection"
-            retry_instructions = "; ".join(i["fix_suggestion"] for i in issues if i["dimension"] == "coverage_gaps")
-        else:
-            decision = "retry_analysis"
-            retry_instructions = "; ".join(i["fix_suggestion"] for i in issues if i["dimension"] != "coverage_gaps")
+        retry_instructions = "; ".join(i["fix_suggestion"] for i in issues if i.get("fix_suggestion")) or None
 
         retry_queries = []
-        if decision != "pass":
-            for issue in issues:
-                comp = issue.get("competitor_name", "")
-                if comp in {"report", "system", ""}:
-                    continue
-                dim = issue.get("dimension", "")
-                if dim == "coverage_gaps":
-                    retry_queries.append({"competitor_name": comp, "slot": "core_features", "query": f"{comp} core features capabilities detailed"})
-                    retry_queries.append({"competitor_name": comp, "slot": "pricing", "query": f"{comp} pricing plans detailed cost"})
-                elif dim == "schema_completeness":
-                    retry_queries.append({"competitor_name": comp, "slot": "pricing", "query": f"{comp} pricing plans tiers comparison"})
+        for issue in issues:
+            comp = issue.get("competitor_name", "")
+            if comp in {"report", "system", ""}:
+                continue
+            dim = issue.get("dimension", "")
+            if dim in {"coverage_gaps", "evidence_grounding"}:
+                retry_queries.append({"competitor_name": comp, "slot": "core_features", "query": f"{comp} core features capabilities detailed"})
+                retry_queries.append({"competitor_name": comp, "slot": "pricing", "query": f"{comp} pricing plans detailed cost"})
+            elif dim == "schema_completeness":
+                retry_queries.append({"competitor_name": comp, "slot": "pricing", "query": f"{comp} pricing plans tiers comparison"})
 
         return {
-            "overall_score": round(overall_score, 2),
-            "decision": decision,
+            "dimension_scores": {key: round(value, 2) for key, value in dimension_scores.items()},
             "retry_instructions": retry_instructions,
             "retry_queries": retry_queries,
             "issues": issues,

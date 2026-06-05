@@ -173,8 +173,10 @@ class QAResult(Base):
     iteration: Mapped[int] = mapped_column(Integer, default=1)
     overall_score: Mapped[float] = mapped_column(Float, default=0.0)
     decision: Mapped[str] = mapped_column(String, default="pass")
+    dimension_scores_json: Mapped[str] = mapped_column(Text, default="{}")
     issues_json: Mapped[str] = mapped_column(Text, default="[]")
     retry_instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retry_queries_json: Mapped[str] = mapped_column(Text, default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     run: Mapped[Run] = relationship(back_populates="qa_results")

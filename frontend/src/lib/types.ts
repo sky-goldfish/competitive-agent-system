@@ -158,13 +158,21 @@ export type QAIssue = {
   fix_suggestion: string;
 };
 
+export type QARetryQuery = {
+  competitor_name: string;
+  slot: string;
+  query: string;
+};
+
 export type QAResult = {
   id: string;
   run_id: string;
   iteration: number;
   overall_score: number;
+  dimension_scores: Record<string, number>;
   decision: string;
   issues: QAIssue[];
   retry_instructions: string | null;
+  retry_queries: QARetryQuery[];
   created_at: string;
 };

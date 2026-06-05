@@ -60,6 +60,13 @@ def _ensure_compatible_schema() -> None:
                 _recreate_reports_table_without_unique(connection)
             else:
                 _drop_reports_unique_if_exists(connection)
+    if "qa_results" in inspector.get_table_names():
+        qa_columns = {column["name"] for column in inspector.get_columns("qa_results")}
+        with engine.begin() as connection:
+            if "dimension_scores_json" not in qa_columns:
+                connection.execute(text("ALTER TABLE qa_results ADD COLUMN dimension_scores_json TEXT NOT NULL DEFAULT '{}'"))
+            if "retry_queries_json" not in qa_columns:
+                connection.execute(text("ALTER TABLE qa_results ADD COLUMN retry_queries_json TEXT NOT NULL DEFAULT '[]'"))
 
 
 def _has_reports_unique(connection) -> bool:

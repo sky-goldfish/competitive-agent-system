@@ -1,7 +1,8 @@
 import { useQuery } from '@tanstack/react-query';
-import { AlertTriangle, CheckCircle2, RefreshCw, ShieldCheck, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, RefreshCw, Search, ShieldCheck, X, XCircle } from 'lucide-react';
+import { useState } from 'react';
 import { getQAResults } from '../../lib/api';
-import type { QAIssue, QAResult as QAResultType } from '../../lib/types';
+import type { QAIssue, QAResult as QAResultType, QARetryQuery } from '../../lib/types';
 
 const dimensionLabels: Record<string, string> = {
   evidence_grounding: '证据支撑度',
@@ -11,6 +12,15 @@ const dimensionLabels: Record<string, string> = {
   cross_competitor_consistency: '跨竞品一致性',
   factual_plausibility: '事实合理性',
 };
+
+const dimensionOrder = [
+  'evidence_grounding',
+  'citation_accuracy',
+  'schema_completeness',
+  'coverage_gaps',
+  'cross_competitor_consistency',
+  'factual_plausibility',
+];
 
 const decisionLabels: Record<string, string> = {
   pass: '通过',
@@ -78,6 +88,9 @@ function QAIterationCard({ result, index, total, prevResult }: { result: QAResul
   const scorePercent = Math.round(result.overall_score * 100);
   const scoreClass = result.overall_score >= 0.7 ? 'pass' : 'fail';
   const scoreDelta = prevResult ? result.overall_score - prevResult.overall_score : null;
+  const [showRetryQueries, setShowRetryQueries] = useState(false);
+
+  const hasRetryQueries = result.decision === 'retry_collection' && (result.retry_queries ?? []).length > 0;
 
   return (
     <div className={`qa-iteration-card ${scoreClass}`}>
@@ -93,10 +106,34 @@ function QAIterationCard({ result, index, total, prevResult }: { result: QAResul
         <div className={`qa-score-bar-fill ${scoreClass}`} style={{ width: `${scorePercent}%` }} />
       </div>
 
+      {Object.keys(result.dimension_scores ?? {}).length > 0 && (
+        <div className="qa-dimension-scores">
+          {dimensionOrder.map((dimension) => {
+            const score = result.dimension_scores[dimension];
+            if (score == null) return null;
+            const percent = Math.round(score * 100);
+            return (
+              <div key={dimension} className="qa-dimension-score">
+                <span>{dimensionLabels[dimension] ?? dimension}</span>
+                <strong>{percent}</strong>
+                <div className="qa-dimension-score-track">
+                  <div className={percent >= 70 ? 'pass' : 'fail'} style={{ width: `${percent}%` }} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       <div className="qa-decision-row">
-        <span className={`qa-decision qa-decision-${result.decision}`}>
+        <span
+          className={`qa-decision qa-decision-${result.decision}${hasRetryQueries ? ' qa-decision-clickable' : ''}`}
+          onClick={() => hasRetryQueries && setShowRetryQueries(true)}
+          title={hasRetryQueries ? '点击查看重新采集关键词' : undefined}
+        >
           {result.decision === 'pass' ? <CheckCircle2 size={13} /> : result.decision === 'retry_collection' ? <RefreshCw size={13} /> : <XCircle size={13} />}
           {decisionLabels[result.decision] ?? result.decision}
+          {hasRetryQueries ? <Search size={12} style={{ marginLeft: 2 }} /> : null}
         </span>
         {scoreDelta !== null && (
           <span className={`qa-score-delta ${scoreDelta > 0 ? 'up' : scoreDelta < 0 ? 'down' : 'flat'}`}>
@@ -119,6 +156,10 @@ function QAIterationCard({ result, index, total, prevResult }: { result: QAResul
           <dd>{result.retry_instructions}</dd>
         </div>
       )}
+
+      {showRetryQueries && (
+        <RetryQueriesModal queries={result.retry_queries} onClose={() => setShowRetryQueries(false)} />
+      )}
     </div>
   );
 }
@@ -135,6 +176,43 @@ function QAIssueItem({ issue }: { issue: QAIssue }) {
       </div>
       <p className="qa-issue-desc">{issue.description}</p>
       {issue.fix_suggestion && <p className="qa-issue-fix">{issue.fix_suggestion}</p>}
+    </div>
+  );
+}
+
+const slotLabels: Record<string, string> = {
+  core_features: '核心功能',
+  pricing: '价格与商业模式',
+  positioning: '产品定位',
+  user_feedback: '用户评价与痛点',
+  market_signal: '市场信号',
+  risk_opportunity: '风险与机会',
+  relationship_evidence: '竞争关系',
+};
+
+function RetryQueriesModal({ queries, onClose }: { queries: QARetryQuery[]; onClose: () => void }) {
+  return (
+    <div className="retry-queries-overlay" onClick={onClose}>
+      <div className="retry-queries-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="retry-queries-header">
+          <h3><Search size={16} /> 重新采集关键词</h3>
+          <button type="button" className="retry-queries-close" onClick={onClose}><X size={16} /></button>
+        </div>
+        <div className="retry-queries-body">
+          <p className="retry-queries-hint">以下关键词由质检 Agent 生成，用于搜索引擎精准补采缺失维度的资料：</p>
+          <ul className="retry-queries-list">
+            {queries.map((q, i) => (
+              <li key={i} className="retry-query-item">
+                <div className="retry-query-header">
+                  <span className="retry-query-competitor">{q.competitor_name}</span>
+                  <span className="retry-query-slot">{slotLabels[q.slot] ?? q.slot}</span>
+                </div>
+                <code className="retry-query-text">{q.query}</code>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
     </div>
   );
 }

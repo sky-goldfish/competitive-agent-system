@@ -434,16 +434,9 @@ JSON schema:
 5. **cross_competitor_consistency（跨竞品一致性）**：各竞品分析深度是否一致？
 6. **factual_plausibility（事实合理性）**：是否有明显不合理内容？
 
-## 决策规则
-- overall_score = 6 个维度加权平均（权重：evidence_grounding 0.25, citation_accuracy 0.15, schema_completeness 0.2, coverage_gaps 0.2, cross_competitor_consistency 0.1, factual_plausibility 0.1）
-- 如果 overall_score >= 0.7 → decision = "pass"
-- 如果 overall_score < 0.7 且有 coverage_gaps 或 evidence_grounding 的 critical 问题 → decision = "retry_collection"
-- 否则 → decision = "retry_analysis"
-
-输出严格 JSON，不要输出 Markdown 代码块。
+输出严格 JSON，不要输出 Markdown 代码块，不要输出 schema 外字段。
 JSON schema:
 {{
-  "overall_score": 0.0,
   "dimension_scores": {{
     "evidence_grounding": 0.0,
     "citation_accuracy": 0.0,
@@ -452,8 +445,7 @@ JSON schema:
     "cross_competitor_consistency": 0.0,
     "factual_plausibility": 0.0
   }},
-  "decision": "pass | retry_collection | retry_analysis",
-  "retry_instructions": "具体的改进指导（仅 decision 非 pass 时填写，面向人类阅读）",
+  "retry_instructions": "具体的改进指导（有 issues 时填写，面向人类阅读）",
   "retry_queries": [
     {{
       "competitor_name": "竞品名称",
@@ -477,8 +469,8 @@ JSON schema:
 - 对于 cross_competitor_consistency 类问题，每条 issue 只需列出受影响的一方（如\"A 的分析深度高于 B\"，应拆为一条针对 A 的 issue 和一条针对 B 的 issue）
 
 【retry_queries 生成规则】
-- 仅当 decision 非 "pass" 时填写
-- 每个 issue 对应生成 1-2 条 query
+- 当 issue 需要补采公开资料时填写，尤其是 coverage_gaps 或 evidence_grounding 问题
+- 每个需要补采的 issue 对应生成 1-2 条 query
 - query 必须是有效的搜索关键词，不要包含自然语言指令（如"补充搜索"）
 - 根据竞品名称的语言选择中英文 query：英文竞品用英文，中文竞品用中文
 - 每条 query 控制在 15-40 个字符，精准命中信息缺口
@@ -487,8 +479,6 @@ JSON schema:
         result = self._json_chat(prompt, fallback)
         if result is fallback:
             return fallback
-        score = float(result.get("overall_score", 0))
-        result["overall_score"] = min(1.0, max(0.0, score))
         issues = result.get("issues")
         if not isinstance(issues, list):
             result["issues"] = []

@@ -16,4 +16,7 @@ class AgentState(TypedDict, total=False):
     report: dict[str, str]
     qa_result: dict[str, Any]
     qa_retry_queries: list[dict[str, Any]]
+    qa_retry_guidance_map: dict[str, str]
+    qa_retry_analysis_ids: list[str]
+    qa_report_guidance: str
     feedback_loop_count: int

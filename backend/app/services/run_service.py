@@ -237,8 +237,10 @@ def execute_report_run(run_id: str) -> None:
                     iteration=qa_result.get("iteration", 1),
                     overall_score=qa_result.get("overall_score", 0),
                     decision=qa_result.get("decision", "pass"),
+                    dimension_scores_json=json.dumps(qa_result.get("dimension_scores", {}), ensure_ascii=False),
                     issues_json=json.dumps(qa_result.get("issues", []), ensure_ascii=False),
                     retry_instructions=qa_result.get("retry_instructions"),
+                    retry_queries_json=json.dumps(state.get("qa_retry_queries", []), ensure_ascii=False),
                 )
             )
             run.feedback_loop_count = state.get("feedback_loop_count", 0)
