@@ -4,11 +4,17 @@ from pydantic import BaseModel, Field
 
 
 class QAIssueResponse(BaseModel):
+    id: str | None = None
     dimension: str
     severity: str
     competitor_name: str
     description: str
     fix_suggestion: str
+    status: str | None = None
+    first_seen_iteration: int | None = None
+    last_seen_iteration: int | None = None
+    resolved_iteration: int | None = None
+    resolution_reason: str | None = None
 
 
 class QARetryQueryResponse(BaseModel):
@@ -24,7 +30,9 @@ class QAResultResponse(BaseModel):
     overall_score: float
     dimension_scores: dict[str, float] = Field(default_factory=dict)
     decision: str
+    check_phase: str = "full_check"
     issues: list[QAIssueResponse]
+    issue_checklist: list[QAIssueResponse] = Field(default_factory=list)
     retry_instructions: str | None = None
     retry_queries: list[QARetryQueryResponse] = Field(default_factory=list)
     created_at: datetime
@@ -39,6 +47,8 @@ class QAResultResponse(BaseModel):
             issues_list = json.loads(issues_raw)
         except (json.JSONDecodeError, TypeError):
             issues_list = []
+        if not isinstance(issues_list, list):
+            issues_list = []
         scores_raw = getattr(qa_result, "dimension_scores_json", None) or "{}"
         try:
             scores_dict = json.loads(scores_raw)
@@ -46,10 +56,19 @@ class QAResultResponse(BaseModel):
             scores_dict = {}
         if not isinstance(scores_dict, dict):
             scores_dict = {}
+        checklist_raw = getattr(qa_result, "issue_checklist_json", None) or "[]"
+        try:
+            checklist_list = json.loads(checklist_raw)
+        except (json.JSONDecodeError, TypeError):
+            checklist_list = []
+        if not isinstance(checklist_list, list):
+            checklist_list = []
         queries_raw = getattr(qa_result, "retry_queries_json", None) or "[]"
         try:
             queries_list = json.loads(queries_raw)
         except (json.JSONDecodeError, TypeError):
+            queries_list = []
+        if not isinstance(queries_list, list):
             queries_list = []
         return cls(
             id=qa_result.id,
@@ -62,7 +81,9 @@ class QAResultResponse(BaseModel):
                 if isinstance(value, int | float)
             },
             decision=qa_result.decision,
+            check_phase=getattr(qa_result, "check_phase", None) or "full_check",
             issues=[QAIssueResponse(**i) for i in issues_list if isinstance(i, dict)],
+            issue_checklist=[QAIssueResponse(**i) for i in checklist_list if isinstance(i, dict)],
             retry_instructions=qa_result.retry_instructions,
             retry_queries=[QARetryQueryResponse(**q) for q in queries_list if isinstance(q, dict)],
             created_at=qa_result.created_at,

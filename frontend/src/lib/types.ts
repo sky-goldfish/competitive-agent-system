@@ -151,11 +151,17 @@ export type CitationBundleCompetitor = {
 };
 
 export type QAIssue = {
+  id: string | null;
   dimension: string;
   severity: string;
   competitor_name: string;
   description: string;
   fix_suggestion: string;
+  status: string | null;
+  first_seen_iteration: number | null;
+  last_seen_iteration: number | null;
+  resolved_iteration: number | null;
+  resolution_reason: string | null;
 };
 
 export type QARetryQuery = {
@@ -171,7 +177,9 @@ export type QAResult = {
   overall_score: number;
   dimension_scores: Record<string, number>;
   decision: string;
+  check_phase: string;
   issues: QAIssue[];
+  issue_checklist: QAIssue[];
   retry_instructions: string | null;
   retry_queries: QARetryQuery[];
   created_at: string;

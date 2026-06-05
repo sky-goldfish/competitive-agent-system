@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { AlertTriangle, CheckCircle2, RefreshCw, Search, ShieldCheck, X, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Circle, History, RefreshCw, Search, ShieldCheck, X, XCircle } from 'lucide-react';
 import { useState } from 'react';
 import { getQAResults } from '../../lib/api';
 import type { QAIssue, QAResult as QAResultType, QARetryQuery } from '../../lib/types';
@@ -146,6 +146,33 @@ function QAIterationCard({ result, index, total, prevResult }: { result: QAResul
         <div className="qa-issues-list">
           {result.issues.map((issue, i) => (
             <QAIssueItem key={i} issue={issue} />
+          ))}
+        </div>
+      )}
+
+      {(result.issue_checklist ?? []).length > 0 && (
+        <div className="qa-checklist">
+          <div className="qa-checklist-header">
+            <History size={13} /> 问题追踪
+          </div>
+          {result.issue_checklist.map((issue, i) => (
+            <div key={issue.id ?? i} className={`qa-checklist-item qa-checklist-${issue.status ?? 'open'}`}>
+              <div className="qa-checklist-item-header">
+                {issue.status === 'resolved' ? <CheckCircle2 size={13} className="qa-checklist-resolved-icon" /> : issue.status === 'unresolved' ? <AlertTriangle size={13} className="qa-checklist-unresolved-icon" /> : <Circle size={13} className="qa-checklist-open-icon" />}
+                <span className={`qa-severity-badge ${issue.severity}`}>{severityLabels[issue.severity] ?? issue.severity}</span>
+                <span className="qa-dimension-badge">{dimensionLabels[issue.dimension] ?? issue.dimension}</span>
+                {issue.competitor_name && issue.competitor_name !== 'report' && issue.competitor_name !== 'system' && (
+                  <span className="qa-competitor-badge">{issue.competitor_name}</span>
+                )}
+                <span className={`qa-checklist-status qa-checklist-status-${issue.status ?? 'open'}`}>
+                  {issue.status === 'resolved' ? <>✓ 第 {issue.resolved_iteration} 轮已解决</> : issue.status === 'unresolved' ? <>⚠ 未解决（已达重试上限）</> : <>● 未解决</>}
+                </span>
+              </div>
+              <p className="qa-checklist-desc">{issue.description}</p>
+              {issue.resolution_reason && (
+                <p className="qa-checklist-reason">{issue.resolution_reason}</p>
+              )}
+            </div>
           ))}
         </div>
       )}

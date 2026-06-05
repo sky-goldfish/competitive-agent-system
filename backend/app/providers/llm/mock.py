@@ -465,6 +465,63 @@ class MockLLMProvider(LLMProvider):
             "issues": issues,
         }
 
+    def qa_verify_issues(
+        self,
+        report: dict[str, str],
+        analyses: list[dict[str, Any]],
+        evidence: list[dict[str, Any]],
+        sources: list[dict[str, Any]],
+        open_issues: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        analysis_by_name = {a.get("competitor_name"): a for a in analyses}
+        competitor_id_by_name = {a.get("competitor_name"): a.get("competitor_id") for a in analyses}
+        evidence_count_by_name: dict[str, int] = {}
+        for item in evidence:
+            name = item.get("related_product")
+            cid = item.get("competitor_id")
+            if name:
+                evidence_count_by_name[name] = evidence_count_by_name.get(name, 0) + 1
+            for comp_name, comp_id in competitor_id_by_name.items():
+                if comp_id and cid == comp_id:
+                    evidence_count_by_name[comp_name] = evidence_count_by_name.get(comp_name, 0) + 1
+
+        markdown = report.get("markdown_content", "")
+        resolutions = []
+        for issue in open_issues:
+            issue_id = issue.get("id", "")
+            comp = issue.get("competitor_name", "")
+            dimension = issue.get("dimension", "")
+            resolved = False
+            reason = "Mock 复核未发现足够证据证明该问题已解决。"
+            if dimension in {"coverage_gaps", "evidence_grounding"}:
+                ev_count = evidence_count_by_name.get(comp, 0)
+                resolved = ev_count >= 3
+                reason = f"{comp} 当前证据数为 {ev_count}。"
+            elif dimension == "schema_completeness":
+                pricing = str((analysis_by_name.get(comp) or {}).get("pricing_summary", ""))
+                resolved = bool(pricing and "未涉及" not in pricing and "Mock" not in pricing)
+                reason = f"{comp} 当前定价字段{'已有实质内容' if resolved else '仍缺少实质内容'}。"
+            elif dimension == "citation_accuracy":
+                resolved = "不存在的来源" not in markdown
+                reason = "报告引用复核完成。"
+            resolutions.append(
+                {
+                    "issue_id": issue_id,
+                    "status": "resolved" if resolved else "open",
+                    "resolution_reason": reason,
+                    "retry_queries": [] if resolved else [
+                        {"competitor_name": comp, "slot": "core_features", "query": f"{comp} core features evidence"}
+                    ] if comp not in {"report", "system", ""} and dimension in {"coverage_gaps", "evidence_grounding"} else [],
+                }
+            )
+        unresolved = [item for item in resolutions if item["status"] != "resolved"]
+        return {
+            "resolutions": resolutions,
+            "retry_instructions": "; ".join(
+                issue.get("fix_suggestion", "") for issue in open_issues if issue.get("id") in {item["issue_id"] for item in unresolved}
+            ) or None,
+        }
+
     def search(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
         return [
             {

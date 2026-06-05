@@ -1860,6 +1860,95 @@ button:disabled {
   background: linear-gradient(90deg, #e67e22, #c0392b);
 }
 
+/* QA Issue Checklist */
+.qa-checklist {
+  border-top: 1px solid #e8ecf1;
+  margin-top: 8px;
+  padding-top: 10px;
+}
+
+.qa-checklist-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #627086;
+  margin-bottom: 8px;
+}
+
+.qa-checklist-item {
+  background: #f8f9fb;
+  border: 1px solid #edf1f7;
+  border-radius: 8px;
+  margin-bottom: 6px;
+  padding: 8px 10px;
+}
+
+.qa-checklist-resolved {
+  opacity: 0.65;
+  border-color: #d4edda;
+  background: #f4faf6;
+}
+
+.qa-checklist-unresolved {
+  border-color: #f5c6cb;
+  background: #fdf7f7;
+}
+
+.qa-checklist-item-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.qa-checklist-resolved-icon {
+  color: #2d8a57;
+  flex-shrink: 0;
+}
+
+.qa-checklist-unresolved-icon {
+  color: #c0392b;
+  flex-shrink: 0;
+}
+
+.qa-checklist-open-icon {
+  color: #e67e22;
+  flex-shrink: 0;
+}
+
+.qa-checklist-status {
+  font-size: 11px;
+  font-weight: 700;
+  margin-left: auto;
+}
+
+.qa-checklist-status-resolved {
+  color: #2d8a57;
+}
+
+.qa-checklist-status-open {
+  color: #c0392b;
+}
+
+.qa-checklist-status-unresolved {
+  color: #856404;
+}
+
+.qa-checklist-desc {
+  font-size: 12px;
+  color: #40506a;
+  margin: 0 0 2px;
+}
+
+.qa-checklist-reason {
+  font-size: 11px;
+  color: #8896a6;
+  font-style: italic;
+  margin: 0;
+}
+
 .qa-dimension-scores {
   display: grid;
   gap: 6px;

@@ -484,6 +484,81 @@ JSON schema:
             result["issues"] = []
         return result
 
+    def qa_verify_issues(
+        self,
+        report: dict[str, str],
+        analyses: list[dict[str, Any]],
+        evidence: list[dict[str, Any]],
+        sources: list[dict[str, Any]],
+        open_issues: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        fallback = self.fallback.qa_verify_issues(report, analyses, evidence, sources, open_issues)
+        issues_json = json.dumps(open_issues, ensure_ascii=False)
+        analyses_summary = "\n".join(
+            f"- 竞品={a.get('competitor_name', '')}；定位={a.get('positioning', '')}；"
+            f"定价={a.get('pricing_summary', '')}；证据数={len(_json_list(a.get('evidence_ids_json')))}"
+            for a in analyses
+        )
+        evidence_summary = "\n".join(
+            f"- 竞品={e.get('related_product', '')}；维度={e.get('related_dimension', '')}；"
+            f"摘要={e.get('summary', '')[:180]}"
+            for e in evidence[:40]
+        )
+        sources_summary = "\n".join(
+            f"- [{s.get('reference_id', '')}] {s.get('title', '')[:60]} ({s.get('source_type', '')})"
+            for s in sources[:25]
+        )
+        prompt = f"""
+你是竞品分析系统的质检复核 Agent。请只检查以下历史未解决问题是否已经被本轮报告、分析和证据解决。
+
+## 历史未解决 issues
+{issues_json}
+
+## 报告内容
+{report.get('markdown_content', '')}
+
+## 分析摘要
+{analyses_summary}
+
+## 证据摘要
+{evidence_summary}
+
+## 来源列表
+{sources_summary}
+
+输出严格 JSON，不要输出 Markdown 代码块，不要输出 schema 外字段。
+JSON schema:
+{{
+  "resolutions": [
+    {{
+      "issue_id": "必须来自历史 issue 的 id",
+      "status": "resolved | open",
+      "resolution_reason": "说明为什么已解决或仍未解决",
+      "retry_queries": [
+        {{
+          "competitor_name": "竞品名称",
+          "slot": "core_features | pricing | positioning | user_feedback | market_signal | risk_opportunity | relationship_evidence",
+          "query": "如果仍需补采，给出具体搜索关键词；否则为空数组"
+        }}
+      ]
+    }}
+  ],
+  "retry_instructions": "如果仍有 open issue，给出下一步修复指引；否则为空"
+}}
+
+规则：
+- 每个历史 issue 必须返回一条 resolution。
+- 只有在新报告/新分析/新证据已经直接覆盖原问题时，status 才能是 resolved。
+- 如果证据仍不足、字段仍空泛、引用仍无法核验，status 必须是 open。
+"""
+        result = self._json_chat(prompt, fallback)
+        if result is fallback:
+            return fallback
+        resolutions = result.get("resolutions")
+        if not isinstance(resolutions, list):
+            result["resolutions"] = []
+        return result
+
     def _json_chat(self, prompt: str, fallback: dict[str, Any]) -> dict[str, Any]:
         try:
             request: dict[str, Any] = {
