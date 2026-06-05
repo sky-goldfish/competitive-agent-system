@@ -384,10 +384,9 @@ class MockLLMProvider(LLMProvider):
         report: dict[str, str],
         analyses: list[dict[str, Any]],
         evidence: list[dict[str, Any]],
-        sources: list[dict[str, Any]],
     ) -> dict[str, Any]:
         issues: list[dict[str, Any]] = []
-        source_urls = {s.get("url") for s in sources if s.get("url")}
+        evidence_ref_ids = {e.get("reference_id") for e in evidence if e.get("reference_id")}
         competitor_evidence_count: dict[str, int] = {}
         for item in evidence:
             cid = item.get("competitor_id", "unknown")
@@ -420,7 +419,7 @@ class MockLLMProvider(LLMProvider):
         cited_refs = re.findall(r"\[\[(\d+)\]\]", markdown)
         for ref_str in cited_refs:
             ref_id = int(ref_str)
-            if ref_id > len(sources):
+            if ref_id not in evidence_ref_ids:
                 issues.append({
                     "dimension": "citation_accuracy",
                     "severity": "minor",
@@ -470,7 +469,6 @@ class MockLLMProvider(LLMProvider):
         report: dict[str, str],
         analyses: list[dict[str, Any]],
         evidence: list[dict[str, Any]],
-        sources: list[dict[str, Any]],
         open_issues: list[dict[str, Any]],
     ) -> dict[str, Any]:
         analysis_by_name = {a.get("competitor_name"): a for a in analyses}

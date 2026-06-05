@@ -142,19 +142,24 @@ def material_collection_node(state: AgentState, search: SearchProvider, progress
                     credibility_score = ranked_result["credibility_score"]
                     if source_key not in seen_urls:
                         seen_urls.add(source_key)
+                        ref_id = len(sources) + 1
+                        source_title = result.title
                         source = {
                             "competitor_id": competitor["id"],
-                            "title": result.title,
+                            "title": source_title,
                             "url": result.url,
                             "snippet": result.snippet,
                             "source_type": source_type,
                             "provider": search.name,
                             "raw_content": result.raw_content,
-                            "reference_id": len(sources) + 1,
+                            "reference_id": ref_id,
                             "metadata_json": _metadata_json(credibility_score, ranked_result["rank_score"], source_type, ranked_result["label"], ranked_result["reason"], query_item, collection_iteration),
                         }
                         sources.append(source)
                         product_source_count += 1
+                    else:
+                        ref_id = next((s["reference_id"] for s in sources if s.get("competitor_id") == competitor["id"] and s.get("url") == result.url), None)
+                        source_title = next((s["title"] for s in sources if s.get("competitor_id") == competitor["id"] and s.get("url") == result.url), result.title)
                     evidence.append(
                         {
                             "id": new_id("ev"),
@@ -162,9 +167,12 @@ def material_collection_node(state: AgentState, search: SearchProvider, progress
                             "related_product": competitor["name"],
                             "related_dimension": query_item["dimension"],
                             "quote": (result.raw_content or result.snippet)[:800],
-                            "summary": _evidence_summary(query_item, ranked_result["label"], credibility_score, result.snippet),
+                            "summary": _evidence_summary(query_item, result.snippet),
                             "confidence": min(0.95, max(0.5, credibility_score - 0.04)),
                             "source_url": result.url,
+                            "source_title": source_title,
+                            "reference_id": ref_id,
+                            "source_type": source_type,
                         }
                     )
         _emit(progress, "source_search", "按来源类型召回并重排序候选网页", {"product": competitor["name"], "source_count": product_source_count})
@@ -503,14 +511,13 @@ def _success_criteria(slot: str, relationship_model: dict) -> str:
     return f"找到可支撑“{SLOT_LABELS[slot]}”的公开来源，并抽取至少 1 条 evidence。"
 
 
-def _evidence_summary(query_item: dict, source_label: str, credibility_score: float, snippet: str) -> str:
-    prefix = f"[{source_label}｜权重 {credibility_score:.2f}]"
+def _evidence_summary(query_item: dict, snippet: str) -> str:
     if query_item.get("target_slot") == "relationship_evidence":
         return (
-            f"{prefix} 关系假设：{query_item.get('relation_claim')} "
+            f"关系假设：{query_item.get('relation_claim')} "
             f"竞争需求：{query_item.get('competed_need')}。证据摘要：{snippet}"
         )
-    return f"{prefix} {snippet}"
+    return snippet
 
 
 

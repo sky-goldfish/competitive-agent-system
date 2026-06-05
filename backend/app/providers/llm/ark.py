@@ -289,7 +289,9 @@ JSON schema:
     def analyze_competitor(self, competitor: dict[str, Any], evidence: list[dict[str, Any]]) -> dict[str, Any]:
         fallback = self.fallback.analyze_competitor(competitor, evidence)
         evidence_summary = "\n".join(
-            f"- evidence_id={e.get('id', '')}；维度={e.get('related_dimension', '未知')}；来源={e.get('source_url', '')}；摘要={e.get('summary', '')[:300]}"
+            f"- evidence_id={e.get('id', '')}；维度={e.get('related_dimension', '未知')}；"
+            f"来源类型={e.get('source_type', '未知')}；置信度={e.get('confidence', 0)}；"
+            f"来源={e.get('source_url', '')}；摘要={e.get('summary', '')[:300]}"
             for e in evidence[:12]
         )
         qa_feedback_section = ""
@@ -390,22 +392,17 @@ JSON schema:
         report: dict[str, str],
         analyses: list[dict[str, Any]],
         evidence: list[dict[str, Any]],
-        sources: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        fallback = self.fallback.qa_check_report(report, analyses, evidence, sources)
+        fallback = self.fallback.qa_check_report(report, analyses, evidence)
         analyses_summary = "\n".join(
             f"- 竞品={a.get('competitor_name', '')}；定位={a.get('positioning', '')}；"
             f"定价={a.get('pricing_summary', '')}；证据数={len(_json_list(a.get('evidence_ids_json')))}"
             for a in analyses
         )
         evidence_summary = "\n".join(
-            f"- 竞品={e.get('related_product', '')}；维度={e.get('related_dimension', '')}；"
-            f"置信度={e.get('confidence', 0)}；摘要={e.get('summary', '')[:150]}"
-            for e in evidence[:30]
-        )
-        sources_summary = "\n".join(
-            f"- [{s.get('reference_id', '')}] {s.get('title', '')[:60]} ({s.get('source_type', '')})"
-            for s in sources[:20]
+            f"- [{e.get('reference_id', '?')}] 竞品={e.get('related_product', '')}；维度={e.get('related_dimension', '')}；"
+            f"来源类型={e.get('source_type', '')}；置信度={e.get('confidence', 0)}；摘要={e.get('summary', '')}"
+            for e in evidence
         )
         report_content = report.get("markdown_content", "")
         prompt = f"""
@@ -417,11 +414,8 @@ JSON schema:
 ## 分析摘要
 {analyses_summary}
 
-## 证据摘要（前30条）
+## 证据摘要（含引用号）
 {evidence_summary}
-
-## 来源列表（前20条）
-{sources_summary}
 
 ## 质检维度
 
@@ -489,10 +483,9 @@ JSON schema:
         report: dict[str, str],
         analyses: list[dict[str, Any]],
         evidence: list[dict[str, Any]],
-        sources: list[dict[str, Any]],
         open_issues: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        fallback = self.fallback.qa_verify_issues(report, analyses, evidence, sources, open_issues)
+        fallback = self.fallback.qa_verify_issues(report, analyses, evidence, open_issues)
         issues_json = json.dumps(open_issues, ensure_ascii=False)
         analyses_summary = "\n".join(
             f"- 竞品={a.get('competitor_name', '')}；定位={a.get('positioning', '')}；"
@@ -500,13 +493,9 @@ JSON schema:
             for a in analyses
         )
         evidence_summary = "\n".join(
-            f"- 竞品={e.get('related_product', '')}；维度={e.get('related_dimension', '')}；"
-            f"摘要={e.get('summary', '')[:180]}"
-            for e in evidence[:40]
-        )
-        sources_summary = "\n".join(
-            f"- [{s.get('reference_id', '')}] {s.get('title', '')[:60]} ({s.get('source_type', '')})"
-            for s in sources[:25]
+            f"- [{e.get('reference_id', '?')}] 竞品={e.get('related_product', '')}；维度={e.get('related_dimension', '')}；"
+            f"来源类型={e.get('source_type', '')}；置信度={e.get('confidence', 0)}；摘要={e.get('summary', '')}"
+            for e in evidence
         )
         prompt = f"""
 你是竞品分析系统的质检复核 Agent。请只检查以下历史未解决问题是否已经被本轮报告、分析和证据解决。
@@ -522,9 +511,6 @@ JSON schema:
 
 ## 证据摘要
 {evidence_summary}
-
-## 来源列表
-{sources_summary}
 
 输出严格 JSON，不要输出 Markdown 代码块，不要输出 schema 外字段。
 JSON schema:

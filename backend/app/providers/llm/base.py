@@ -34,7 +34,6 @@ class LLMProvider(Protocol):
         report: dict[str, str],
         analyses: list[dict[str, Any]],
         evidence: list[dict[str, Any]],
-        sources: list[dict[str, Any]],
     ) -> dict[str, Any]:
         """Quality-check a report and its supporting data. Returns structured QA verdict."""
         ...
@@ -44,7 +43,6 @@ class LLMProvider(Protocol):
         report: dict[str, str],
         analyses: list[dict[str, Any]],
         evidence: list[dict[str, Any]],
-        sources: list[dict[str, Any]],
         open_issues: list[dict[str, Any]],
     ) -> dict[str, Any]:
         """Check whether previously open QA issues have been resolved."""

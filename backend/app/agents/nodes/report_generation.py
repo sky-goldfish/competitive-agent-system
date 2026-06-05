@@ -7,7 +7,7 @@ from app.providers.llm.base import LLMProvider
 
 def report_generation_node(state: AgentState, llm: LLMProvider) -> AgentState:
     sources = state["sources"]
-    citation_bundle = _build_citation_bundle(state["analyses"], state["evidence"], sources)
+    citation_bundle = _build_citation_bundle(state["analyses"], state["evidence"])
     report = llm.generate_report(
         {
             "title": state.get("requirement", {}).get("domain", "竞品分析任务"),
@@ -22,11 +22,7 @@ def report_generation_node(state: AgentState, llm: LLMProvider) -> AgentState:
     return {**state, "report": report}
 
 
-def _build_citation_bundle(analyses: list[dict[str, Any]], evidence: list[dict[str, Any]], sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    source_by_ref_key: dict[tuple[str | None, str | None], dict[str, Any]] = {}
-    for source in sources:
-        dimension = _parse_source_dimension(source)
-        source_by_ref_key[(source.get("url"), dimension)] = source
+def _build_citation_bundle(analyses: list[dict[str, Any]], evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
     evidence_by_id = {item.get("id"): item for item in evidence if item.get("id")}
     bundle = []
 
@@ -42,13 +38,13 @@ def _build_citation_bundle(analyses: list[dict[str, Any]], evidence: list[dict[s
                 "competitor_id": analysis.get("competitor_id"),
                 "competitor_name": analysis.get("competitor_name"),
                 "claims": [
-                    _claim("positioning", "产品定位", analysis.get("positioning", ""), linked_evidence, source_by_ref_key, {"产品定位"}),
-                    _claim("target_users", "目标用户", _join_json_list(analysis.get("target_users")), linked_evidence, source_by_ref_key, {"产品定位", "用户评价与痛点"}),
-                    _claim("core_features", "核心功能", _join_json_list(analysis.get("core_features_json")), linked_evidence, source_by_ref_key, {"核心功能"}),
-                    _claim("pricing", "定价策略", analysis.get("pricing_summary", ""), linked_evidence, source_by_ref_key, {"价格与商业模式"}),
-                    _claim("strengths", "优势", _join_json_list(analysis.get("strengths_json")), linked_evidence, source_by_ref_key, {"产品定位", "核心功能"}),
-                    _claim("weaknesses", "劣势或痛点", _join_json_list(analysis.get("weaknesses_json")), linked_evidence, source_by_ref_key, {"用户评价与痛点"}),
-                    _claim("opportunities", "机会点", _join_json_list(analysis.get("opportunities_json")), linked_evidence, source_by_ref_key, set()),
+                    _claim("positioning", "产品定位", analysis.get("positioning", ""), linked_evidence, {"产品定位"}),
+                    _claim("target_users", "目标用户", _join_json_list(analysis.get("target_users")), linked_evidence, {"产品定位", "用户评价与痛点"}),
+                    _claim("core_features", "核心功能", _join_json_list(analysis.get("core_features_json")), linked_evidence, {"核心功能"}),
+                    _claim("pricing", "定价策略", analysis.get("pricing_summary", ""), linked_evidence, {"价格与商业模式"}),
+                    _claim("strengths", "优势", _join_json_list(analysis.get("strengths_json")), linked_evidence, {"产品定位", "核心功能"}),
+                    _claim("weaknesses", "劣势或痛点", _join_json_list(analysis.get("weaknesses_json")), linked_evidence, {"用户评价与痛点"}),
+                    _claim("opportunities", "机会点", _join_json_list(analysis.get("opportunities_json")), linked_evidence, set()),
                 ],
             }
         )
@@ -59,49 +55,26 @@ def _claim(
     claim_type: str,
     label: str,
     text: str,
-    evidence: list[dict[str, Any]],
-    source_by_ref_key: dict[tuple[str | None, str | None], dict[str, Any]],
+    evidence_list: list[dict[str, Any]],
     preferred_dimensions: set[str],
 ) -> dict[str, Any]:
-    matched = [item for item in evidence if item.get("related_dimension") in preferred_dimensions] if preferred_dimensions else evidence
+    matched = [item for item in evidence_list if item.get("related_dimension") in preferred_dimensions] if preferred_dimensions else evidence_list
     if not matched:
-        matched = evidence
+        matched = evidence_list
     return {
         "claim_type": claim_type,
         "label": label,
         "text": text,
-        "evidence": [_evidence_ref(item, source_by_ref_key) for item in matched[:4]],
+        "evidence": [_evidence_ref(item) for item in matched[:4]],
     }
 
 
-def _evidence_ref(evidence: dict[str, Any], source_by_ref_key: dict[tuple[str | None, str | None], dict[str, Any]]) -> dict[str, Any]:
-    source_url = evidence.get("source_url")
-    dimension = evidence.get("related_dimension")
-    source = source_by_ref_key.get((source_url, dimension))
-    if source is None:
-        for key, s in source_by_ref_key.items():
-            if key[0] == source_url:
-                source = s
-                break
-    if source is None:
-        source = {}
+def _evidence_ref(evidence_item: dict[str, Any]) -> dict[str, Any]:
     return {
-        "source_reference_id": source.get("reference_id"),
-        "source_title": source.get("title"),
-        "source_url": source_url,
+        "source_reference_id": evidence_item.get("reference_id"),
+        "source_title": evidence_item.get("source_title"),
+        "source_url": evidence_item.get("source_url"),
     }
-
-
-def _parse_source_dimension(source: dict[str, Any]) -> str | None:
-    metadata_json = source.get("metadata_json")
-    if isinstance(metadata_json, str) and metadata_json:
-        try:
-            metadata = json.loads(metadata_json)
-            if isinstance(metadata, dict) and metadata.get("dimension"):
-                return metadata["dimension"]
-        except json.JSONDecodeError:
-            pass
-    return None
 
 
 def _json_list(value: Any) -> list[str]:

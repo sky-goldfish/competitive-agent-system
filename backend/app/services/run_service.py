@@ -182,7 +182,7 @@ def execute_report_run(run_id: str) -> None:
                 source_url = item.get("source_url")
                 if source is None:
                     raise InvalidRunStateError(f"Evidence source not found for URL: {source_url}")
-                evidence_data = {key: value for key, value in item.items() if key not in {"competitor_id", "source_url"}}
+                evidence_data = {key: value for key, value in item.items() if key not in {"competitor_id", "source_url", "source_title", "source_type", "reference_id"}}
                 evidence = Evidence(run_id=run_id, source_id=source.id, **evidence_data)
                 db.add(evidence)
                 db.flush()

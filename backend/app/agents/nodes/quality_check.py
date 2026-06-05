@@ -46,7 +46,6 @@ def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
             state.get("report", {}),
             state.get("analyses", []),
             state.get("evidence", []),
-            state.get("sources", []),
             open_issues,
         )
         resolutions = _normalize_issue_resolutions(verification_raw.get("resolutions"))
@@ -83,7 +82,6 @@ def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
                 state.get("report", {}),
                 state.get("analyses", []),
                 state.get("evidence", []),
-                state.get("sources", []),
             )
             dimension_scores = _normalize_dimension_scores(qa_raw.get("dimension_scores"))
             overall_score = _calculate_overall_score(dimension_scores)
@@ -167,7 +165,7 @@ def qa_route(state: AgentState) -> str:
 
 def _derive_decision(_overall_score: float, dimension_scores: dict[str, float], issues: list[dict[str, Any]]) -> str:
     for issue in issues:
-        if issue.get("dimension") in COLLECTION_DIMENSIONS and issue.get("severity") == "critical":
+        if issue.get("dimension") in COLLECTION_DIMENSIONS:
             return "retry_collection"
     if all(score >= QA_PASS_THRESHOLD for score in dimension_scores.values()):
         return "pass"
@@ -176,7 +174,7 @@ def _derive_decision(_overall_score: float, dimension_scores: dict[str, float], 
 
 def _derive_retry_decision(issues: list[dict[str, Any]]) -> str:
     for issue in issues:
-        if issue.get("dimension") in COLLECTION_DIMENSIONS and issue.get("severity") == "critical":
+        if issue.get("dimension") in COLLECTION_DIMENSIONS:
             return "retry_collection"
     return "retry_analysis"
 
