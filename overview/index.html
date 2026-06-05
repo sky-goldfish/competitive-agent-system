@@ -1,0 +1,1760 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>竞品分析 Agent 协作系统 — 架构与数据流全景图</title>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --panel: #ffffff;
+    --border: #dee2e6;
+    --text: #1f2937;
+    --muted: #6b7280;
+    --accent: #2563eb;
+    --green: #16a34a;
+    --orange: #d97706;
+    --red: #1f2937;
+    --purple: #7c3aed;
+    --teal: #0d9488;
+    --pink: #e0268a;
+    --cyan: #0891b2;
+    --yellow: #ca8a04;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans SC', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    overflow-x: hidden;
+  }
+  .container { max-width: 1400px; margin: 0 auto; padding: 2rem; }
+
+  h1 { font-size: 2rem; margin-bottom: 0.25rem; }
+  h2 { font-size: 1.4rem; margin: 2.5rem 0 1rem; padding-bottom: 0.5rem; border-bottom: 2px solid var(--border); }
+  h3 { font-size: 1.1rem; margin: 1.5rem 0 0.75rem; color: var(--accent); }
+  .subtitle { color: var(--muted); font-size: 0.95rem; margin-bottom: 2rem; }
+
+  /* Legend */
+  .legend { display:flex; gap:1.5rem; flex-wrap:wrap; margin-bottom:2rem; font-size:0.85rem; }
+  .legend-item { display:flex; align-items:center; gap:0.4rem; }
+  .legend-dot { width:12px; height:12px; border-radius:3px; }
+
+  /* Flow sections */
+  .flow-section {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.5rem;
+    margin-bottom: 2rem;
+  }
+  .flow-section h3 { margin-top:0; }
+
+  /* Graph container */
+  .graph-container { position:relative; padding:1rem 0; overflow-x:auto; }
+  .graph-flow { display:flex; align-items:flex-start; gap:0; min-width:max-content; padding:0.5rem; }
+  .graph-flow.vertical { flex-direction:column; align-items:center; gap:0; }
+  .graph-flow.vertical .graph-row { display:flex; align-items:center; gap:0; }
+
+  .node-card {
+    background: #f9fafb;
+    border: 2px solid var(--border);
+    border-radius: 10px;
+    padding: 0.9rem 1rem;
+    min-width: 170px;
+    max-width: 220px;
+    cursor: pointer;
+    transition: all 0.2s;
+    text-align: center;
+    flex-shrink: 0;
+    position: relative;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  }
+  .node-card:hover { border-color: var(--accent); transform: translateY(-2px); box-shadow: 0 4px 20px rgba(37,99,235,0.12); }
+  .node-card .node-icon { font-size: 1.5rem; margin-bottom:0.3rem; }
+  .node-card .node-name { font-weight:600; font-size:0.9rem; }
+  .node-card .node-desc { font-size:0.75rem; color:var(--muted); margin-top:0.2rem; }
+  .node-card.start { border-color: var(--green); }
+  .node-card.end { border-color: var(--red); }
+  .node-card.human { border-color: var(--orange); }
+  .node-card.condition { border-color: var(--purple); }
+  .node-card.llm { border-color: var(--accent); }
+  .node-card.search { border-color: var(--teal); }
+  .node-card.qa { border-color: var(--pink); }
+
+  .arrow {
+    display:flex; align-items:center; padding:0 0.3rem;
+    color: var(--muted); font-size:1.2rem; flex-shrink:0;
+  }
+  .arrow.down { padding:0.2rem 0; transform:rotate(90deg); }
+  .arrow-label {
+    font-size:0.7rem; color:var(--muted); position:absolute;
+    white-space:nowrap;
+  }
+  .v-arrow { display:flex; align-items:center; flex-direction:column; color:var(--muted); font-size:1rem; }
+
+  /* Modal */
+  .modal-overlay {
+    display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4);
+    z-index:1000; justify-content:center; align-items:center; padding:2rem;
+  }
+  .modal-overlay.active { display:flex; }
+  .modal {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 2rem;
+    max-width: 700px;
+    width: 100%;
+    max-height: 80vh;
+    overflow-y: auto;
+    position: relative;
+  }
+  .modal-close {
+    position:absolute; top:0.8rem; right:1rem;
+    background:none; border:none; color:var(--muted); font-size:1.5rem;
+    cursor:pointer;
+  }
+  .modal-close:hover { color: var(--text); }
+  .modal h3 { margin-top:0; border-bottom:1px solid var(--border); padding-bottom:0.5rem; }
+  .modal .kv { display:grid; grid-template-columns: 140px 1fr; gap:0.5rem; margin:0.5rem 0; font-size:0.9rem; }
+  .modal .kv dt { color: var(--muted); font-weight:500; }
+  .modal .kv dd { word-break: break-all; }
+  .modal pre {
+    background:#f3f4f6; border-radius:8px; padding:1rem; font-size:0.8rem;
+    overflow-x:auto; margin:0.75rem 0; border:1px solid var(--border);
+  }
+  .modal .badge {
+    display:inline-block; padding:0.15rem 0.5rem; border-radius:10px;
+    font-size:0.75rem; font-weight:600;
+  }
+  .badge.green { background:#dcfce7; color:#16a34a; }
+  .badge.orange { background:#fef3c7; color:#d97706; }
+  .badge.red { background:#fee2e2; color:#dc2626; }
+  .badge.purple { background:#ede9fe; color:#7c3aed; }
+  .badge.teal { background:#ccfbf1; color:#0d9488; }
+
+  /* Architecture layers */
+  .layer {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.2rem;
+    margin-bottom: 1rem;
+  }
+  .layer-title {
+    font-weight:700; font-size:0.85rem; text-transform:uppercase;
+    letter-spacing:0.05em; color:var(--accent); margin-bottom:0.75rem;
+  }
+  .layer-items { display:flex; gap:0.6rem; flex-wrap:wrap; }
+  .layer-chip {
+    background:#f9fafb; border:1px solid var(--border);
+    border-radius:6px; padding:0.4rem 0.75rem; font-size:0.82rem;
+    cursor:pointer; transition:all 0.2s;
+  }
+  .layer-chip:hover { border-color:var(--accent); background:#e5e7eb; }
+
+  /* DB Schema */
+  .schema-grid { display:flex; flex-direction:column; gap:0.8rem; }
+  .schema-grid-single { display:flex; flex-direction:column; gap:0.6rem; }
+  .schema-table {
+    background:#f9fafb; border:1px solid var(--border);
+    border-radius:8px; padding:0.8rem 1rem; cursor:pointer; transition:all 0.2s;
+  }
+  .schema-table:hover { border-color: var(--accent); }
+  .schema-table .tbl-name { font-weight:700; color:var(--teal); margin-bottom:0.4rem; }
+  .schema-table .tbl-cols { font-size:0.78rem; color:var(--muted); }
+  .schema-table .tbl-fk { font-size:0.72rem; color:var(--orange); }
+
+  /* Frontend routes */
+  .route-map { display:flex; align-items:center; gap:0.3rem; flex-wrap:wrap; }
+  .route-node {
+    background:#f9fafb; border:1px solid var(--border); border-radius:8px;
+    padding:0.6rem 1rem; cursor:pointer; font-size:0.85rem; transition:all 0.2s;
+  }
+  .route-node:hover { border-color:var(--accent); }
+  .route-node .path { font-family:monospace; color:var(--accent); }
+  .route-node .comp { font-size:0.72rem; color:var(--muted); }
+  .route-arrow { color:var(--muted); }
+
+  /* Layer connectors */
+  .layer-connector {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    padding: 0.2rem 0;
+    margin-left: 2rem;
+  }
+  .layer-connector .line {
+    width: 2px;
+    height: 28px;
+    background: linear-gradient(to bottom, var(--border), var(--accent), var(--border));
+    border-radius: 1px;
+  }
+  .layer-connector .label {
+    margin-left: 0.75rem;
+    font-size: 0.78rem;
+    color: var(--accent);
+    font-weight: 500;
+    background: var(--panel);
+    padding: 0.25rem 0.75rem;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
+  .collapsible { cursor:pointer; user-select:none; }
+  .collapsible::before { content:'▸ '; display:inline-block; transition:transform 0.2s; }
+  .collapsible.open::before { transform:rotate(90deg); }
+
+  /* State flow table */
+  .state-flow { width:100%; border-collapse:collapse; font-size:0.85rem; }
+  .state-flow th { text-align:left; padding:0.5rem 0.75rem; background:#f9fafb; border-bottom:2px solid var(--border); color:var(--accent); }
+  .state-flow td { padding:0.5rem 0.75rem; border-bottom:1px solid var(--border); vertical-align:top; }
+  .state-flow tr:hover td { background:rgba(37,99,235,0.04); }
+  .state-flow .key { font-family:monospace; color:var(--teal); font-size:0.8rem; }
+  .state-flow .read { color:var(--green); }
+  .state-flow .write { color:var(--orange); }
+
+  /* Tabs */
+  .tabs { display:flex; gap:0; margin-bottom:1.5rem; border-bottom:2px solid var(--border); }
+  .tab {
+    padding:0.6rem 1.2rem; cursor:pointer; font-size:0.9rem; font-weight:600;
+    color:var(--muted); border-bottom:2px solid transparent; margin-bottom:-2px;
+    transition:all 0.2s; background:none; border-top:none; border-left:none; border-right:none;
+  }
+  .tab:hover { color:var(--text); }
+  .tab.active { color:var(--accent); border-bottom-color:var(--accent); }
+
+  .tab-content { display:none; }
+  .tab-content.active { display:block; }
+
+  @media (max-width:768px) {
+    .container { padding:1rem; }
+    .graph-flow { flex-direction:column; align-items:center; }
+    .arrow { transform:rotate(90deg); padding:0.2rem 0; }
+    .modal .kv { grid-template-columns:1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>竞品分析 Agent 协作系统</h1>
+<p class="subtitle">架构全景图 · 数据流向 · 交互式细节 — 点击任意节点查看详细信息</p>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-dot" style="background:var(--green)"></div> 起始/结束</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--orange)"></div> 人工交互点</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--purple)"></div> 条件路由</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--accent)"></div> LLM 节点</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--teal)"></div> 搜索/采集节点</div>
+</div>
+
+<!-- ========== TAB NAVIGATION ========== -->
+<div class="tabs">
+  <button class="tab active" onclick="switchTab('overview')">系统总览</button>
+  <button class="tab" onclick="switchTab('phase1')">阶段一：竞品发现</button>
+  <button class="tab" onclick="switchTab('phase2')">阶段二：报告生成 + QA</button>
+  <button class="tab" onclick="switchTab('data')">数据模型 & State</button>
+  <button class="tab" onclick="switchTab('api')">API & Provider 层</button>
+  <button class="tab" onclick="switchTab('frontend')">前端路由 & 组件</button>
+  <button class="tab" onclick="switchTab('search')">搜索查询体系</button>
+</div>
+
+<!-- ========== TAB 1: SYSTEM OVERVIEW ========== -->
+<div class="tab-content active" id="tab-overview">
+
+  <div class="flow-section">
+    <h3>核心数据流：一次完整分析的全生命周期</h3>
+    <div style="display:flex; flex-direction:column; gap:0.6rem; font-size:0.88rem; margin-top:1rem;">
+
+      <div style="display:flex; align-items:center; gap:0.8rem;">
+        <span class="badge" style="background:#dcfce7; color:#16a34a; padding:0.2rem 0.7rem; border-radius:10px; font-weight:700;">Step 1</span>
+        <span>用户输入需求 → <code style="color:var(--accent);">POST /api/runs</code> → <code>start_run()</code> 写入 DB → 后台启动 <code>execute_discovery_run()</code></span>
+      </div>
+
+      <div style="display:flex; align-items:center; gap:0.8rem;">
+        <span class="badge" style="background:#dcfce7; color:#16a34a; padding:0.2rem 0.7rem; border-radius:10px; font-weight:700;">Step 2</span>
+        <span>Graph 1 执行：需求理解(LLM) → 竞品发现(Search+LLM) → 人工确认 → DB 写入 Competitors → status=<code style="color:var(--orange);">waiting_for_human</code></span>
+      </div>
+
+      <div style="display:flex; align-items:center; gap:0.8rem;">
+        <span class="badge" style="background:#dcfce7; color:#16a34a; padding:0.2rem 0.7rem; border-radius:10px; font-weight:700;">Step 3</span>
+        <span>用户选择竞品 → <code style="color:var(--accent);">POST /api/runs/{id}/competitors/confirm</code> → 后台启动 <code>execute_report_run()</code></span>
+      </div>
+
+      <div style="display:flex; align-items:center; gap:0.8rem;">
+        <span class="badge" style="background:#dcfce7; color:#16a34a; padding:0.2rem 0.7rem; border-radius:10px; font-weight:700;">Step 4</span>
+        <span>Graph 2 执行：资料采集(Search) → 结构化分析(LLM) → 报告生成(LLM) → 质量检查(LLM) ⇄ 条件循环（最多3轮）</span>
+      </div>
+
+      <div style="display:flex; align-items:center; gap:0.8rem;">
+        <span class="badge" style="background:#dcfce7; color:#16a34a; padding:0.2rem 0.7rem; border-radius:10px; font-weight:700;">Step 5</span>
+        <span>每阶段完成通过 <code style="color:var(--accent);">on_stage_complete</code> 回调持久化 Sources / Evidence / Analyses / Report / QAResult → status=<code style="color:var(--green);">completed</code></span>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="flow-section">
+    <h3>顶层架构：七层结构</h3>
+    <div class="graph-container">
+      <div class="graph-flow vertical" style="align-items:stretch; gap:0.5rem;">
+
+        <!-- Frontend Layer -->
+        <div class="layer" style="border-left:4px solid var(--teal); cursor:default;">
+          <div class="layer-title" style="color:var(--teal);">表现层 — React SPA (Vite + TypeScript)</div>
+          <div class="layer-items">
+            <span class="layer-chip" onclick="openModal('fe-pages')">4 个页面路由</span>
+            <span class="layer-chip" onclick="openModal('fe-comps')">10 个业务组件</span>
+            <span class="layer-chip" onclick="openModal('fe-api')">api.ts — REST 客户端</span>
+            <span class="layer-chip" onclick="openModal('fe-types')">types.ts — 类型定义</span>
+          </div>
+        </div>
+
+        <div class="layer-connector">
+          <div class="line"></div>
+          <div class="label">HTTP REST API (JSON)</div>
+        </div>
+
+        <!-- Backend API Layer -->
+        <div class="layer" style="border-left:4px solid var(--accent); cursor:default;">
+          <div class="layer-title">API 网关层 — FastAPI + CORS</div>
+          <div class="layer-items">
+            <span class="layer-chip" onclick="openModal('api-runs')">/api/runs — 分析任务 CRUD</span>
+            <span class="layer-chip" onclick="openModal('api-competitors')">/api/runs/{id}/competitors — 竞品管理</span>
+            <span class="layer-chip" onclick="openModal('api-report')">/api/runs/{id}/report — 报告 & 引文</span>
+            <span class="layer-chip" onclick="openModal('api-qa')">/api/runs/{id}/qa — 质检结果</span>
+            <span class="layer-chip" onclick="openModal('api-timeline')">/api/runs/{id}/timeline — 执行追踪</span>
+            <span class="layer-chip" onclick="openModal('api-other')">/api/runs/{id}/sources | evidence | analyses</span>
+          </div>
+        </div>
+
+        <div class="layer-connector">
+          <div class="line"></div>
+          <div class="label">Service Layer</div>
+        </div>
+
+        <!-- Service Layer -->
+        <div class="layer" style="border-left:4px solid var(--green); cursor:default;">
+          <div class="layer-title" style="color:var(--green);">业务编排层 — run_service.py</div>
+          <div class="layer-items">
+            <span class="layer-chip" onclick="openModal('svc-start')">start_run() — 创建任务</span>
+            <span class="layer-chip" onclick="openModal('svc-discovery')">execute_discovery_run() — 阶段一编排</span>
+            <span class="layer-chip" onclick="openModal('svc-confirm')">confirm_and_continue_run() — 确认竞品</span>
+            <span class="layer-chip" onclick="openModal('svc-report')">execute_report_run() — 阶段二编排</span>
+            <span class="layer-chip" onclick="openModal('svc-regen')">regenerate_report() — 重新生成报告</span>
+          </div>
+        </div>
+
+        <div class="layer-connector">
+          <div class="line"></div>
+          <div class="label">LangGraph + Provider Pattern</div>
+        </div>
+
+        <!-- Agent Layer -->
+        <div class="layer" style="border-left:4px solid var(--purple); cursor:default;">
+          <div class="layer-title" style="color:var(--purple);">Agent 执行层 — 双图 LangGraph</div>
+          <div class="layer-items">
+            <span class="layer-chip" onclick="openModal('graph1')">Graph 1: Competitor Discovery (3节点)</span>
+            <span class="layer-chip" onclick="openModal('graph2')">Graph 2: Report Generation (4节点 + QA循环)</span>
+            <span class="layer-chip" onclick="openModal('state-detail')">AgentState (TypedDict, 20字段)</span>
+            <span class="layer-chip" onclick="openModal('trace-detail')">trace.py — 节点追踪 & 计时</span>
+          </div>
+        </div>
+
+        <div class="layer-connector">
+          <div class="line"></div>
+          <div class="label">Provider Interfaces (Protocol)</div>
+        </div>
+
+        <!-- Provider Layer -->
+        <div class="layer" style="border-left:4px solid var(--yellow); cursor:default;">
+          <div class="layer-title" style="color:var(--yellow);">Provider 层 — 可插拔的 LLM & Search 实现</div>
+          <div class="layer-items">
+            <span class="layer-chip" onclick="openModal('llm-providers')">LLM: Mock | Ark(Doubao) | OpenAI-compatible</span>
+            <span class="layer-chip" onclick="openModal('search-providers')">Search: Mock | Tavily | Bocha | DuckDuckGo</span>
+            <span class="layer-chip" onclick="openModal('factory')">Factory 模式 — 基于环境变量选择</span>
+          </div>
+        </div>
+
+        <div class="layer-connector">
+          <div class="line"></div>
+          <div class="label">SQLAlchemy ORM</div>
+        </div>
+
+        <!-- DB Layer -->
+        <div class="layer" style="border-left:4px solid var(--red); cursor:default;">
+          <div class="layer-title" style="color:var(--red);">持久化层 — SQLAlchemy + SQLite</div>
+          <div class="layer-items">
+            <span class="layer-chip" onclick="openModal('db-run')">Run — 任务主表</span>
+            <span class="layer-chip" onclick="openModal('db-comp')">Competitor — 竞品</span>
+            <span class="layer-chip" onclick="openModal('db-src')">Source — 网页来源</span>
+            <span class="layer-chip" onclick="openModal('db-ev')">Evidence — 结构化证据</span>
+            <span class="layer-chip" onclick="openModal('db-ana')">Analysis — 竞品分析</span>
+            <span class="layer-chip" onclick="openModal('db-rep')">Report — Markdown 报告</span>
+            <span class="layer-chip" onclick="openModal('db-qa')">QAResult — 质检记录 & Checklist</span>
+            <span class="layer-chip" onclick="openModal('db-trace')">AgentTrace — 节点追踪</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ========== TAB 2: PHASE 1 - COMPETITOR DISCOVERY ========== -->
+<div class="tab-content" id="tab-phase1">
+
+  <div class="flow-section">
+    <h3>Graph 1: Competitor Discovery Graph</h3>
+    <p style="color:var(--muted); font-size:0.85rem;">graph.py → <code>build_competitor_discovery_graph()</code> — 3节点线性流程</p>
+
+    <div class="graph-container">
+      <div class="graph-flow">
+        <!-- START -->
+        <div class="node-card start" onclick="openModal('node-start')">
+          <div class="node-icon">▶</div>
+          <div class="node-name">START</div>
+          <div class="node-desc">入口：run_id + user_requirement</div>
+        </div>
+
+        <div class="arrow">→</div>
+
+        <!-- Node 1: Requirement Understanding -->
+        <div class="node-card llm" onclick="openModal('node-req')">
+          <div class="node-icon">🧠</div>
+          <div class="node-name">需求理解</div>
+          <div class="node-desc">requirement_understanding_node<br>LLM.understand_requirement()</div>
+        </div>
+
+        <div class="arrow">→</div>
+
+        <!-- Node 2: Competitor Discovery -->
+        <div class="node-card search" onclick="openModal('node-comp-disc')">
+          <div class="node-icon">🔍</div>
+          <div class="node-name">竞品发现</div>
+          <div class="node-desc">competitor_discovery_node<br>7个子步骤 + 并行搜索</div>
+        </div>
+
+        <div class="arrow">→</div>
+
+        <!-- Node 3: Human Confirm -->
+        <div class="node-card human" onclick="openModal('node-human')">
+          <div class="node-icon">👤</div>
+          <div class="node-name">人工确认竞品</div>
+          <div class="node-desc">human_confirm_competitors_node<br>status → waiting_for_human</div>
+        </div>
+
+        <div class="arrow">→</div>
+
+        <!-- END -->
+        <div class="node-card end" onclick="openModal('node-end1')">
+          <div class="node-icon">⏹</div>
+          <div class="node-name">END (Phase 1)</div>
+          <div class="node-desc">等待用户确认 → 进入 Phase 2</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="flow-section">
+    <h3>竞品发现节点内部：7 步流水线</h3>
+    <p style="color:var(--muted); font-size:0.85rem;">competitor_discovery_node 是系统最复杂的单节点，包含搜索规划、并行执行、结果过滤、官网解析等子步骤</p>
+
+    <div class="graph-container">
+      <div class="graph-flow">
+        <div class="node-card search" onclick="openModal('sub-step1')">
+          <div class="node-icon">1️⃣</div>
+          <div class="node-name">规划目标Query</div>
+          <div class="node-desc">_plan_target_queries()<br>中英文混合，2-3 query</div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="node-card search" onclick="openModal('sub-step2')">
+          <div class="node-icon">2️⃣</div>
+          <div class="node-name">搜索目标信息</div>
+          <div class="node-desc">_run_queries()<br>ThreadPool 并行，limit=4</div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="node-card search" onclick="openModal('sub-step3')">
+          <div class="node-icon">3️⃣</div>
+          <div class="node-name">LLM理解目标</div>
+          <div class="node-desc">llm.understand_target()<br>提取name/category/capabilities</div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="node-card search" onclick="openModal('sub-step4')">
+          <div class="node-icon">4️⃣</div>
+          <div class="node-name">规划竞品Query</div>
+          <div class="node-desc">_plan_competitor_queries()<br>基于目标画像生成 query</div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="node-card search" onclick="openModal('sub-step5')">
+          <div class="node-icon">5️⃣</div>
+          <div class="node-name">搜索候选竞品</div>
+          <div class="node-desc">_run_queries()<br>limit=5，去重URL</div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="node-card search" onclick="openModal('sub-step6')">
+          <div class="node-icon">6️⃣</div>
+          <div class="node-name">LLM抽取+过滤</div>
+          <div class="node-desc">llm.extract_competitors()<br>+ 多层过滤 + 兜底策略</div>
+        </div>
+        <div class="arrow">→</div>
+        <div class="node-card search" onclick="openModal('sub-step7')">
+          <div class="node-icon">7️⃣</div>
+          <div class="node-name">并行解析官网</div>
+          <div class="node-desc">_resolve_product_result()<br>官网验证 + 二次搜索证据</div>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top:1rem; font-size:0.85rem; color:var(--muted);">
+      竞品过滤策略包含：<code>INVALID_COMPETITOR_NAMES</code> 黑名单（76词）、<code>GENERIC_CANDIDATE_TERMS</code> 通用词过滤（56词）、<code>_looks_generic_name()</code> 启发式过滤、<code>_is_target_product()</code> 排除目标产品自身、<code>_balanced_candidates()</code> 中/全球区域平衡（各至少1个，最多4个）
+    </div>
+  </div>
+
+</div>
+
+<!-- ========== TAB 3: PHASE 2 - REPORT GEN + QA ========== -->
+<div class="tab-content" id="tab-phase2">
+
+  <div class="flow-section">
+    <h3>Graph 2: Report Generation Graph (with QA Feedback Loop)</h3>
+    <p style="color:var(--muted); font-size:0.85rem;">graph.py → <code>build_report_generation_graph()</code> — 4节点 + 条件路由 + 最多3轮反馈循环</p>
+
+    <div class="graph-container">
+      <div class="graph-flow vertical">
+        <div class="graph-row">
+          <div class="node-card start" onclick="openModal('node-start2')">
+            <div class="node-icon">▶</div>
+            <div class="node-name">START (Phase 2)</div>
+            <div class="node-desc">selected_competitors + requirement</div>
+          </div>
+        </div>
+
+        <div class="v-arrow">↓</div>
+
+        <div class="graph-row">
+          <div class="node-card search" onclick="openModal('node-material')">
+            <div class="node-icon">📚</div>
+            <div class="node-name">资料采集</div>
+            <div class="node-desc">material_collection_node<br>Retrieval Quart 模式<br>来源分类 + 重排序</div>
+          </div>
+        </div>
+
+        <div class="v-arrow">↓</div>
+
+        <div class="graph-row">
+          <div class="node-card llm" onclick="openModal('node-analysis')">
+            <div class="node-icon">📊</div>
+            <div class="node-name">结构化分析</div>
+            <div class="node-desc">structured_analysis_node<br>并行 LLM 分析每竞品<br>7维度结构化输出</div>
+          </div>
+        </div>
+
+        <div class="v-arrow">↓</div>
+
+        <div class="graph-row">
+          <div class="node-card llm" onclick="openModal('node-report')">
+            <div class="node-icon">📝</div>
+            <div class="node-name">报告生成</div>
+            <div class="node-desc">report_generation_node<br>Citation Bundle 构建<br>Markdown 带引文标注</div>
+          </div>
+        </div>
+
+        <div class="v-arrow">↓</div>
+
+        <div class="graph-row">
+          <div class="node-card condition qa" onclick="openModal('node-qa')">
+            <div class="node-icon">✅</div>
+            <div class="node-name">质量检查</div>
+            <div class="node-desc">quality_check_node<br>6维度加权评分<br>双模式：full_check / issue_verification</div>
+          </div>
+        </div>
+
+        <div class="v-arrow">↓</div>
+
+        <div class="graph-row" style="gap:2rem;">
+          <div class="node-card condition" onclick="openModal('node-route')">
+            <div class="node-icon">🔀</div>
+            <div class="node-name">qa_route 条件路由</div>
+            <div class="node-desc">根据 decision 字段分流</div>
+          </div>
+        </div>
+
+        <!-- Three branches -->
+        <div style="display:flex; gap:2rem; margin-top:0.5rem;">
+          <div style="text-align:center;">
+            <div class="v-arrow">↙</div>
+            <div class="node-card end" onclick="openModal('node-end-pass')">
+              <div class="node-icon">✅</div>
+              <div class="node-name">END (pass)</div>
+              <div class="node-desc">decision="pass"<br>6个维度分每项 ≥ 0.7<br>或 forced_pass</div>
+            </div>
+          </div>
+          <div style="text-align:center;">
+            <div class="v-arrow">↓</div>
+            <div class="node-card search" onclick="openModal('node-retry-col')">
+              <div class="node-icon">🔄</div>
+              <div class="node-name">retry_collection</div>
+              <div class="node-desc">evidence_grounding<br>或 coverage_gaps<br>严重问题 → 重新采集</div>
+            </div>
+          </div>
+          <div style="text-align:center;">
+            <div class="v-arrow">↘</div>
+            <div class="node-card llm" onclick="openModal('node-retry-ana')">
+              <div class="node-icon">🔁</div>
+              <div class="node-name">retry_analysis</div>
+              <div class="node-desc">其他维度不达标<br>→ 重新分析</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top:1.5rem; padding:1rem; background:#f9fafb; border-radius:8px; font-size:0.85rem; border:1px solid var(--border);">
+      <strong style="color:var(--orange);">QA 循环终止条件：</strong>
+      <ul style="margin:0.5rem 0 0 1.2rem; color:var(--muted);">
+        <li><code>feedback_loop_count >= 3</code> — 达到最大反馈轮数 → forced_pass</li>
+        <li><code>overall_score &lt;= previous_score</code> — 本轮分数 ≤ 上一轮（仅 full_check 模式检查）→ forced_pass</li>
+        <li><code>qa_issue_verification_count >= 2</code> — 连续 2 轮 issue_verification 仍未解决 → 放弃复核，转入 full_check</li>
+        <li>所有 open issues 在 issue_verification 中被验证已解决 → 转入 full_check</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="flow-section">
+    <h3>QA 质量检查：6维度加权评分体系</h3>
+    <p style="color:var(--muted); font-size:0.85rem;">quality_check.py — 双阶段检查模式</p>
+
+    <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(200px,1fr)); gap:0.8rem; margin-top:1rem;">
+      <div style="background:#f9fafb; border-radius:8px; padding:0.8rem; text-align:center;" onclick="openModal('qa-dim-eg')">
+        <div style="font-weight:700; color:var(--accent);">证据支撑度</div>
+        <div style="font-size:1.3rem; font-weight:800;">25%</div>
+        <div style="font-size:0.75rem; color:var(--muted);">evidence_grounding</div>
+      </div>
+      <div style="background:#f9fafb; border-radius:8px; padding:0.8rem; text-align:center;" onclick="openModal('qa-dim-ca')">
+        <div style="font-weight:700; color:var(--accent);">引文准确性</div>
+        <div style="font-size:1.3rem; font-weight:800;">15%</div>
+        <div style="font-size:0.75rem; color:var(--muted);">citation_accuracy</div>
+      </div>
+      <div style="background:#f9fafb; border-radius:8px; padding:0.8rem; text-align:center;" onclick="openModal('qa-dim-sc')">
+        <div style="font-weight:700; color:var(--accent);">Schema 完整性</div>
+        <div style="font-size:1.3rem; font-weight:800;">20%</div>
+        <div style="font-size:0.75rem; color:var(--muted);">schema_completeness</div>
+      </div>
+      <div style="background:#f9fafb; border-radius:8px; padding:0.8rem; text-align:center;" onclick="openModal('qa-dim-cg')">
+        <div style="font-weight:700; color:var(--accent);">覆盖缺口</div>
+        <div style="font-size:1.3rem; font-weight:800;">20%</div>
+        <div style="font-size:0.75rem; color:var(--muted);">coverage_gaps</div>
+      </div>
+      <div style="background:#f9fafb; border-radius:8px; padding:0.8rem; text-align:center;" onclick="openModal('qa-dim-cc')">
+        <div style="font-weight:700; color:var(--accent);">跨竞品一致性</div>
+        <div style="font-size:1.3rem; font-weight:800;">10%</div>
+        <div style="font-size:0.75rem; color:var(--muted);">cross_competitor_consistency</div>
+      </div>
+      <div style="background:#f9fafb; border-radius:8px; padding:0.8rem; text-align:center;" onclick="openModal('qa-dim-fp')">
+        <div style="font-weight:700; color:var(--accent);">事实合理性</div>
+        <div style="font-size:1.3rem; font-weight:800;">10%</div>
+        <div style="font-size:0.75rem; color:var(--muted);">factual_plausibility</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="flow-section">
+    <h3>Retrieval Quart 资料采集模式</h3>
+    <p style="color:var(--muted); font-size:0.85rem;">material_collection_node 的核心：为每个竞品×每个缺失的 schema 槽位生成一个"检索规划书"，发给搜索 API，对返回结果打分取最优。</p>
+
+    <div style="font-size:0.85rem; margin-top:0.8rem;">
+      <h4 style="font-size:0.9rem; margin-bottom:0.5rem;">用一个例子走一遍</h4>
+      <p style="font-size:0.82rem; color:var(--muted);">假设正在分析竞品 Notion，发现它的"价格与商业模式"维度还缺资料。</p>
+
+      <div style="display:flex; gap:1rem; margin-top:0.8rem; flex-wrap:wrap;">
+        <!-- Step 1 -->
+        <div style="flex:1; min-width:220px; background:#f0f7ff; border:1px solid var(--accent); border-radius:8px; padding:0.8rem;">
+          <div style="font-weight:700; color:var(--accent); margin-bottom:0.3rem;">Step 1：选模板 → 生成 query</div>
+          <div style="font-size:0.78rem; color:var(--muted);">
+            已知：竞品名=Notion、slot=pricing、locale=global、product_type=software<br><br>
+            _quart_query() 查 SaaS 英文模板：<br>
+            <code>"{product} pricing plans enterprise"</code><br>
+            → 填入 product=Notion<br>
+            → <code style="color:var(--accent);">query = "Notion pricing plans enterprise"</code>
+          </div>
+        </div>
+
+        <!-- Step 2 -->
+        <div style="flex:1; min-width:220px; background:#f0f7ff; border:1px solid var(--accent); border-radius:8px; padding:0.8rem;">
+          <div style="font-weight:700; color:var(--accent); margin-bottom:0.3rem;">Step 2：同时生成评分偏好</div>
+          <div style="font-size:0.78rem; color:var(--muted);">
+            _preferred_source_types(software, direct, pricing)<br>
+            → <code style="color:var(--green);">["official_pricing_page"]</code><br><br>
+            这是写死在代码里的：定价维度的最可信来源就是官方价格页。<br><br>
+            另外硬编码基础权重表：<br>
+            官方价格页 0.93、评测 0.82、社区 0.62…
+          </div>
+        </div>
+
+        <!-- Step 3 -->
+        <div style="flex:1; min-width:220px; background:#f0f7ff; border:1px solid var(--accent); border-radius:8px; padding:0.8rem;">
+          <div style="font-weight:700; color:var(--accent); margin-bottom:0.3rem;">Step 3：发搜索 → 分类 → 打分</div>
+          <div style="font-size:0.78rem; color:var(--muted);">
+            把 "Notion pricing plans enterprise" 发给搜索 API，拿回 4 条结果。<br><br>
+            _classify_source() 按域名分类：<br>
+            结果A: notion.so → official_site (0.94)<br>
+            结果B: notion.so/pricing → official_pricing_page (0.93)<br>
+            结果C: g2.com → review_site (0.72)<br><br>
+            对每条结果打分，公式加在下方。
+          </div>
+        </div>
+      </div>
+
+      <h4 style="font-size:0.9rem; margin-top:1rem; margin-bottom:0.4rem;">打分公式</h4>
+      <p style="margin:0.4rem 0; font-size:0.84rem; color:var(--accent);"><code>rank_score = credibility_score + dimension_bonus + preferred_bonus + relationship_bonus</code></p>
+
+      <div style="overflow-x:auto;">
+        <table class="state-flow" style="font-size:0.82rem; margin-top:0.5rem;">
+          <tr><th>结果</th><th>credibility_score<br><span style="font-weight:400; color:var(--muted);">基础权重</span></th><th>dimension_bonus<br><span style="font-weight:400; color:var(--muted);">+0.08</span></th><th>preferred_bonus<br><span style="font-weight:400; color:var(--muted);">+0.06</span></th><th>relationship_bonus<br><span style="font-weight:400; color:var(--muted);">≈</span></th><th style="color:var(--accent);">rank_score</th></tr>
+          <tr>
+            <td><strong>B</strong> notion.so/pricing<br><span style="font-size:0.75rem; color:var(--muted);">官方价格页</span></td>
+            <td>0.93</td>
+            <td>+0.08 ✓<br><span style="font-size:0.72rem; color:var(--muted);">定价维度偏好官方价格页</span></td>
+            <td style="color:var(--green);">+0.06 ✓<br><span style="font-size:0.72rem; color:var(--muted);">匹配 preferred=["official_pricing_page"]</span></td>
+            <td>—</td>
+            <td style="font-weight:700; color:var(--accent);">1.07</td>
+          </tr>
+          <tr>
+            <td><strong>A</strong> notion.so<br><span style="font-size:0.75rem; color:var(--muted);">官网介绍</span></td>
+            <td>0.94</td>
+            <td>0<br><span style="font-size:0.72rem; color:var(--muted);">官网上没有定价信息属于定位维度</span></td>
+            <td>0</td>
+            <td>—</td>
+            <td>0.94</td>
+          </tr>
+          <tr>
+            <td><strong>C</strong> g2.com<br><span style="font-size:0.75rem; color:var(--muted);">第三方评价</span></td>
+            <td>0.72</td>
+            <td>+0.08 ✓</td>
+            <td>0</td>
+            <td>—</td>
+            <td>0.80</td>
+          </tr>
+        </table>
+      </div>
+
+      <p style="margin-top:0.5rem; font-size:0.82rem; color:var(--muted);">结果B 得分最高 (1.07) → 取 <strong>top-2</strong>（B 和 A）写入 sources + evidence，C 丢弃。</p>
+
+      <h4 style="font-size:0.9rem; margin-top:1rem; margin-bottom:0.4rem;">16 个字段全在搜前一次性算完，按用途分三类</h4>
+      <table class="state-flow">
+        <tr><th style="width:120px;">用途</th><th style="width:160px;">字段</th><th>在这次例子中的值</th><th>怎么来的</th></tr>
+        <tr>
+          <td rowspan="3" style="vertical-align: middle;">决定查询生成</td>
+          <td><code>target_slot</code></td><td>pricing</td><td rowspan="3" style="font-size:0.78rem; color:var(--muted); vertical-align: middle;">竞品属性 + 缺失槽位<br>（已知输入）</td>
+        </tr>
+        <tr><td><code>product_type</code></td><td>software</td></tr>
+        <tr><td><code>query_locale</code></td><td>global（Notion 不含中文 → global）</td></tr>
+        <tr>
+          <td rowspan="2" style="vertical-align: middle;">搜索指令</td>
+          <td style="color:var(--accent);"><code>query</code></td>
+          <td style="color:var(--accent);">"Notion pricing plans enterprise"</td>
+          <td style="font-size:0.78rem; color:var(--muted);">_quart_query() 用上述参数选模板填入</td>
+        </tr>
+        <tr>
+          <td><code>limit</code></td>
+          <td>4</td>
+          <td style="font-size:0.78rem; color:var(--muted);">固定值</td>
+        </tr>
+        <tr>
+          <td rowspan="2" style="vertical-align: middle;">评分偏好</td>
+          <td style="color:var(--green);"><code>preferred_source_types</code></td>
+          <td style="color:var(--green);">["official_pricing_page"]</td>
+          <td style="font-size:0.78rem; color:var(--muted);">_preferred_source_types() 写死：定价→官方价格页</td>
+        </tr>
+        <tr>
+          <td><code>avoid_source_types</code></td>
+          <td>["unknown"]</td>
+          <td style="font-size:0.78rem; color:var(--muted);">固定值</td>
+        </tr>
+        <tr>
+          <td rowspan="8" style="vertical-align: middle;">下游使用</td>
+          <td><code>competitor_id / name</code></td>
+          <td>comp_xxx / "Notion"</td>
+          <td style="font-size:0.78rem; color:var(--muted);">竞品 ID + 名称</td>
+        </tr>
+        <tr>
+          <td><code>dimension</code></td>
+          <td>价格与商业模式</td>
+          <td style="font-size:0.78rem; color:var(--muted);">SCHEMA_SLOT_DIMENSIONS 查表</td>
+        </tr>
+        <tr>
+          <td><code>competitor_type</code></td>
+          <td>direct</td>
+          <td style="font-size:0.78rem; color:var(--muted);">竞品 category 字段</td>
+        </tr>
+        <tr>
+          <td><code>relation_claim</code></td>
+          <td style="font-size:0.78rem;">"Notion 与 X 面向相近用户…构成直接竞争"</td>
+          <td rowspan="3" style="font-size:0.78rem; color:var(--muted); vertical-align: middle;">_relation_claim_for_type()<br>竞品名+目标名+需求<br>→ 填入硬编码模板</td>
+        </tr>
+        <tr>
+          <td><code>competed_need</code></td>
+          <td>"团队协作与知识管理"</td>
+        </tr>
+        <tr>
+          <td><code>overlap_points</code></td>
+          <td>["目标用户", "核心功能", "使用场景"]</td>
+        </tr>
+        <tr>
+          <td><code>priority</code></td>
+          <td>high</td>
+          <td style="font-size:0.78rem; color:var(--muted);">核心 slot 为 high，market_signal/risk_opportunity 为 medium</td>
+        </tr>
+        <tr>
+          <td><code>success_criteria</code></td>
+          <td style="font-size:0.78rem;">"找到可支撑'价格与商业模式'的公开来源…"</td>
+          <td style="font-size:0.78rem; color:var(--muted);">_success_criteria() 按 slot 拼模板</td>
+        </tr>
+      </table>
+
+      <p style="margin-top:0.5rem; font-size:0.82rem; color:var(--muted);">核心要点：<strong>16 个字段全在搜索前一次性算完。</strong>其中 query 用于发搜索、评分偏好用于搜后打分、其余字段用于搜后写入 evidence 供下游用。</p>
+    </div>
+  </div>
+
+</div>
+
+<!-- ========== TAB 4: DATA MODELS & STATE ========== -->
+<div class="tab-content" id="tab-data">
+
+  <div class="flow-section">
+    <h3>AgentState — 贯穿双图的状态字典</h3>
+    <p style="color:var(--muted); font-size:0.85rem;">backend/app/agents/state.py — TypedDict, total=False</p>
+
+    <table class="state-flow">
+      <tr>
+        <th>Key</th><th>类型</th><th>写入节点</th><th>读取节点</th><th>说明</th>
+      </tr>
+      <tr>
+        <td class="key">run_id</td><td>str</td><td class="write">入口</td><td class="read">全部</td><td>分析任务唯一ID</td>
+      </tr>
+      <tr>
+        <td class="key">user_requirement</td><td>str</td><td class="write">入口</td><td class="read">需求理解, 报告生成</td><td>用户原始需求文本</td>
+      </tr>
+      <tr>
+        <td class="key">requirement</td><td>dict</td><td class="write">需求理解</td><td class="read">竞品发现, 资料采集, 报告生成</td><td>LLM结构化后的需求摘要</td>
+      </tr>
+      <tr>
+        <td class="key">target_understanding</td><td>dict</td><td class="write">竞品发现(子步骤3)</td><td class="read">竞品发现, 资料采集</td><td>{name, category, positioning, target_users, core_capabilities, primary_use_cases...}</td>
+      </tr>
+      <tr>
+        <td class="key">competitors</td><td>list[dict]</td><td class="write">竞品发现</td><td class="read">人工确认, API输出</td><td>发现的候选竞品列表（未确认）</td>
+      </tr>
+      <tr>
+        <td class="key">target_search_results</td><td>list[dict]</td><td class="write">竞品发现(子步骤2)</td><td class="read">竞品发现, API</td><td>目标理解搜索的原始结果</td>
+      </tr>
+      <tr>
+        <td class="key">competitor_search_results</td><td>list[dict]</td><td class="write">竞品发现(子步骤5)</td><td class="read">竞品发现, API</td><td>竞品搜索的原始结果</td>
+      </tr>
+      <tr>
+        <td class="key">selected_competitors</td><td>list[dict]</td><td class="write">人工确认</td><td class="read">资料采集, 结构化分析</td><td>用户确认后的竞品列表</td>
+      </tr>
+      <tr>
+        <td class="key">sources</td><td>list[dict]</td><td class="write">资料采集</td><td class="read">报告生成, QA, API</td><td>带来源类型和可信度评分的网页</td>
+      </tr>
+      <tr>
+        <td class="key">evidence</td><td>list[dict]</td><td class="write">资料采集</td><td class="read">结构化分析, 报告, QA</td><td>从来源抽取的结构化证据片段</td>
+      </tr>
+      <tr>
+        <td class="key">analyses</td><td>list[dict]</td><td class="write">结构化分析</td><td class="read">报告, QA</td><td>每竞品7维度结构化分析</td>
+      </tr>
+      <tr>
+        <td class="key">report</td><td>dict[str,str]</td><td class="write">报告生成</td><td class="read">QA, API</td><td>{title, markdown_content, summary}</td>
+      </tr>
+      <tr>
+        <td class="key">qa_result</td><td>dict</td><td class="write">质量检查</td><td class="read">qa_route, API</td><td>{overall_score, dimension_scores, decision, issues, ...}</td>
+      </tr>
+      <tr>
+        <td class="key">qa_retry_queries</td><td>list[dict]</td><td class="write">质量检查</td><td class="read">资料采集(retry)</td><td>QA生成的补充搜索query</td>
+      </tr>
+      <tr>
+        <td class="key">qa_retry_guidance_map</td><td>dict[str,str]</td><td class="write">质量检查</td><td class="read">结构化分析(retry)</td><td>竞品名→改进建议映射</td>
+      </tr>
+      <tr>
+        <td class="key">qa_retry_analysis_ids</td><td>list[str]</td><td class="write">质量检查</td><td class="read">结构化分析(retry)</td><td>需重新分析的竞品ID列表</td>
+      </tr>
+      <tr>
+        <td class="key">qa_report_guidance</td><td>str</td><td class="write">质量检查</td><td class="read">报告生成(retry)</td><td>报告层面的改进指导</td>
+      </tr>
+      <tr>
+        <td class="key">qa_issue_checklist</td><td>list[dict]</td><td class="write">质量检查</td><td class="read">质量检查(跨轮)</td><td>跨轮次追踪的问题清单(open/resolved/unresolved)</td>
+      </tr>
+      <tr>
+        <td class="key">qa_issue_verification_count</td><td>int</td><td class="write">质量检查</td><td class="read">质量检查</td><td>连续issue verification重试计数</td>
+      </tr>
+      <tr>
+        <td class="key">feedback_loop_count</td><td>int</td><td class="write">质量检查</td><td class="read">质量检查, DB</td><td>总反馈轮数(≤3)</td>
+      </tr>
+    </table>
+  </div>
+
+  <div class="flow-section">
+    <h3>数据库模型关系图 (9张表)</h3>
+    <div class="schema-grid">
+      <div class="schema-table" onclick="openModal('db-run')">
+        <div class="tbl-name">📋 runs</div>
+        <div class="tbl-cols">id, title, user_requirement, requirement_summary, requirement_json, target_understanding_json, status, current_stage, error_message, feedback_loop_count, created_at, updated_at, completed_at</div>
+        <div class="tbl-fk">1:N → messages, competitors, sources, evidence_items, analyses, traces, qa_results, reports</div>
+      </div>
+      <div class="schema-table" onclick="openModal('db-msg')">
+        <div class="tbl-name">💬 messages</div>
+        <div class="tbl-cols">id, run_id(FK), role, content, metadata_json, created_at</div>
+        <div class="tbl-fk">N:1 → runs</div>
+      </div>
+      <div class="schema-table" onclick="openModal('db-comp')">
+        <div class="tbl-name">🏢 competitors</div>
+        <div class="tbl-cols">id, run_id(FK), name, website, description, category, region, confidence, selected, discovery_source, relationship_type, relationship_reason, overlap_dimensions_json</div>
+      </div>
+      <div class="schema-table" onclick="openModal('db-src')">
+        <div class="tbl-name">🔗 sources</div>
+        <div class="tbl-cols">id, run_id(FK), competitor_id(FK), title, url, snippet, source_type, provider, retrieved_at, raw_content, metadata_json</div>
+      </div>
+      <div class="schema-table" onclick="openModal('db-ev')">
+        <div class="tbl-name">📌 evidence_items</div>
+        <div class="tbl-cols">id, run_id(FK), source_id(FK), related_product, related_dimension, quote, summary, confidence</div>
+      </div>
+      <div class="schema-table" onclick="openModal('db-ana')">
+        <div class="tbl-name">📊 analyses</div>
+        <div class="tbl-cols">id, run_id(FK), competitor_id(FK), positioning, target_users, core_features_json, pricing_summary, strengths_json, weaknesses_json, opportunities_json, evidence_ids_json, analysis_iteration</div>
+      </div>
+      <div class="schema-table" onclick="openModal('db-rep')">
+        <div class="tbl-name">📝 reports</div>
+        <div class="tbl-cols">id, run_id(FK), iteration, title, markdown_content, summary</div>
+      </div>
+      <div class="schema-table" onclick="openModal('db-qa')">
+        <div class="tbl-name">✅ qa_results</div>
+        <div class="tbl-cols">id, run_id(FK), iteration, overall_score, decision, check_phase, dimension_scores_json, issues_json, issue_checklist_json, retry_instructions, retry_queries_json</div>
+      </div>
+      <div class="schema-table" onclick="openModal('db-trace')">
+        <div class="tbl-name">📐 agent_traces</div>
+        <div class="tbl-cols">id, run_id(FK), stage, status, input_json, output_json, error_message, started_at, ended_at, duration_ms</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ========== TAB 5: API & PROVIDER ========== -->
+<div class="tab-content" id="tab-api">
+
+  <div class="flow-section">
+    <h3>REST API 端点全景</h3>
+    <table class="state-flow">
+      <tr><th>Method</th><th>端点</th><th>服务函数</th><th>说明</th></tr>
+      <tr>
+        <td><span class="badge green">POST</span></td>
+        <td><code>/api/runs</code></td>
+        <td>start_run() → execute_discovery_run() (bg)</td>
+        <td>创建分析任务，后台启动阶段一</td>
+      </tr>
+      <tr>
+        <td><span class="badge" style="background:#dcfce7; color:#16a34a;">GET</span></td>
+        <td><code>/api/runs</code></td>
+        <td>—</td>
+        <td>列表最近50个任务</td>
+      </tr>
+      <tr>
+        <td><span class="badge" style="background:#dcfce7; color:#16a34a;">GET</span></td>
+        <td><code>/api/runs/{id}</code></td>
+        <td>get_run_or_raise()</td>
+        <td>获取任务详情</td>
+      </tr>
+      <tr>
+        <td><span class="badge" style="background:#dcfce7; color:#16a34a;">DELETE</span></td>
+        <td><code>/api/runs/{id}</code></td>
+        <td>—</td>
+        <td>删除任务及关联数据</td>
+      </tr>
+      <tr>
+        <td><span class="badge green">POST</span></td>
+        <td><code>/api/runs/{id}/competitors/confirm</code></td>
+        <td>confirm_and_continue_run() → execute_report_run() (bg)</td>
+        <td>确认竞品，后台启动阶段二</td>
+      </tr>
+      <tr>
+        <td><span class="badge" style="background:#dcfce7; color:#16a34a;">GET</span></td>
+        <td><code>/api/runs/{id}/competitors</code></td>
+        <td>—</td>
+        <td>获取竞品列表（含确认状态）</td>
+      </tr>
+      <tr>
+        <td><span class="badge" style="background:#dcfce7; color:#16a34a;">GET</span></td>
+        <td><code>/api/runs/{id}/timeline</code></td>
+        <td>—</td>
+        <td>AgentTrace 执行时间线</td>
+      </tr>
+      <tr>
+        <td><span class="badge" style="background:#dcfce7; color:#16a34a;">GET</span></td>
+        <td><code>/api/runs/{id}/sources</code></td>
+        <td>—</td>
+        <td>来源列表（含来源类型和评分）</td>
+      </tr>
+      <tr>
+        <td><span class="badge" style="background:#dcfce7; color:#16a34a;">GET</span></td>
+        <td><code>/api/runs/{id}/evidence</code></td>
+        <td>—</td>
+        <td>结构化证据列表</td>
+      </tr>
+      <tr>
+        <td><span class="badge" style="background:#dcfce7; color:#16a34a;">GET</span></td>
+        <td><code>/api/runs/{id}/analyses</code></td>
+        <td>—</td>
+        <td>竞品分析列表</td>
+      </tr>
+      <tr>
+        <td><span class="badge" style="background:#dcfce7; color:#16a34a;">GET</span></td>
+        <td><code>/api/runs/{id}/report</code></td>
+        <td>—</td>
+        <td>最新报告（可选 ?iteration=）</td>
+      </tr>
+      <tr>
+        <td><span class="badge" style="background:#dcfce7; color:#16a34a;">GET</span></td>
+        <td><code>/api/runs/{id}/report/versions</code></td>
+        <td>—</td>
+        <td>报告所有版本</td>
+      </tr>
+      <tr>
+        <td><span class="badge" style="background:#dcfce7; color:#16a34a;">GET</span></td>
+        <td><code>/api/runs/{id}/report/citations</code></td>
+        <td>—</td>
+        <td>引文映射 (CitationMap)</td>
+      </tr>
+      <tr>
+        <td><span class="badge" style="background:#dcfce7; color:#16a34a;">GET</span></td>
+        <td><code>/api/runs/{id}/report/citation-bundle</code></td>
+        <td>—</td>
+        <td>引文束（用于前端引用渲染）</td>
+      </tr>
+      <tr>
+        <td><span class="badge" style="background:#dcfce7; color:#16a34a;">GET</span></td>
+        <td><code>/api/runs/{id}/qa/results</code></td>
+        <td>—</td>
+        <td>质检结果列表（含Checklist）</td>
+      </tr>
+      <tr>
+        <td><span class="badge green">POST</span></td>
+        <td><code>/api/runs/{id}/regenerate</code></td>
+        <td>regenerate_report() (bg)</td>
+        <td>重新生成报告（使用已有数据）</td>
+      </tr>
+    </table>
+  </div>
+
+  <div class="flow-section">
+    <h3>LLMProvider Protocol — 7个方法</h3>
+    <div style="display:flex; flex-direction:column; gap:0.5rem; margin-top:0.8rem;">
+      <div style="background:#f9fafb; border-radius:6px; padding:0.6rem 0.8rem; font-size:0.82rem;">
+        <code style="color:var(--accent);">understand_requirement(user_requirement) → dict</code>
+        <div style="color:var(--muted);">提取结构化需求摘要</div>
+      </div>
+      <div style="background:#f9fafb; border-radius:6px; padding:0.6rem 0.8rem; font-size:0.82rem;">
+        <code style="color:var(--accent);">understand_target(requirement, search_results) → dict</code>
+        <div style="color:var(--muted);">归纳目标产品画像</div>
+      </div>
+      <div style="background:#f9fafb; border-radius:6px; padding:0.6rem 0.8rem; font-size:0.82rem;">
+        <code style="color:var(--accent);">extract_competitors(requirement, target, results) → list[dict]</code>
+        <div style="color:var(--muted);">从搜索结果中抽取竞品候选</div>
+      </div>
+      <div style="background:#f9fafb; border-radius:6px; padding:0.6rem 0.8rem; font-size:0.82rem;">
+        <code style="color:var(--accent);">analyze_competitor(competitor, evidence) → dict</code>
+        <div style="color:var(--muted);">7维度结构化竞品分析</div>
+      </div>
+      <div style="background:#f9fafb; border-radius:6px; padding:0.6rem 0.8rem; font-size:0.82rem;">
+        <code style="color:var(--accent);">generate_report(run, analyses, sources) → dict</code>
+        <div style="color:var(--muted);">生成带引文的Markdown报告</div>
+      </div>
+      <div style="background:#f9fafb; border-radius:6px; padding:0.6rem 0.8rem; font-size:0.82rem;">
+        <code style="color:var(--accent);">qa_check_report(report, analyses, evidence, sources) → dict</code>
+        <div style="color:var(--muted);">质量检查并返回维度评分+问题列表+重试建议</div>
+      </div>
+      <div style="background:#f9fafb; border-radius:6px; padding:0.6rem 0.8rem; font-size:0.82rem;">
+        <code style="color:var(--accent);">qa_verify_issues(report, analyses, evidence, sources, open_issues) → dict</code>
+        <div style="color:var(--muted);">验证上一轮问题是否已解决</div>
+      </div>
+    </div>
+    <p style="margin-top:0.8rem; font-size:0.82rem; color:var(--muted);">
+      实现：MockLLMProvider（开发/测试）、ArkLLMProvider（豆包/DeepSeek via 火山引擎）、OpenAICompatibleLLMProvider（标准 OpenAI Chat Completions API）
+    </p>
+  </div>
+
+  <div class="flow-section">
+    <h3>SearchProvider Protocol — 单一方法</h3>
+    <div style="background:#f9fafb; border-radius:6px; padding:0.6rem 0.8rem; font-size:0.82rem; margin-top:0.8rem;">
+      <code style="color:var(--accent);">search(query: str, *, limit: int = 5) → list[SearchResult]</code>
+      <div style="color:var(--muted);">SearchResult = {title, url, snippet, source_type, raw_content}</div>
+    </div>
+    <p style="margin-top:0.5rem; font-size:0.82rem; color:var(--muted);">
+      实现：MockSearchProvider、TavilySearchProvider、BochaSearchProvider、DuckDuckGoSearchProvider
+    </p>
+  </div>
+
+</div>
+
+<!-- ========== TAB 6: FRONTEND ========== -->
+<div class="tab-content" id="tab-frontend">
+
+  <div class="flow-section">
+    <h3>前端路由 & 组件映射</h3>
+    <div style="margin-top:1rem;">
+      <div class="route-map" style="margin-bottom:0.8rem;">
+        <div class="route-node" onclick="openModal('fe-page-new')">
+          <div class="path">/</div>
+          <div class="comp">NewAnalysisPage</div>
+        </div>
+        <span class="route-arrow">→ 创建分析任务表单</span>
+      </div>
+      <div class="route-map" style="margin-bottom:0.8rem;">
+        <div class="route-node" onclick="openModal('fe-page-history')">
+          <div class="path">/history</div>
+          <div class="comp">HistoryPage</div>
+        </div>
+        <span class="route-arrow">→ 历史任务列表</span>
+      </div>
+      <div class="route-map" style="margin-bottom:0.8rem;">
+        <div class="route-node" onclick="openModal('fe-page-detail')">
+          <div class="path">/runs/:runId</div>
+          <div class="comp">RunDetailPage</div>
+        </div>
+        <span class="route-arrow">→ 任务详情 + 竞品确认 + Timeline + 数据Tab</span>
+      </div>
+      <div class="route-map" style="margin-bottom:0.8rem;">
+        <div class="route-node" onclick="openModal('fe-page-report')">
+          <div class="path">/runs/:runId/report</div>
+          <div class="comp">ReportPage</div>
+        </div>
+        <span class="route-arrow">→ Markdown报告 + 引文弹窗 + QA面板</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="flow-section">
+    <h3>10个业务组件</h3>
+    <div style="display:flex; flex-direction:column; gap:0.6rem; margin-top:0.8rem;">
+      <div style="background:#f9fafb; border:1px solid var(--border); border-radius:8px; padding:0.7rem 1rem; font-size:0.85rem;">
+        <strong style="color:var(--accent);">AnalysisList</strong> — 分析列表<br>
+        <span style="color:var(--muted);">展示竞品分析列表，每项显示7个维度的结构化数据，支持折叠/展开。</span>
+      </div>
+      <div style="background:#f9fafb; border:1px solid var(--border); border-radius:8px; padding:0.7rem 1rem; font-size:0.85rem;">
+        <strong style="color:var(--accent);">EvidenceList</strong> — 证据列表<br>
+        <span style="color:var(--muted);">展示证据列表，每项显示 related_product、related_dimension、quote、summary、confidence、source_url。</span>
+      </div>
+      <div style="background:#f9fafb; border:1px solid var(--border); border-radius:8px; padding:0.7rem 1rem; font-size:0.85rem;">
+        <strong style="color:var(--accent);">SourceList</strong> — 来源列表<br>
+        <span style="color:var(--muted);">展示来源列表，含 source_type_label（中文标签）、credibility_score、rank_score 色标、classification_reason。</span>
+      </div>
+      <div style="background:#f9fafb; border:1px solid var(--border); border-radius:8px; padding:0.7rem 1rem; font-size:0.85rem;">
+        <strong style="color:var(--accent);">QAResultsPanel</strong> — 质检结果面板<br>
+        <span style="color:var(--muted);">展示 QA 问题列表，每个问题显示 dimension、severity（critical/major/minor）、competitor_name、description、fix_suggestion、status（open/resolved/unresolved）、跨轮次追踪信息，支持查看 retry_queries 详情。</span>
+      </div>
+      <div style="background:#f9fafb; border:1px solid var(--border); border-radius:8px; padding:0.7rem 1rem; font-size:0.85rem;">
+        <strong style="color:var(--accent);">QASummaryBanner</strong> — 质检总分横幅<br>
+        <span style="color:var(--muted);">展示 QA 总分和6维度雷达数据。overall_score 用颜色区分（绿≥0.7, 黄0.5-0.7, 红&lt;0.5），显示 decision 和 iteration 信息。</span>
+      </div>
+      <div style="background:#f9fafb; border:1px solid var(--border); border-radius:8px; padding:0.7rem 1rem; font-size:0.85rem;">
+        <strong style="color:var(--accent);">ReportMarkdown</strong> — Markdown渲染<br>
+        <span style="color:var(--muted);">Markdown 渲染组件，支持引文标注 [1][2] 的点击交互——点击弹出 CitationBundleView 显示完整引用信息。</span>
+      </div>
+      <div style="background:#f9fafb; border:1px solid var(--border); border-radius:8px; padding:0.7rem 1rem; font-size:0.85rem;">
+        <strong style="color:var(--accent);">CitationBundleView</strong> — 引文束视图<br>
+        <span style="color:var(--muted);">引文弹窗视图，展示某个引用编号对应的 Source（title, url, source_type）+ 关联的 Evidence（quote, summary, confidence）+ 关联的 Analysis Claims。</span>
+      </div>
+      <div style="background:#f9fafb; border:1px solid var(--border); border-radius:8px; padding:0.7rem 1rem; font-size:0.85rem;">
+        <strong style="color:var(--accent);">HybridQueryVisualizer</strong> — 搜索Query可视化<br>
+        <span style="color:var(--muted);">可视化搜索Query规划，展示中英文query列表、purpose标注、搜索区域（global/china）。</span>
+      </div>
+      <div style="background:#f9fafb; border:1px solid var(--border); border-radius:8px; padding:0.7rem 1rem; font-size:0.85rem;">
+        <strong style="color:var(--accent);">AgentTimeline</strong> — 执行时间线<br>
+        <span style="color:var(--muted);">执行时间线组件，展示每个节点的 stage、status（颜色标识）、duration_ms、开始/结束时间，支持展开查看 input_json / output_json。</span>
+      </div>
+      <div style="background:#f9fafb; border:1px solid var(--border); border-radius:8px; padding:0.7rem 1rem; font-size:0.85rem;">
+        <strong style="color:var(--accent);">CompetitorConfirmPanel</strong> — 竞品确认面板<br>
+        <span style="color:var(--muted);">竞品确认面板，展示系统发现的候选竞品（name, description, category, region, confidence），支持勾选/取消，支持手动添加自定义竞品（name, website, category, region），确认按钮触发 confirmCompetitors() API。</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ========== TAB 7: SEARCH QUERY SYSTEM ========== -->
+<div class="tab-content" id="tab-search">
+
+  <div class="flow-section">
+    <h3>搜索查询体系总览</h3>
+    <p style="color:var(--muted); font-size:0.85rem;">系统在竞品发现和资料采集两个阶段共生成 <strong>3 类搜索场景、50+ 条查询模板变体</strong>，按产品类型(SaaS/实物商品)、语言区域(中文/英文)、竞品关系类型和 Schema 槽位自动选择。</p>
+    <div style="display:flex; gap:1rem; margin-top:1rem; flex-wrap:wrap;">
+      <div style="flex:1; min-width:280px; background:#f9fafb; border:1px solid var(--border); border-radius:8px; padding:1rem;">
+        <div style="font-weight:700; color:var(--accent); margin-bottom:0.5rem;">阶段一：竞品发现</div>
+        <div style="font-size:0.82rem; color:var(--muted);">目标理解 query + 竞品搜索 query + 官网解析 query<br>共 ~9 条查询，中英文混合</div>
+      </div>
+      <div style="flex:1; min-width:280px; background:#f9fafb; border:1px solid var(--border); border-radius:8px; padding:1rem;">
+        <div style="font-weight:700; color:var(--accent); margin-bottom:0.5rem;">阶段二：资料采集 (Retrieval Quart)</div>
+        <div style="font-size:0.82rem; color:var(--muted);">7个schema槽位 × 2产品类型 × 2语言区域 × 4竞品类型 × N个竞品<br>共 48+ 条查询模板变体</div>
+      </div>
+      <div style="flex:1; min-width:280px; background:#f9fafb; border:1px solid var(--border); border-radius:8px; padding:1rem;">
+        <div style="font-weight:700; color:var(--accent); margin-bottom:0.5rem;">QA 补充搜索</div>
+        <div style="font-size:0.82rem; color:var(--muted);">质检发现信息缺口后，LLM 动态生成针对性补充 query<br>格式：{competitor_name, slot, query}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="flow-section">
+    <h3>阶段一：竞品发现 — 搜索 Query 规划</h3>
+    <p style="color:var(--muted); font-size:0.85rem;">competitor_discovery_node 中的 3 个查询规划函数</p>
+
+    <div style="margin-top:1rem;">
+      <h4 style="color:var(--accent); font-size:0.9rem;">1. 目标理解 Query — _plan_target_queries()</h4>
+      <p style="font-size:0.82rem; color:var(--muted); margin:0.3rem 0 0.5rem;">目的：搜索目标产品/想法的基本信息。三路径优先级如下，匹配到第一个即返回</p>
+      <table class="state-flow" style="font-size:0.82rem;">
+        <tr><th>优先级</th><th>条件</th><th>Query</th><th>生成方式</th><th style="width:80px;">limit</th></tr>
+        <tr>
+          <td rowspan="2" style="font-weight:700; color:var(--accent);">1 最高</td>
+          <td rowspan="2" style="color:var(--green);">requirement.queries ≥ 2条</td>
+          <td><code>{requirement.queries[0][:40]}</code></td>
+          <td rowspan="2"><strong style="color:var(--purple);">LLM 生成</strong><br><span style="font-size:0.75rem; color:var(--muted);">llm.understand_requirement() 的 queries 字段</span></td>
+          <td>4</td>
+        </tr>
+        <tr>
+          <td><code>{requirement.queries[1][:40]}</code>（依此类推，最多取前3条）</td>
+          <td>4</td>
+        </tr>
+        <tr>
+          <td rowspan="3" style="font-weight:700;">2</td>
+          <td rowspan="3">有明确 target_product</td>
+          <td><code>"{target_product}" features pricing 2026</code></td>
+          <td rowspan="3"><strong>硬编码模板</strong><br><span style="font-size:0.75rem; color:var(--muted);">Python f-string 拼接</span></td>
+          <td>4</td>
+        </tr>
+        <tr>
+          <td><code>{target_product} 官方 功能 定价 目标用户</code></td>
+          <td>4</td>
+        </tr>
+        <tr>
+          <td><code>{target_product} 竞品 替代品 对比</code></td>
+          <td>4</td>
+        </tr>
+        <tr>
+          <td rowspan="2" style="font-weight:700;">3</td>
+          <td rowspan="2">无明确目标，仅描述</td>
+          <td><code>"{domain}" alternatives competitors 2026</code></td>
+          <td rowspan="2"><strong>硬编码模板</strong><br><span style="font-size:0.75rem; color:var(--muted);">Python f-string 拼接</span></td>
+          <td>4</td>
+        </tr>
+        <tr>
+          <td><code>{description} 相似产品 竞品</code></td>
+          <td>4</td>
+        </tr>
+      </table>
+    </div>
+
+    <div style="margin-top:1.2rem;">
+      <h4 style="color:var(--accent); font-size:0.9rem;">2. 竞品发现 Query — _plan_competitor_queries()</h4>
+      <p style="font-size:0.82rem; color:var(--muted); margin:0.3rem 0 0.5rem;">目的：基于已理解的目标画像，搜索同类/替代/相关产品。<strong style="color:var(--purple);">全部硬编码模板。</strong></p>
+      <table class="state-flow" style="font-size:0.82rem;">
+        <tr><th>Query</th><th>Purpose</th><th style="width:80px;">limit</th></tr>
+        <tr>
+          <td><code>"{name}" competitors alternatives 2026</code></td>
+          <td>global_competitor_discovery</td>
+          <td>5</td>
+        </tr>
+        <tr>
+          <td><code>{name} 竞品 替代品 对比</code></td>
+          <td>local_competitor_discovery</td>
+          <td>5</td>
+        </tr>
+        <tr>
+          <td><code>{category} 主要产品 品牌 排行</code></td>
+          <td>local_indirect_discovery</td>
+          <td>5</td>
+        </tr>
+      </table>
+      <p style="font-size:0.78rem; color:var(--muted); margin-top:0.3rem;">name=target_understanding.name 或 target_product；category=target_understanding.category 或 domain</p>
+    </div>
+
+    <div style="margin-top:1.2rem;">
+      <h4 style="color:var(--accent); font-size:0.9rem;">3. 官网解析 Query — _resolve_product_result()</h4>
+      <p style="font-size:0.82rem; color:var(--muted); margin:0.3rem 0 0.5rem;">目的：确认候选竞品的官方网站并获取产品描述。<strong style="color:var(--purple);">全部硬编码模板。</strong></p>
+      <table class="state-flow" style="font-size:0.82rem;">
+        <tr><th>Query</th><th style="width:80px;">limit</th><th>说明</th></tr>
+        <tr>
+          <td><code>{name} official site product</code></td>
+          <td>5</td>
+          <td>对每个候选竞品名称搜索官网，结果经 <code>OFFICIAL_DOMAIN_HINTS</code>（53条）匹配和 <code>BLOCKED_PRODUCT_DOMAINS</code>（6条）过滤</td>
+        </tr>
+      </table>
+    </div>
+
+    <div style="margin-top:1rem; padding:0.8rem; background:#fef3c7; border-radius:8px; font-size:0.82rem; color:#92400e;">
+      <strong>并行执行机制</strong>：所有 query 通过 <code>_run_queries()</code> 以 <code>ThreadPoolExecutor(max_workers=4)</code> 并行发送，结果按 URL 去重合并返回。
+    </div>
+  </div>
+
+  <div class="flow-section">
+    <h3>阶段二：资料采集 — Retrieval Quart Query 模板</h3>
+    <p style="color:var(--muted); font-size:0.85rem;">material_collection_node 的 <code>_quart_query()</code> 函数 — 按产品类型分<strong> SaaS/软件</strong> 和 <strong>实物商品</strong> 两大模板体系</p>
+
+    <!-- ===== SaaS/Software ===== -->
+    <div style="margin-top:1rem;">
+      <h4 style="color:var(--accent); font-size:0.9rem;">SaaS/软件产品 — 7 槽位 × 中英文双模板</h4>
+      <p style="font-size:0.82rem; color:var(--muted); margin:0.3rem 0 0.5rem;">locale 根据竞品名称是否含中文自动判断（china/global）；<code>relationship_evidence</code> 槽位的 query 由 <code>_software_relationship_query()</code> 按竞品类型单独生成</p>
+      <table class="state-flow" style="font-size:0.82rem;">
+        <tr><th>Slot</th><th>竞品类型</th><th>英文 (global) 模板</th><th>中文 (china) 模板</th></tr>
+        <tr>
+          <td rowspan="3" style="font-weight:700;">relationship_evidence<br><span style="color:var(--muted); font-weight:400;">竞争关系</span></td>
+          <td>direct（直接竞品）</td>
+          <td><code>{target_name} vs {name} features pricing reviews alternative</code></td>
+          <td><code>{target_name} 和 {name} 对比 替代 竞品 {competed_need}</code></td>
+        </tr>
+        <tr>
+          <td>indirect（间接竞品）</td>
+          <td><code>{name} {competed_need} use cases team workflow {overlap_text}</code></td>
+          <td><code>{name} {competed_need} 场景 团队 协作 {overlap_text}</code></td>
+        </tr>
+        <tr>
+          <td>substitute（替代方案）</td>
+          <td><code>{competed_need} manual workflow spreadsheet PPT alternative</code></td>
+          <td><code>{competed_need} 人工流程 表格 PPT 替代方案</code></td>
+        </tr>
+        <tr>
+          <td style="font-weight:700;">positioning<br><span style="color:var(--muted); font-weight:400;">产品定位</span></td>
+          <td style="color:var(--muted);">不区分</td>
+          <td><code>{product} official website product positioning features</code></td>
+          <td><code>{product} 官网 产品介绍 功能 目标用户</code></td>
+        </tr>
+        <tr>
+          <td style="font-weight:700;">core_features<br><span style="color:var(--muted); font-weight:400;">核心功能</span></td>
+          <td style="color:var(--muted);">不区分</td>
+          <td><code>{product} docs help features integrations API</code></td>
+          <td><code>{product} 帮助中心 文档 功能 集成 开放平台</code></td>
+        </tr>
+        <tr>
+          <td style="font-weight:700;">pricing<br><span style="color:var(--muted); font-weight:400;">价格</span></td>
+          <td style="color:var(--muted);">不区分</td>
+          <td><code>{product} pricing plans enterprise</code></td>
+          <td><code>{product} 价格 收费 套餐 企业版</code></td>
+        </tr>
+        <tr>
+          <td style="font-weight:700;">user_feedback<br><span style="color:var(--muted); font-weight:400;">用户评价</span></td>
+          <td style="color:var(--muted);">不区分</td>
+          <td><code>{product} reviews pros cons G2 Capterra Reddit</code></td>
+          <td><code>{product} 用户评价 知乎 小红书 差评 替代品</code></td>
+        </tr>
+        <tr>
+          <td style="font-weight:700;">market_signal<br><span style="color:var(--muted); font-weight:400;">市场信号</span></td>
+          <td style="color:var(--muted);">不区分</td>
+          <td><code>{product} news launch funding product update</code></td>
+          <td><code>{product} 新闻 发布 版本更新 融资</code></td>
+        </tr>
+        <tr>
+          <td style="font-weight:700;">risk_opportunity<br><span style="color:var(--muted); font-weight:400;">风险/机会</span></td>
+          <td style="color:var(--muted);">不区分</td>
+          <td><code>{product} limitations alternatives risks switching cost</code></td>
+          <td><code>{product} 缺点 问题 替代品 迁移成本</code></td>
+        </tr>
+      </table>
+      <p style="font-size:0.78rem; color:var(--muted); margin-top:0.3rem;">注意：竞品类型共 4 种（direct / indirect / substitute / adjacent），但 <code>adjacent_product</code> 在 query 模板上与 direct 共用默认分支，因此实际只表现为 3 套模板。对于 substitute_solution 类型，relationship_evidence 的 query 不包含具体产品名，而是搜索"某需求 + 传统/人工替代方式"</p>
+    </div>
+
+    <!-- ===== Commodity ===== -->
+    <div style="margin-top:1.2rem;">
+      <h4 style="color:var(--accent); font-size:0.9rem;">实物商品 — 7 槽位 × 中文电商模板（按竞品类型分三列）</h4>
+      <p style="font-size:0.82rem; color:var(--muted); margin:0.3rem 0 0.5rem;">product_type=commodity 时统一使用中文电商搜索词；adjacent_product 与 direct 共用同一列模板</p>
+      <table class="state-flow" style="font-size:0.82rem;">
+        <tr><th>Slot</th><th>直接竞品 (direct)</th><th>间接竞品 (indirect)</th><th>替代方案 (substitute)</th></tr>
+        <tr>
+          <td style="font-weight:700;">relationship_evidence<br><span style="color:var(--muted); font-weight:400;">竞争关系</span></td>
+          <td><code>{target_name} {name} 对比 测评 参数 价格</code></td>
+          <td><code>{competed_need} 替代产品 推荐 测评 {name}</code></td>
+          <td><code>{competed_need} 传统方案 替代方案 用户经验</code></td>
+        </tr>
+        <tr>
+          <td style="font-weight:700;">positioning<br><span style="color:var(--muted); font-weight:400;">产品定位</span></td>
+          <td><code>{product} 品牌 官网 商品介绍 参数</code></td>
+          <td><code>{product} 使用场景 适合人群 对比</code></td>
+          <td><code>{competed_need} 传统方案 替代方案</code></td>
+        </tr>
+        <tr>
+          <td style="font-weight:700;">core_features<br><span style="color:var(--muted); font-weight:400;">核心功能</span></td>
+          <td><code>{product} 功能 参数 测评 使用体验</code></td>
+          <td><code>{product} 功能 参数 测评 使用体验</code></td>
+          <td><code>{competed_need} 低成本方案 使用体验</code></td>
+        </tr>
+        <tr>
+          <td style="font-weight:700;">pricing<br><span style="color:var(--muted); font-weight:400;">价格</span></td>
+          <td><code>{product} 京东 天猫 淘宝 价格</code></td>
+          <td><code>{product} 京东 天猫 淘宝 价格</code></td>
+          <td><code>{competed_need} 成本 价格 购买渠道</code></td>
+        </tr>
+        <tr>
+          <td style="font-weight:700;">user_feedback<br><span style="color:var(--muted); font-weight:400;">用户评价</span></td>
+          <td><code>{product} 用户评价 小红书 知乎 B站 京东 差评</code></td>
+          <td><code>{product} 用户评价 小红书 知乎 B站 差评</code></td>
+          <td><code>{competed_need} 用户经验 小红书 知乎 差评</code></td>
+        </tr>
+        <tr>
+          <td style="font-weight:700;">market_signal<br><span style="color:var(--muted); font-weight:400;">市场信号</span></td>
+          <td><code>{product} 测评 对比 推荐 榜单</code></td>
+          <td><code>{product} 推荐 榜单 测评 对比</code></td>
+          <td><code>{competed_need} 推荐 榜单 测评</code></td>
+        </tr>
+        <tr>
+          <td style="font-weight:700;">risk_opportunity<br><span style="color:var(--muted); font-weight:400;">风险/机会</span></td>
+          <td><code>{product} 缺点 问题 替代品 值不值得买</code></td>
+          <td><code>{product} 缺点 问题 替代品 值不值得买</code></td>
+          <td><code>{competed_need} 缺点 问题 值不值得</code></td>
+        </tr>
+      </table>
+      <p style="font-size:0.78rem; color:var(--muted); margin-top:0.3rem;">direct 与 indirect 在 core_features、pricing、risk_opportunity 上共用相同模板；substitute 不引用具体产品名，改用 competed_need 变量。</p>
+    </div>
+  </div>
+
+  <div class="flow-section">
+    <h3>Query 生成变量说明</h3>
+    <table class="state-flow" style="font-size:0.82rem;">
+      <tr><th>变量</th><th>来源</th><th>说明</th></tr>
+      <tr><td><code>{product}</code></td><td>competitor.name</td><td>竞品名称</td></tr>
+      <tr><td><code>{name}</code></td><td>competitor.name</td><td>同上</td></tr>
+      <tr><td><code>{target_name}</code></td><td>target_understanding.name 或 requirement.target_product</td><td>分析目标/用户自己的产品</td></tr>
+      <tr><td><code>{competed_need}</code></td><td>_infer_competed_need() 推断</td><td>竞品与目标争夺的用户需求（如"团队协作"、"保温需求"）</td></tr>
+      <tr><td><code>{overlap_text}</code></td><td>overlap_points 前2项拼接</td><td>竞品与目标的重叠维度描述</td></tr>
+      <tr><td><code>{domain}</code></td><td>requirement.domain 或 possible_market_category</td><td>市场领域</td></tr>
+      <tr><td><code>{category}</code></td><td>target_understanding.category</td><td>产品分类</td></tr>
+      <tr><td><code>{description}</code></td><td>requirement.product_description 或 summary</td><td>产品简短描述</td></tr>
+    </table>
+  </div>
+
+  <div class="flow-section">
+    <h3>搜索策略：limit & 并行度</h3>
+    <table class="state-flow" style="font-size:0.82rem;">
+      <tr><th>阶段</th><th>每 query limit</th><th>并发线程数</th><th>备注</th></tr>
+      <tr><td>目标理解搜索</td><td>4</td><td>min(4, query数)</td><td>快速获取目标基本信息</td></tr>
+      <tr><td>竞品发现搜索</td><td>5</td><td>min(4, query数)</td><td>更多结果以提高竞品发现覆盖率</td></tr>
+      <tr><td>官网解析</td><td>5</td><td>min(4, 候选竞品数)</td><td>按竞品并行</td></tr>
+      <tr><td>资料采集 (Retrieval Quart)</td><td>4</td><td>min(4, query数)</td><td>每个 Quart 独立搜索，结果经分类评分后取 top-2</td></tr>
+    </table>
+    <p style="font-size:0.82rem; color:var(--muted); margin-top:0.8rem;">
+      搜索结果通过 <code>_serialize_result()</code> 统一序列化为 <code>{title, url, snippet, provider, source_type}</code> 格式，后续来源分类和可信度评分的计算独立于搜索provider。
+    </p>
+  </div>
+
+</div>
+
+</div><!-- /container -->
+
+<!-- ========== MODAL OVERLAY ========== -->
+<div class="modal-overlay" id="modal-overlay" onclick="closeModal(event)">
+  <div class="modal" id="modal-content" onclick="event.stopPropagation()">
+    <button class="modal-close" onclick="closeModalDirect()">✕</button>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<script>
+// ===== MODAL DATA =====
+const MODALS = {
+
+  // ── SYSTEM OVERVIEW ──
+  'fe-pages': {
+    title: 'React 前端页面路由',
+    body: `<p>前端使用 <strong>React + React Router + TypeScript + Vite</strong> 构建，共4个页面：</p>
+      <ul style="margin:0.5rem 0 0 1.2rem;">
+        <li><code>/</code> — NewAnalysisPage：创建新分析任务</li>
+        <li><code>/history</code> — HistoryPage：查看历史任务列表</li>
+        <li><code>/runs/:runId</code> — RunDetailPage：任务详情（竞品确认 + Timeline + 数据Tab）</li>
+        <li><code>/runs/:runId/report</code> — ReportPage：报告查看（Markdown + 引文 + QA面板）</li>
+      </ul>`
+  },
+  'fe-comps': {
+    title: '前端业务组件',
+    body: `<p>共10个业务组件，按功能分4类：</p>
+      <p><strong>报告相关</strong>：ReportMarkdown（渲染Markdown报告）、CitationBundleView（引文束弹窗视图）</p>
+      <p><strong>质检相关</strong>：QAResultsPanel（问题列表+状态）、QASummaryBanner（总分+维度得分横幅）</p>
+      <p><strong>数据展示</strong>：AnalysisList（竞品分析列表）、EvidenceList（证据列表）、SourceList（来源列表含类型标签和可信度）</p>
+      <p><strong>交互</strong>：CompetitorConfirmPanel（竞品选择+手动添加）、AgentTimeline（节点执行时间线）、HybridQueryVisualizer（搜索query可视化）</p>`
+  },
+  'fe-api': {
+    title: 'api.ts — 前端 REST 客户端',
+    body: `<p>基于 <code>fetch</code> 的轻量封装，Base URL = <code>/api</code>。统一错误处理（非2xx抛异常）。</p>
+      <p>提供16个API函数，覆盖所有后端端点：createRun / listRuns / getRun / deleteRun / regenerateReport / getCompetitors / confirmCompetitors / getTimeline / getSources / getEvidence / getAnalyses / getReport / getReportVersions / getReportCitations / getReportCitationBundle / getQAResults</p>`
+  },
+  'fe-types': {
+    title: 'types.ts — 前端类型定义',
+    body: `<p>与后端 schemas 对应的 TypeScript 类型：Run, Competitor, Source, Evidence, Analysis, Report, Trace, QAResult, QAIssue, CitationBundleCompetitor, CitationBundleClaim, CitationBundleEvidence, CitationMapItem 等。</p>`
+  },
+
+  'api-runs': { title: 'POST/GET /api/runs', body: '<p><strong>POST</strong>：接收 user_requirement，创建 Run 记录（status=running），通过 BackgroundTasks 启动 execute_discovery_run()。</p><p><strong>GET</strong>：返回最近50个任务（按 created_at 倒序）。</p>' },
+  'api-competitors': { title: '/api/runs/{id}/competitors', body: '<p><strong>GET</strong>：返回竞品列表（含 selected 状态）。</p><p><strong>POST .../confirm</strong>：接收 competitor_ids + custom_competitors，调用 confirm_and_continue_run()，标记选中竞品，后台启动 execute_report_run()。</p>' },
+  'api-report': { title: '/api/runs/{id}/report/*', body: '<p><strong>GET /report</strong>：最新版报告（Markdown）。支持 ?iteration= 参数查询特定版本。</p><p><strong>GET /report/versions</strong>：所有版本列表。</p><p><strong>GET /report/citations</strong>：CitationMap — 引文编号→来源+证据+分析的映射。</p><p><strong>GET /report/citation-bundle</strong>：每个竞品的 claims + evidence 引用，用于前端渲染引用标注。</p>' },
+  'api-qa': { title: '/api/runs/{id}/qa/results', body: '<p><strong>GET</strong>：QA 结果列表，每轮 QA 一条记录。含 overall_score、dimension_scores（6维度）、issues（当前轮问题）、issue_checklist（跨轮追踪的完整问题清单，含 status: open/resolved/unresolved）、retry_instructions、retry_queries。</p>' },
+  'api-timeline': { title: '/api/runs/{id}/timeline', body: '<p><strong>GET</strong>：AgentTrace 执行时间线。每条 trace 包含 stage（节点名）、status（running/completed/failed）、input_json、output_json、started_at、ended_at、duration_ms。</p>' },
+  'api-other': { title: '其他数据端点', body: '<p><strong>GET /sources</strong>：来源列表（含 source_type_label、credibility_score、rank_score、classification_reason 等元数据）。</p><p><strong>GET /evidence</strong>：结构化证据列表。</p><p><strong>GET /analyses</strong>：竞品分析列表（7维度结构化数据）。</p>' },
+
+  'svc-start': { title: 'start_run()', body: '<p>创建 Run 记录（id=run_xxx），写入 user_requirement，status="running"，current_stage="requirement_understanding"。返回 Run 对象。</p>' },
+  'svc-discovery': { title: 'execute_discovery_run()', body: '<p>在后台线程中执行。流程：</p><ol style="margin:0.3rem 0 0 1.2rem;"><li>从DB读取Run</li><li>构造初始AgentState：{run_id, user_requirement}</li><li>构建Graph 1（带trace/progress回调）</li><li>graph.invoke(state)</li><li>持久化：requirement → requirement_json/title/summary，competitors → Competitor表</li><li>status → "waiting_for_human"</li></ol>' },
+  'svc-confirm': { title: 'confirm_and_continue_run()', body: '<p>验证竞品选择：检查 run.status == "waiting_for_human"，验证 competitor_ids 属于该 run。</p><p>支持 custom_competitors（用户手动输入的竞品），confidence=1.0，discovery_source="human_input"。</p><p>标记 selected=True，启动 execute_report_run()。</p>' },
+  'svc-report': { title: 'execute_report_run()', body: '<p>核心编排函数。流程：</p><ol style="margin:0.3rem 0 0 1.2rem;"><li>从DB读取已选竞品+requirement</li><li>构造AgentState（含selected_competitors）</li><li>构建Graph 2（带 on_stage_complete 回调）</li><li>graph.invoke(state) — LangGraph 自动处理 QA 循环</li><li>每阶段完成回调：material_collection → 写 Sources+Evidence；structured_analysis → 写 Analyses（先删旧数据）；report_generation → 写 Report；quality_check → 写 QAResult</li><li>最终 status → "completed"</li></ol>' },
+  'svc-regen': { title: 'regenerate_report()', body: '<p>使用已有 sources/evidence/analyses 重新生成报告（不重新采集和分析）。直接调用 report_generation_node()，写入新版本 Report（iteration+1）。</p>' },
+
+  'graph1': { title: 'Graph 1: Competitor Discovery (3节点)', body: '<p>线性图：requirement_understanding → competitor_discovery → human_confirm_competitors → END</p><p>3个节点，无分支。使用 set_entry_point + add_edge 构建。每次调用通过 _run_node() 包装 trace 回调。</p>' },
+  'graph2': { title: 'Graph 2: Report Generation + QA Loop (4节点)', body: '<p>线性+条件图：material_collection → structured_analysis → report_generation → quality_check → qa_route(条件)</p><p>条件路由 3 分支：end（通过）、retry_collection（回到material_collection）、retry_analysis（回到structured_analysis）。最多3轮反馈循环。</p>' },
+  'state-detail': { title: 'AgentState (TypedDict)', body: '<p>total=False 的 TypedDict，共20个字段。跨图传递，LangGraph 自动管理状态合并。</p><p>核心设计：</p><ul style="margin:0.3rem 0 0 1.2rem;"><li>上游节点写入，下游节点读取</li><li>QA 循环通过 retry_* 字段传递修正指令</li><li>issue_checklist 跨轮次追踪问题状态</li></ul>' },
+  'trace-detail': { title: 'trace.py — 节点追踪', body: '<p>run_traced_stage() 函数：向 AgentTrace 表写入记录（包含 input_json、output_json、duration_ms）。</p><p>record_progress_trace() 函数：写入进度步骤（含 metadata）。前端通过 /api/runs/{id}/timeline 实时轮询展示。</p>' },
+
+  'llm-providers': { title: 'LLM Provider 实现', body: '<p><strong>MockLLMProvider</strong>：返回预置的固定数据（开发/测试用）。</p><p><strong>ArkLLMProvider</strong>：对接火山引擎 Ark API（豆包/DeepSeek），配置：ARK_API_KEY、ARK_ENDPOINT_ID、ARK_MODEL。</p><p><strong>OpenAICompatibleLLMProvider</strong>：标准 OpenAI Chat Completions API 格式。配置：OPENAI_API_KEY、OPENAI_MODEL、OPENAI_BASE_URL、OPENAI_TEMPERATURE。支持任意兼容 OpenAI 接口的服务。</p>' },
+  'search-providers': { title: 'Search Provider 实现', body: '<p><strong>MockSearchProvider</strong>：返回模拟搜索结果。</p><p><strong>TavilySearchProvider</strong>：Tavily Search API。</p><p><strong>BochaSearchProvider</strong>：博查搜索 API。</p><p><strong>DuckDuckGoSearchProvider</strong>：DuckDuckGo 搜索（免费）。</p>' },
+  'factory': { title: 'Provider Factory 模式', body: '<p><code>get_llm_provider()</code> 和 <code>get_search_provider()</code> 根据 Settings 中的 <code>llm_provider</code> / <code>search_provider</code> 字符串选择实现。</p><p>Settings 从 <code>.env</code> 文件加载（pydantic-settings）。支持热切换：改环境变量即可更换 LLM 或搜索引擎。</p>' },
+
+  // ── PHASE 1 NODES ──
+  'node-start': { title: 'START — Phase 1 入口', body: '<p>初始 AgentState：{run_id, user_requirement}</p><p>由 run_service 构造，传入 graph.invoke()。</p>' },
+  'node-req': {
+    title: '需求理解节点',
+    body: `<p><strong>文件</strong>：backend/app/agents/nodes/requirement_understanding.py</p>
+      <p><strong>输入</strong>：state["user_requirement"]</p>
+      <p><strong>输出</strong>：state["requirement"] = LLM结构化需求摘要</p>
+      <p><strong>调用</strong>：llm.understand_requirement(user_requirement) → dict</p>
+      <p>这是系统的第一个LLM节点，将用户的自然语言需求转化为结构化描述，包含：domain（领域）、target_product（目标产品）、core_capabilities（核心能力）、primary_use_cases（主要场景）等字段。</p>`
+  },
+  'node-comp-disc': {
+    title: '竞品发现节点（最复杂节点）',
+    body: `<p><strong>文件</strong>：backend/app/agents/nodes/competitor_discovery.py (~540行)</p>
+      <p>7个子步骤的流水线，每个步骤都有独立的 progress 上报：</p>
+      <ol style="margin:0.3rem 0 0 1.2rem;">
+        <li>_plan_target_queries() — 规划目标理解搜索query（中英文混合，2-3个）</li>
+        <li>_run_queries(target) — ThreadPool并行搜索，limit=4，URL去重</li>
+        <li>llm.understand_target() — LLM 归纳目标画像（name/category/capabilities/use_cases）</li>
+        <li>_plan_competitor_queries() — 基于目标画像生成竞品搜索query</li>
+        <li>_run_queries(competitor) — ThreadPool并行搜索，limit=5</li>
+        <li>llm.extract_competitors() → 多层过滤 → _balanced_candidates(max=4)</li>
+        <li>ThreadPool并行调用 _resolve_product_result() 验证官网</li>
+      </ol>
+      <p><strong>状态写入</strong>：target_understanding, target_search_results, competitor_search_results, competitors</p>`
+  },
+  'node-human': {
+    title: '人工确认竞品节点',
+    body: `<p><strong>文件</strong>：backend/app/agents/nodes/human_confirm_competitors.py</p>
+      <p>这是一个挂起节点：仅设置 status="waiting_for_human"，等待用户在前端确认竞品选择。</p>
+      <p>用户可进行的操作：</p>
+      <ul style="margin:0.3rem 0 0 1.2rem;">
+        <li>勾选/取消 system 发现的竞品</li>
+        <li>手动添加 custom_competitors（名称、网址、类别）</li>
+        <li>确认后 POST /api/runs/{id}/competitors/confirm</li>
+      </ul>
+      <p>确认后 service 层标记 selected=True，写入 custom_competitors（confidence=1.0, discovery_source="human_input"），启动 Phase 2。</p>`
+  },
+  'node-end1': { title: 'END — Phase 1 完成', body: '<p>Graph 1 执行完毕。run.status = "waiting_for_human"。系统等待用户在前端确认竞品选择，确认后进入 Phase 2。</p>' },
+
+  // ── COMPETITOR DISCOVERY SUB-STEPS ──
+  'sub-step1': { title: '子步骤1：规划目标Query', body: '<p>如果 requirement.queries 已有 ≥2条 query，直接使用前3条。否则根据 target_product 和 domain 生成中英文混合query（2-3条）。</p>' },
+  'sub-step2': { title: '子步骤2：搜索目标信息', body: '<p>ThreadPoolExecutor(max_workers=4) 并行搜索。结果合并去重（按URL）。每个结果附带 query、purpose、rank 字段。</p>' },
+  'sub-step3': { title: '子步骤3：LLM理解目标', body: '<p>调用 llm.understand_target(requirement, target_search_results)。返回 { name, category, positioning, target_users, core_capabilities, primary_use_cases... }。</p>' },
+  'sub-step4': { title: '子步骤4：规划竞品Query', body: '<p>基于目标画像生成3个query：global_competitor_discovery、local_competitor_discovery、local_indirect_discovery。中英文混合。</p>' },
+  'sub-step5': { title: '子步骤5：搜索候选竞品', body: '<p>同子步骤2，limit=5。并行搜索，URL去重。</p>' },
+  'sub-step6': {
+    title: '子步骤6：LLM抽取 + 多层过滤 + 兜底',
+    body: `<p><strong>过滤管道</strong>：</p>
+      <ol style="margin:0.3rem 0 0 1.2rem;">
+        <li>LLM.extract_competitors() — 从搜索结果中提取候选竞品</li>
+        <li>去重（按 name.lower()）</li>
+        <li>INVALID_COMPETITOR_NAMES 黑名单（76词）</li>
+        <li>_looks_generic_name() — 启发式过滤（中文停用词、量词、单位、后缀、句子标记计数）</li>
+        <li>_is_target_product() — 排除与目标同名的结果</li>
+        <li>_balanced_candidates(limit=4) — 区域平衡（global/china各≥1）</li>
+        <li>若结果为空 → _extract_fallback_competitors() — 基于关键词和品牌正则的兜底策略</li>
+      </ol>`
+  },
+  'sub-step7': { title: '子步骤7：并行解析官网', body: '<p>ThreadPoolExecutor 并行调用 _resolve_product_result()。对每个候选竞品搜索 "{name} official site product"，通过 OFFICIAL_DOMAIN_HINTS 和 BLOCKED_PRODUCT_DOMAINS 做精确的官网匹配和伪官网过滤。最终构建完善的竞品描述（含二次搜索证据片段）。</p>' },
+
+  // ── PHASE 2 NODES ──
+  'node-start2': { title: 'START — Phase 2 入口', body: '<p>初始 AgentState：{run_id, user_requirement, requirement, selected_competitors}。由 confirm_and_continue_run() → execute_report_run() 构造。</p>' },
+  'node-material': {
+    title: '资料采集节点',
+    body: `<p><strong>文件</strong>：backend/app/agents/nodes/material_collection.py (~700行)</p>
+      <p><strong>核心抽象</strong>：Retrieval Quart</p>
+      <p>流程：</p>
+      <ol style="margin:0.3rem 0 0 1.2rem;">
+        <li>检测 product_type（software/commodity）</li>
+        <li>为每个竞品×维度生成 Retrieval Quart（7个schema槽位 × N个竞品）</li>
+        <li>跳过已覆盖的槽位（已有足够高置信度evidence）</li>
+        <li>ThreadPoolExecutor 并行搜索</li>
+        <li>来源分类（_classify_source）：SaaS/Commodity 两种分类策略，13种来源类型</li>
+        <li>来源评分：credibility_score（基础权重）+ dimension_bonus + preferred_bonus + relationship_match_bonus</li>
+        <li>按 rank_score 重排序，取 top-2 写入 sources + evidence</li>
+        <li>coverage_report 检查覆盖度</li>
+      </ol>
+      <p><strong>状态写入</strong>：sources, evidence, coverage_report</p>
+      <p><strong>Retry模式</strong>：当 qa_retry_queries 存在时，使用 _build_retry_product_queries() 生成针对性的补充Query</p>`
+  },
+  'node-analysis': {
+    title: '结构化分析节点',
+    body: `<p><strong>文件</strong>：backend/app/agents/nodes/structured_analysis.py</p>
+      <p>对每个 selected_competitor 调用 llm.analyze_competitor() 生成7维度分析：</p>
+      <ol style="margin:0.3rem 0 0 1.2rem;">
+        <li>positioning — 产品定位</li>
+        <li>target_users — 目标用户（JSON list）</li>
+        <li>core_features — 核心功能（JSON list）</li>
+        <li>pricing_summary — 定价策略</li>
+        <li>strengths — 优势（JSON list）</li>
+        <li>weaknesses — 劣势/痛点（JSON list）</li>
+        <li>opportunities — 机会点（JSON list）</li>
+      </ol>
+      <p><strong>并行执行</strong>：ThreadPoolExecutor(max_workers=4)，每个竞品独立分析。</p>
+      <p><strong>Retry模式</strong>：qa_retry_analysis_ids 存在时，只重新分析受影响竞品（先删DB旧数据再写入），未受影响的保持复用。QA feedback 通过 _qa_feedback 字段注入分析prompt。</p>
+      <p><strong>状态写入</strong>：analyses</p>`
+  },
+  'node-report': {
+    title: '报告生成节点',
+    body: `<p><strong>文件</strong>：backend/app/agents/nodes/report_generation.py</p>
+      <p>流程：</p>
+      <ol style="margin:0.3rem 0 0 1.2rem;">
+        <li>_build_citation_bundle() — 将 analyses + evidence + sources 组装为引文束：
+          <ul><li>每个竞品 → 7个 claim（positioning, target_users, core_features, pricing, strengths, weaknesses, opportunities）</li>
+          <li>每个 claim → 最多4条 evidence（按维度偏好匹配）</li>
+          <li>每条 evidence → source_reference_id（用于报告中标注[1][2]）</li></ul>
+        </li>
+        <li>llm.generate_report() — 生成Markdown报告（含引文标注、qa_report_guidance）</li>
+      </ol>
+      <p><strong>状态写入</strong>：report = {title, markdown_content, summary}</p>`
+  },
+  'node-qa': {
+    title: '质量检查节点 — 完整的反馈控制流程',
+    body: `<p><strong>文件</strong>：backend/app/agents/nodes/quality_check.py (~420行)</p>
+      <p>每次进入节点时，先读取 <code>feedback_loop_count</code> 和 <code>qa_issue_checklist</code>，从中筛出 status="open" 的 issues。</p>
+
+      <h4 style="margin-top:1rem;">模式一：issue_verification（存在 open issues 时）</h4>
+      <ol style="margin:0.3rem 0 0 1.2rem; font-size:0.88rem;">
+        <li>调用 <code>llm.qa_verify_issues()</code> 逐个复核上次的 open issues，LLM 返回每个 issue 的 resolution（resolved / still_open）+ 可选的 retry_queries</li>
+        <li><code>_apply_issue_resolutions()</code> 将 LLM 确认为 resolved 的 issue 标记为已解决，其余保持 open</li>
+        <li>重新统计 open issues：
+          <ul>
+            <li><strong>全部解决</strong> → 转入 full_check（本轮不再做 issue_verification）</li>
+            <li><strong>仍有 open</strong> → 走下一步分流</li>
+          </ul>
+        </li>
+        <li>仍有 open 时的三条路径：
+          <ul>
+            <li><code>raw_count + 1 >= 3</code>（即 feedback_loop_count 已达上限）→ <strong>forced_pass</strong>，直接结束</li>
+            <li><code>issue_verification_count >= 2</code>（连续复核两轮还没修完）→ 放弃 issue_verification，清空 open_issues，<strong>转入 full_check</strong></li>
+            <li>否则 → issue_verification_count++，调用 <code>_derive_retry_decision()</code> 决定 retry_collection 或 retry_analysis，生成 retry_queries + retry_instructions</li>
+          </ul>
+        </li>
+      </ol>
+
+      <h4 style="margin-top:1rem;">模式二：full_check（无 open issues / 强制转入）</h4>
+      <ol style="margin:0.3rem 0 0 1.2rem; font-size:0.88rem;">
+        <li><code>feedback_count = raw_count + 1</code>（本轮计入总轮数），<code>issue_verification_count = 0</code>（重置连续复核计数）</li>
+        <li>调用 <code>llm.qa_check_report()</code> 执行完整检查，返回：
+          <ul>
+            <li><code>dimension_scores</code> — 6 维度的分项得分</li>
+            <li><code>issues</code> — 本轮新发现的问题列表</li>
+            <li><code>retry_queries</code> / <code>retry_instructions</code> — 修正建议</li>
+          </ul>
+        </li>
+        <li><code>_calculate_overall_score()</code> 按权重加权：<code>overall_score = Σ(dimension_score × weight)</code>（仅用于展示和反退化判断，<strong>不参与 pass 路由决策</strong>）</li>
+        <li><code>_close_open_issues()</code> 将 checklist 中残留的 open issues 标记为 unresolved（不静默丢弃）</li>
+        <li><code>_derive_decision()</code> 决定本次 QA 结果：
+          <ul>
+            <li>先遍历 issues：若存在 dimension ∈ {evidence_grounding, coverage_gaps} 且 severity="critical" → <strong>retry_collection</strong></li>
+            <li>否则检查 <code>all(dimension_scores[dim] >= 0.7 for dim in 6个维度)</code> → <strong>pass</strong></li>
+            <li>以上都不满足 → <strong>retry_analysis</strong></li>
+          </ul>
+        </li>
+      </ol>
+
+      <h4 style="margin-top:1rem;">forced_pass 终止条件（任一触发）</h4>
+      <ul style="margin:0.3rem 0 0 1.2rem; font-size:0.88rem;">
+        <li><code>feedback_count >= 3</code> — 总反馈轮数达到上限（full_check 每轮 +1）</li>
+        <li><code>overall_score <= previous_score</code> — 本轮总分 ≤ 上一轮（防止修复后反而变差，仅 full_check 模式检查）</li>
+        <li>issue_verification 连续 2 轮无法解决 → 转入 full_check 后再触发上述条件</li>
+      </ul>
+
+      <p style="margin-top:0.8rem; font-size:0.82rem; color:var(--muted);">
+        关键设计：<strong>pass/retry 路由由 6 个维度分决定，不由 overall_score 决定。</strong>overall_score 只用于前端展示和反退化判断。issue_checklist 跨轮次追踪，确保每轮 QA 都知道"上一轮哪些问题还没修好"。
+      </p>
+
+      <p style="margin-top:0.5rem;"><strong>状态写入</strong>：qa_result, qa_issue_checklist, qa_retry_queries, qa_retry_guidance_map, qa_retry_analysis_ids, qa_report_guidance, feedback_loop_count, qa_issue_verification_count</p>`
+  },
+  'node-route': {
+    title: 'qa_route — 条件路由',
+    body: `<p>读取 state["qa_result"]["decision"]：</p>
+      <ul style="margin:0.3rem 0 0 1.2rem;">
+        <li><strong>"pass"</strong> → END（报告完成）</li>
+        <li><strong>"retry_collection"</strong> → material_collection（重新搜索资料）</li>
+        <li><strong>"retry_analysis"</strong> → structured_analysis（重新分析竞品）</li>
+      </ul>
+      <p>retry_collection 和 retry_analysis 都会携带对应的 guidance 数据，确保重试时有针对性的改进。</p>`
+  },
+  'node-end-pass': { title: 'END (pass) — 分析完成', body: '<p>QA通过（6个维度分每项 ≥ 0.7 或 forced_pass）。run.status → "completed"，run.completed_at 记录时间。报告写入 reports 表。</p>' },
+  'node-retry-col': { title: 'retry_collection — 重新采集', body: '<p>触发条件：evidence_grounding 或 coverage_gaps 维度存在 critical 级别问题。</p><p>QA 生成 retry_queries（含 competitor_name + slot + query）和 retry_guidance_map（竞品→改进建议映射）。material_collection_node 使用 _build_retry_product_queries() 构建针对性搜索。</p>' },
+  'node-retry-ana': { title: 'retry_analysis — 重新分析', body: '<p>触发条件：其他维度（citation_accuracy, schema_completeness, cross_competitor_consistency, factual_plausibility）不达标。</p><p>QA 生成 retry_guidance_map 和 retry_analysis_ids（需重分析的竞品ID）。structured_analysis_node 只重新分析受影响的竞品，未受影响的保持复用。QA feedback 注入到分析prompt的 _qa_feedback 字段。</p>' },
+
+  // ── QA DIMENSIONS ──
+  'qa-dim-eg': { title: '证据支撑度 (25%)', body: '<p>检查报告的断言是否有对应的来源/证据支撑。报告中的claims是否可追溯到具体的 source URL 和 evidence quote。</p><p>若此维度出现 critical 级别问题 → retry_collection（重新搜索资料）。</p>' },
+  'qa-dim-ca': { title: '引文准确性 (15%)', body: '<p>检查引文标注是否准确——报告中的[1][2]引用是否对应正确的来源，引文内容是否与标注来源一致。</p>' },
+  'qa-dim-sc': { title: 'Schema完整性 (20%)', body: '<p>检查每竞品是否完整覆盖了7个分析维度（定位、用户、功能、定价、优势、劣势、机会）。缺少维度视为不完整。</p>' },
+  'qa-dim-cg': { title: '覆盖缺口 (20%)', body: '<p>检查是否存在信息缺口——是否某个竞品或某维度缺少足够的来源资料或证据。</p><p>若此维度出现 critical 级别问题 → retry_collection。</p>' },
+  'qa-dim-cc': { title: '跨竞品一致性 (10%)', body: '<p>检查不同竞品的分析在深度、结构、粒度上是否一致。避免某些竞品分析过于详细而其他过于简略。</p>' },
+  'qa-dim-fp': { title: '事实合理性 (10%)', body: '<p>检查报告中的事实性陈述是否合理（不要求100%准确，因为LLM本身有局限）。主要检查是否存在明显的矛盾、幻觉或不可信的断言。</p>' },
+
+  // ── DB MODELS ──
+  'db-run': { title: 'Run — 任务主表', body: '<p>核心字段：id, title, user_requirement, requirement_summary, requirement_json, target_understanding_json, status, current_stage, error_message, feedback_loop_count。</p><p>status 状态机：created → running → waiting_for_human → running → completed/failed</p><p>关联 1:N → messages, competitors, sources, evidence_items, analyses, traces, qa_results, reports。</p>' },
+  'db-msg': { title: 'Message — 消息记录', body: '<p>字段：id, run_id(FK), role (user/system/assistant), content, metadata_json, created_at。</p><p>用于记录分析过程中的人机交互消息。</p>' },
+  'db-comp': { title: 'Competitor — 竞品', body: '<p>字段：name, website, description, category (direct/indirect/substitute/adjacent), region (global/china), confidence (0-1), selected (bool), discovery_source, relationship_type, relationship_reason, overlap_dimensions_json。</p>' },
+  'db-src': { title: 'Source — 网页来源', body: '<p>字段：title, url, snippet, source_type (17种), provider, raw_content, metadata_json（含 credibility_score, rank_score, query, dimension 等）。</p>' },
+  'db-ev': { title: 'Evidence — 结构化证据', body: '<p>字段：source_id(FK), related_product, related_dimension, quote (≤800字符), summary, confidence (0.5-0.95)。</p>' },
+  'db-ana': { title: 'Analysis — 竞品分析', body: '<p>7维度结构化数据：positioning, target_users(JSON), core_features_json, pricing_summary, strengths_json, weaknesses_json, opportunities_json, evidence_ids_json。analysis_iteration 标记第几轮分析。</p>' },
+  'db-rep': { title: 'Report — Markdown 报告', body: '<p>字段：iteration, title, markdown_content, summary。支持多版本（每次重新生成 iteration+1）。</p>' },
+  'db-qa': { title: 'QAResult — 质检结果', body: '<p>字段：iteration, overall_score, decision (pass/retry_collection/retry_analysis), check_phase (full_check/issue_verification), dimension_scores_json (6维度), issues_json, issue_checklist_json (跨轮追踪), retry_instructions, retry_queries_json。</p>' },
+  'db-trace': { title: 'AgentTrace — 节点追踪', body: '<p>字段：stage, status (running/completed/failed), input_json, output_json, error_message, started_at, ended_at, duration_ms。</p>' },
+
+  // ── FRONTEND ──
+  'fe-page-new': { title: 'NewAnalysisPage — 创建分析', body: '<p>表单输入用户需求（自由文本），调用 createRun() API。成功后跳转到 /runs/:runId 查看进度。轮询 run status 直到竞品发现完成。</p>' },
+  'fe-page-history': { title: 'HistoryPage — 历史任务', body: '<p>调用 listRuns() 获取最近50个任务。显示 title、status（带颜色标识）、created_at。点击进入详情页。</p>' },
+  'fe-page-detail': { title: 'RunDetailPage — 任务详情', body: '<p>核心页面，按 status 展示不同内容：</p><ul style="margin:0.3rem 0 0 1.2rem;"><li>waiting_for_human → CompetitorConfirmPanel（选择竞品+手动添加）</li><li>running → AgentTimeline（实时进度）</li><li>completed → 多Tab展示：Sources、Evidence、Analyses、Report、QA Results</li></ul>' },
+  'fe-page-report': { title: 'ReportPage — 报告查看', body: '<p>展示 Markdown 报告（ReportMarkdown组件）。侧栏：QASummaryBanner（总分+维度得分）、QAResultsPanel（问题列表+状态+重试query）。引文标注可点击弹出 CitationBundleView（显示引用来源和证据）。</p>' },
+
+};
+
+// ===== MODAL FUNCTIONS =====
+function openModal(key) {
+  const data = MODALS[key];
+  if (!data) return;
+  document.getElementById('modal-body').innerHTML = '<h3>' + data.title + '</h3>' + data.body;
+  document.getElementById('modal-overlay').classList.add('active');
+}
+
+function closeModal(e) {
+  if (e.target === document.getElementById('modal-overlay')) {
+    document.getElementById('modal-overlay').classList.remove('active');
+  }
+}
+
+function closeModalDirect() {
+  document.getElementById('modal-overlay').classList.remove('active');
+}
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    document.getElementById('modal-overlay').classList.remove('active');
+  }
+});
+
+// ===== TAB SWITCHING =====
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  document.querySelector('.tab[onclick="switchTab(\'' + name + '\')"]').classList.add('active');
+  document.getElementById('tab-' + name).classList.add('active');
+}
+</script>
+
+</body>
+</html>
