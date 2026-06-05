@@ -384,8 +384,8 @@ JSON schema:
     ) -> dict[str, Any]:
         fallback = self.fallback.qa_check_report(report, analyses, evidence, sources)
         analyses_summary = "\n".join(
-            f"- 竞品={a.get('competitor_name', '')}；定位={a.get('positioning', '')[:100]}；"
-            f"定价={a.get('pricing_summary', '')[:80]}；证据数={len(_json_list(a.get('evidence_ids_json')))}"
+            f"- 竞品={a.get('competitor_name', '')}；定位={a.get('positioning', '')}；"
+            f"定价={a.get('pricing_summary', '')}；证据数={len(_json_list(a.get('evidence_ids_json')))}"
             for a in analyses
         )
         evidence_summary = "\n".join(
@@ -397,11 +397,11 @@ JSON schema:
             f"- [{s.get('reference_id', '')}] {s.get('title', '')[:60]} ({s.get('source_type', '')})"
             for s in sources[:20]
         )
-        report_content = report.get("markdown_content", "")[:4000]
+        report_content = report.get("markdown_content", "")
         prompt = f"""
 你是竞品分析系统的质检 Agent。请对以下报告和支撑数据进行多维度质量检查。
 
-## 报告内容（截取前4000字符）
+## 报告内容
 {report_content}
 
 ## 分析摘要
@@ -455,12 +455,16 @@ JSON schema:
     {{
       "dimension": "维度名",
       "severity": "critical | major | minor",
-      "competitor_name": "相关竞品名或 report",
+      "competitor_name": "单个竞品名，或 report，或 system。严禁填入多个竞品名（如\"A、B\"或\"全部竞品\"）",
       "description": "问题描述",
       "fix_suggestion": "修复建议"
     }}
   ]
 }}
+
+【issues 生成规则】
+- 每条 issue 必须对应且只对应一个竞品。如果一个问题同时影响多个竞品（如\"A 和 B 都缺少用户评价\"），必须拆成多条独立的 issue，每条只关联一个竞品
+- 对于 cross_competitor_consistency 类问题，每条 issue 只需列出受影响的一方（如\"A 的分析深度高于 B\"，应拆为一条针对 A 的 issue 和一条针对 B 的 issue）
 
 【retry_queries 生成规则】
 - 仅当 decision 非 "pass" 时填写

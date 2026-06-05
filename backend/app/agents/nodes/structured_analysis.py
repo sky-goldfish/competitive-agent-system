@@ -11,8 +11,8 @@ def structured_analysis_node(state: AgentState, llm: LLMProvider) -> AgentState:
     evidence = state["evidence"]
     existing_analyses = state.get("analyses", [])
     retry_ids = state.get("qa_retry_analysis_ids")
-    qa_retry_guidance = state.get("qa_retry_guidance")
     retry_queries = state.get("qa_retry_queries")
+    qa_retry_guidance_map = state.get("qa_retry_guidance_map")
 
     affected_ids = set(retry_ids or [])
     if not affected_ids and retry_queries:
@@ -30,8 +30,9 @@ def structured_analysis_node(state: AgentState, llm: LLMProvider) -> AgentState:
     def analyze_one(competitor: dict) -> dict:
         competitor_evidence = [item for item in evidence if item["competitor_id"] == competitor["id"]]
         comp = competitor
-        if qa_retry_guidance and (retry_ids or retry_queries):
-            comp = {**competitor, "_qa_feedback": qa_retry_guidance}
+        feedback = (qa_retry_guidance_map or {}).get(competitor["name"])
+        if feedback and (retry_ids or retry_queries):
+            comp = {**competitor, "_qa_feedback": feedback}
         analysis = llm.analyze_competitor(comp, competitor_evidence)
         analysis["id"] = new_id("ana")
         analysis["analysis_iteration"] = state.get("feedback_loop_count", 0)

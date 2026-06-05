@@ -6,7 +6,7 @@ type Props = {
 };
 
 export default function CitationBundleView({ bundle }: Props) {
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(bundle.map((c) => c.competitor_id)));
   const [activeClaim, setActiveClaim] = useState<{ competitor: string; claim: CitationBundleClaim } | null>(null);
 
   function toggle(competitorId: string) {

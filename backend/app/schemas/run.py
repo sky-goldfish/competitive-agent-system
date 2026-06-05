@@ -25,6 +25,7 @@ class RunResponse(BaseModel):
     status: str
     current_stage: str
     error_message: str | None = None
+    feedback_loop_count: int = 0
     created_at: datetime
     updated_at: datetime
     completed_at: datetime | None = None

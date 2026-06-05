@@ -112,16 +112,16 @@ export default function RunDetailPage() {
   const timelineQuery = useQuery({ queryKey: ['timeline', id], queryFn: () => getTimeline(id), enabled: Boolean(id), refetchInterval: isActive ? 3000 : false });
   const sourcesQuery = useQuery({ queryKey: ['sources', id], queryFn: () => getSources(id), enabled: Boolean(id), refetchInterval: isActive ? 5000 : false });
   const evidenceQuery = useQuery({ queryKey: ['evidence', id], queryFn: () => getEvidence(id), enabled: Boolean(id), refetchInterval: isActive ? 5000 : false });
-  const hasReport = run?.status === 'completed' || run?.current_stage === 'report_generation' || run?.current_stage === 'quality_check';
-  const reportQuery = useQuery({ queryKey: ['report', id, selectedIteration], queryFn: () => getReport(id, selectedIteration), enabled: Boolean(id) && Boolean(hasReport) });
-  const reportVersionsQuery = useQuery({ queryKey: ['report-versions', id], queryFn: () => getReportVersions(id), enabled: Boolean(id) && Boolean(hasReport) });
+  const hasReport = run?.status === 'completed' || run?.current_stage === 'report_generation' || run?.current_stage === 'quality_check' || (run?.feedback_loop_count ?? 0) > 0;
+  const reportQuery = useQuery({ queryKey: ['report', id, selectedIteration], queryFn: () => getReport(id, selectedIteration), enabled: Boolean(id) && Boolean(hasReport), refetchInterval: isActive ? 3000 : false });
+  const reportVersionsQuery = useQuery({ queryKey: ['report-versions', id], queryFn: () => getReportVersions(id), enabled: Boolean(id) && Boolean(hasReport), refetchInterval: isActive ? 3000 : false });
   const displayedReportIteration = reportQuery.data?.iteration;
   const citationsQuery = useQuery({
     queryKey: ['report-citations', id, displayedReportIteration],
     queryFn: () => getReportCitations(id, displayedReportIteration),
     enabled: Boolean(id) && displayedReportIteration != null,
   });
-  const hasAnalyses = run?.current_stage === 'structured_analysis' || run?.current_stage === 'report_generation' || run?.current_stage === 'quality_check' || run?.current_stage === 'completed' || run?.status === 'completed';
+  const hasAnalyses = run?.current_stage === 'structured_analysis' || run?.current_stage === 'report_generation' || run?.current_stage === 'quality_check' || run?.current_stage === 'completed' || run?.status === 'completed' || run?.current_stage === 'material_collection';
   const citationBundleQuery = useQuery({
     queryKey: ['citation-bundle', id],
     queryFn: () => getReportCitationBundle(id),

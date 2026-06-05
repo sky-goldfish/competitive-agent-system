@@ -6,6 +6,7 @@ export type Run = {
   status: string;
   current_stage: string;
   error_message: string | null;
+  feedback_loop_count: number;
   created_at: string;
   updated_at: string;
   completed_at: string | null;

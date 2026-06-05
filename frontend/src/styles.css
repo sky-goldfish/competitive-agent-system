@@ -1489,7 +1489,8 @@ button:disabled {
 
 .report-document {
   max-width: 880px;
-  padding: 22px 28px 60px;
+  margin: 0 auto;
+  padding: 11px 14px 30px;
 }
 
 .report-document h1 {
@@ -1782,7 +1783,6 @@ button:disabled {
 .qa-results-panel {
   display: grid;
   gap: 0;
-  padding: 12px 16px;
 }
 
 .qa-empty {

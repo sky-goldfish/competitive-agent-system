@@ -6,7 +6,7 @@ from app.providers.llm.base import LLMProvider
 
 logger = logging.getLogger(__name__)
 
-MAX_FEEDBACK_LOOPS = 2
+MAX_FEEDBACK_LOOPS = 3
 QA_PASS_THRESHOLD = 0.7
 
 COLLECTION_DIMENSIONS = {"evidence_grounding", "coverage_gaps"}
@@ -44,12 +44,12 @@ def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
         decision = "pass"
         logger.info("QA: forcing pass — score did not improve (%.2f <= %.2f)", overall_score, previous_score)
 
-    retry_guidance = None
+    retry_guidance_map = None
     retry_queries = None
     retry_analysis_ids = None
     if decision == "retry_collection":
         retry_queries = qa_raw.get("retry_queries") or []
-        retry_guidance = qa_raw.get("retry_instructions") or _build_collection_retry_guidance(issues)
+        retry_guidance_map = _build_retry_guidance_map(issues, qa_raw.get("retry_instructions"))
     elif decision == "retry_analysis":
         retry_analysis_ids = _identify_retry_analyses(issues, state.get("analyses", []))
 
@@ -73,8 +73,8 @@ def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
         "qa_result": qa_result,
         "feedback_loop_count": feedback_count,
     }
-    if retry_guidance is not None:
-        new_state["qa_retry_guidance"] = retry_guidance
+    if retry_guidance_map is not None:
+        new_state["qa_retry_guidance_map"] = retry_guidance_map
     if retry_queries is not None:
         new_state["qa_retry_queries"] = retry_queries
     if retry_analysis_ids is not None:
@@ -101,15 +101,18 @@ def _infer_decision(issues: list[dict[str, Any]]) -> str:
     return "retry_analysis"
 
 
-def _build_collection_retry_guidance(issues: list[dict[str, Any]]) -> str:
-    guidance_parts = []
+def _build_retry_guidance_map(issues: list[dict[str, Any]], retry_instructions: str | None) -> dict[str, str]:
+    result: dict[str, str] = {}
     for issue in issues:
-        if issue.get("dimension") in COLLECTION_DIMENSIONS:
-            competitor = issue.get("competitor_name", "")
-            suggestion = issue.get("fix_suggestion", "")
-            if competitor and suggestion:
-                guidance_parts.append(f"{competitor}: {suggestion}")
-    return "; ".join(guidance_parts) if guidance_parts else "补充采集缺失维度的证据"
+        name = issue.get("competitor_name", "")
+        suggestion = issue.get("fix_suggestion", "")
+        if name and name not in {"report", "system"} and suggestion:
+            result.setdefault(name, "")
+            result[name] += f"- {suggestion}\n"
+    if retry_instructions:
+        for name in set(result.keys()):
+            result[name] = f"{retry_instructions}\n{result[name]}"
+    return result
 
 
 def _identify_retry_analyses(issues: list[dict[str, Any]], analyses: list[dict[str, Any]]) -> list[str]:
