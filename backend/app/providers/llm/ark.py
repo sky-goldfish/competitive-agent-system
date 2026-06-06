@@ -36,14 +36,18 @@ def _parse_source_metadata(source: dict[str, Any]) -> dict[str, Any]:
     return metadata
 
 
-def _source_report_summary(source: dict[str, Any], reference_id: int | None = None) -> dict[str, Any]:
+def _source_report_summary(
+    source: dict[str, Any], reference_id: int | None = None
+) -> dict[str, Any]:
     metadata = _parse_source_metadata(source)
     summary = {
         "title": str(source.get("title", ""))[:80],
         "url": source.get("url", ""),
         "source_type": source.get("source_type", ""),
         "source_type_label": metadata.get("source_type_label"),
-        "credibility_score": metadata.get("credibility_score", source.get("credibility_score", 0)),
+        "credibility_score": metadata.get(
+            "credibility_score", source.get("credibility_score", 0)
+        ),
         "rank_score": metadata.get("rank_score", source.get("rank_score", 0)),
         "dimension": metadata.get("dimension"),
         "query": metadata.get("query"),
@@ -54,7 +58,9 @@ def _source_report_summary(source: dict[str, Any], reference_id: int | None = No
     return summary
 
 
-def _format_reference_section(sources: list[dict[str, Any]], cited_ids: set[int] | None = None) -> str:
+def _format_reference_section(
+    sources: list[dict[str, Any]], cited_ids: set[int] | None = None
+) -> str:
     if not sources:
         return ""
     lines = ["## 参考来源", ""]
@@ -65,20 +71,38 @@ def _format_reference_section(sources: list[dict[str, Any]], cited_ids: set[int]
         if cited_ids is not None and reference_id not in cited_ids:
             continue
         summary = _source_report_summary(source, reference_id)
-        title = str(summary.get("title") or f"来源 {reference_id}").replace("\n", " ").strip()
+        title = (
+            str(summary.get("title") or f"来源 {reference_id}")
+            .replace("\n", " ")
+            .strip()
+        )
         url = str(summary.get("url") or "").strip()
-        source_label = summary.get("source_type_label") or summary.get("source_type") or "来源"
+        source_label = (
+            summary.get("source_type_label") or summary.get("source_type") or "来源"
+        )
         credibility = summary.get("credibility_score")
-        weight_text = f"，权重 {float(credibility):.2f}" if isinstance(credibility, int | float) else ""
+        weight_text = (
+            f"，权重 {float(credibility):.2f}"
+            if isinstance(credibility, int | float)
+            else ""
+        )
         if url:
-            lines.append(f"{reference_id}. [[{reference_id}]]({url}) [{title}]({url}) - {source_label}{weight_text}")
+            lines.append(
+                f"{reference_id}. [[{reference_id}]]({url}) [{title}]({url}) - {source_label}{weight_text}"
+            )
         else:
-            lines.append(f"{reference_id}. [{reference_id}] {title} - {source_label}{weight_text}")
+            lines.append(
+                f"{reference_id}. [{reference_id}] {title} - {source_label}{weight_text}"
+            )
     return "\n".join(lines)
 
 
-def _normalize_inline_citations(markdown_content: str, max_reference_id: int | None = None) -> str:
-    normalized = re.sub(r"(?<!\[)\[(\d{1,2})\]\((https?://[^)\s]+)\)", r"[[\1]](\2)", markdown_content)
+def _normalize_inline_citations(
+    markdown_content: str, max_reference_id: int | None = None
+) -> str:
+    normalized = re.sub(
+        r"(?<!\[)\[(\d{1,2})\]\((https?://[^)\s]+)\)", r"[[\1]](\2)", markdown_content
+    )
     if max_reference_id is None:
         return normalized
 
@@ -88,18 +112,37 @@ def _normalize_inline_citations(markdown_content: str, max_reference_id: int | N
             return match.group(0)
         return ""
 
-    return re.sub(r"\[\[(\d{1,2})\]\]\((https?://[^)\s]+)\)", keep_known_reference, normalized)
+    return re.sub(
+        r"\[\[(\d{1,2})\]\]\((https?://[^)\s]+)\)", keep_known_reference, normalized
+    )
 
 
-def _ensure_reference_section(markdown_content: str, sources: list[dict[str, Any]]) -> str:
+def _ensure_reference_section(
+    markdown_content: str, sources: list[dict[str, Any]]
+) -> str:
     stripped = markdown_content.strip()
-    body_only = re.sub(r"\n*##\s*(?:(?:\d+|[一二三四五六七八九十]+)[\.、]\s*)?(?:参考来源|参考文献|References)\s*\n[\s\S]*$", "", stripped).strip()
+    body_only = re.sub(
+        r"\n*##\s*(?:(?:\d+|[一二三四五六七八九十]+)[\.、]\s*)?(?:参考来源|参考文献|References)\s*\n[\s\S]*$",
+        "",
+        stripped,
+    ).strip()
     cited_ids = {int(m) for m in re.findall(r"\[\[(\d+)\]\]", body_only)}
-    reference_section = _format_reference_section(sources, cited_ids if cited_ids else None)
-    max_reference_id = max((s.get("reference_id", 0) for s in sources if isinstance(s.get("reference_id"), int)), default=0)
+    reference_section = _format_reference_section(
+        sources, cited_ids if cited_ids else None
+    )
+    max_reference_id = max(
+        (
+            s.get("reference_id", 0)
+            for s in sources
+            if isinstance(s.get("reference_id"), int)
+        ),
+        default=0,
+    )
     if not reference_section:
         return _normalize_inline_citations(stripped)
-    normalized = _normalize_inline_citations(stripped, max_reference_id=max_reference_id)
+    normalized = _normalize_inline_citations(
+        stripped, max_reference_id=max_reference_id
+    )
     pattern = r"\n*##\s*(?:(?:\d+|[一二三四五六七八九十]+)[\.、]\s*)?(?:参考来源|参考文献|References)\s*\n[\s\S]*$"
     if re.search(pattern, normalized):
         return re.sub(pattern, f"\n\n{reference_section}", normalized).strip()
@@ -114,7 +157,9 @@ class ArkLLMProvider:
         if not settings.ark_api_key:
             raise ValueError("ARK_API_KEY is required when LLM_PROVIDER=ark.")
         self.model = settings.ark_endpoint_id or settings.ark_model
-        self.client = OpenAI(api_key=settings.ark_api_key, base_url=settings.ark_base_url)
+        self.client = OpenAI(
+            api_key=settings.ark_api_key, base_url=settings.ark_base_url
+        )
         self.temperature: float | None = 0.2
         self.fallback = MockLLMProvider()
 
@@ -160,7 +205,9 @@ JSON schema:
 """
         return self._json_chat(prompt, fallback)
 
-    def extract_focus_profile(self, user_requirement: str, requirement: dict[str, Any]) -> dict[str, Any]:
+    def extract_focus_profile(
+        self, user_requirement: str, requirement: dict[str, Any]
+    ) -> dict[str, Any]:
         fallback = self.fallback.extract_focus_profile(user_requirement, requirement)
         prompt = f"""
 你是竞品分析系统的个性化关注点识别 Agent。请根据用户原始输入和已结构化需求，判断报告是否需要围绕特定侧重点展开。
@@ -209,7 +256,9 @@ JSON schema:
 """
         return self._json_chat(prompt, fallback)
 
-    def understand_target(self, requirement: dict[str, Any], target_search_results: list[dict[str, Any]]) -> dict[str, Any]:
+    def understand_target(
+        self, requirement: dict[str, Any], target_search_results: list[dict[str, Any]]
+    ) -> dict[str, Any]:
         fallback = self.fallback.understand_target(requirement, target_search_results)
         prompt = f"""
 你是竞品分析系统中的目标理解 Agent。请基于需求理解和目标搜索结果，先形成目标对象画像，不要直接推荐竞品。
@@ -249,7 +298,9 @@ JSON schema:
         target_understanding: dict[str, Any],
         search_results: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        fallback = self.fallback.extract_competitors(requirement, target_understanding, search_results)
+        fallback = self.fallback.extract_competitors(
+            requirement, target_understanding, search_results
+        )
         prompt = f"""
 你是竞品发现 Agent。请从真实搜索结果中提取与目标对象同赛道的具体产品/品牌/服务名称。
 
@@ -315,14 +366,37 @@ JSON schema:
                 {
                     "name": str(item.get("name", ""))[:80],
                     "website": item.get("website"),
-                    "description": str(item.get("description") or "由真实搜索结果和大模型提取的候选竞品。")[:500],
-                    "category": item.get("category") if item.get("category") in {"direct_competitor", "indirect_competitor", "substitute_solution", "adjacent_product"} else "direct_competitor",
+                    "description": str(
+                        item.get("description")
+                        or "由真实搜索结果和大模型提取的候选竞品。"
+                    )[:500],
+                    "category": item.get("category")
+                    if item.get("category")
+                    in {
+                        "direct_competitor",
+                        "indirect_competitor",
+                        "substitute_solution",
+                        "adjacent_product",
+                    }
+                    else "direct_competitor",
                     "region": region,
-                    "reason": str(item.get("reason") or item.get("description") or "基于目标对象理解和搜索结果推荐。")[:500],
-                    "matched_dimensions": item.get("matched_dimensions") if isinstance(item.get("matched_dimensions"), list) else [],
-                    "source_ids": item.get("source_ids") if isinstance(item.get("source_ids"), list) else [],
-                    "evidence_ids": item.get("evidence_ids") if isinstance(item.get("evidence_ids"), list) else [],
-                    "selected_by_default": bool(item.get("selected_by_default", len(cleaned) < 3)),
+                    "reason": str(
+                        item.get("reason")
+                        or item.get("description")
+                        or "基于目标对象理解和搜索结果推荐。"
+                    )[:500],
+                    "matched_dimensions": item.get("matched_dimensions")
+                    if isinstance(item.get("matched_dimensions"), list)
+                    else [],
+                    "source_ids": item.get("source_ids")
+                    if isinstance(item.get("source_ids"), list)
+                    else [],
+                    "evidence_ids": item.get("evidence_ids")
+                    if isinstance(item.get("evidence_ids"), list)
+                    else [],
+                    "selected_by_default": bool(
+                        item.get("selected_by_default", len(cleaned) < 3)
+                    ),
                     "confidence": _safe_confidence(item.get("confidence")),
                     "discovery_source": f"{self.name}+search",
                 }
@@ -335,7 +409,9 @@ JSON schema:
                 break
         return cleaned or fallback
 
-    def analyze_competitor(self, competitor: dict[str, Any], evidence: list[dict[str, Any]]) -> dict[str, Any]:
+    def analyze_competitor(
+        self, competitor: dict[str, Any], evidence: list[dict[str, Any]]
+    ) -> dict[str, Any]:
         fallback = self.fallback.analyze_competitor(competitor, evidence)
         evidence_summary = "\n".join(
             f"- evidence_id={e.get('id', '')}；维度={e.get('related_dimension', '未知')}；"
@@ -343,7 +419,11 @@ JSON schema:
             f"来源={e.get('source_url', '')}；摘要={e.get('summary', '')[:300]}"
             for e in evidence[:12]
         )
-        focus_schema = competitor.get("_focus_schema") if isinstance(competitor.get("_focus_schema"), list) else []
+        focus_schema = (
+            competitor.get("_focus_schema")
+            if isinstance(competitor.get("_focus_schema"), list)
+            else []
+        )
         focus_schema_section = ""
         if focus_schema:
             focus_schema_section = f"""
@@ -367,8 +447,8 @@ JSON schema:
 你是竞品分析师 Agent。请仔细阅读以下证据材料，基于证据中的真实信息对竞品进行分析。
 不要编造证据中没有的信息。如果某个字段在证据中没有找到相关内容，请如实写"证据中未涉及"。
 
-竞品名称：{competitor.get('name', '')}
-竞品描述：{competitor.get('description', '')[:300]}
+竞品名称：{competitor.get("name", "")}
+竞品描述：{competitor.get("description", "")[:300]}
 
 已采集证据（请基于这些内容分析）：
 {evidence_summary}
@@ -405,14 +485,27 @@ JSON schema:
 }}
 """
         result = self._json_chat(prompt, fallback)
-        for key in ["target_users", "core_features_json", "strengths_json", "weaknesses_json", "opportunities_json", "evidence_ids_json", "custom_focus_analysis_json"]:
+        for key in [
+            "target_users",
+            "core_features_json",
+            "strengths_json",
+            "weaknesses_json",
+            "opportunities_json",
+            "evidence_ids_json",
+            "custom_focus_analysis_json",
+        ]:
             if isinstance(result.get(key), list):
                 result[key] = json.dumps(result[key], ensure_ascii=False)
         if result is fallback:
             return fallback
         return result
 
-    def generate_report(self, run: dict[str, Any], analyses: list[dict[str, Any]], sources: list[dict[str, Any]]) -> dict[str, str]:
+    def generate_report(
+        self,
+        run: dict[str, Any],
+        analyses: list[dict[str, Any]],
+        sources: list[dict[str, Any]],
+    ) -> dict[str, str]:
         fallback = self.fallback.generate_report(run, analyses, sources)
         citation_bundle = json.dumps(run.get("citation_bundle", []), ensure_ascii=False)
         qa_guidance = run.get("qa_report_guidance")
@@ -428,7 +521,7 @@ JSON schema:
         prompt = f"""
 你是报告撰写 Agent。请基于以下 citation_bundle 生成一份专业的中文 Markdown 竞品分析报告。
 
-用户需求：{run.get('user_requirement', '')}
+用户需求：{run.get("user_requirement", "")}
 citation_bundle：{citation_bundle}{qa_guidance_section}
 
 报告要求：
@@ -453,7 +546,9 @@ JSON schema:
         result = self._json_chat(prompt, fallback)
         if result is fallback:
             return fallback
-        result["markdown_content"] = _ensure_reference_section(result.get("markdown_content", ""), sources)
+        result["markdown_content"] = _ensure_reference_section(
+            result.get("markdown_content", ""), sources
+        )
         return result
 
     def qa_check_report(
@@ -554,7 +649,9 @@ JSON schema:
         evidence: list[dict[str, Any]],
         open_issues: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        fallback = self.fallback.qa_verify_issues(report, analyses, evidence, open_issues)
+        fallback = self.fallback.qa_verify_issues(
+            report, analyses, evidence, open_issues
+        )
         issues_json = json.dumps(open_issues, ensure_ascii=False)
         analyses_summary = "\n".join(
             f"- 竞品={a.get('competitor_name', '')}；定位={a.get('positioning', '')}；"
@@ -573,7 +670,7 @@ JSON schema:
 {issues_json}
 
 ## 报告内容
-{report.get('markdown_content', '')}
+{report.get("markdown_content", "")}
 
 ## 分析摘要
 {analyses_summary}
@@ -614,12 +711,31 @@ JSON schema:
             result["resolutions"] = []
         return result
 
+    def _chat(self, prompt: str) -> str | None:
+        try:
+            request: dict[str, Any] = {
+                "model": self.model,
+                "messages": [
+                    {"role": "user", "content": prompt},
+                ],
+            }
+            if self.temperature is not None:
+                request["temperature"] = self.temperature
+            response = self.client.chat.completions.create(**request)
+            return (response.choices[0].message.content or "").strip() or None
+        except Exception:
+            logger.exception("LLM chat call failed")
+            return None
+
     def _json_chat(self, prompt: str, fallback: dict[str, Any]) -> dict[str, Any]:
         try:
             request: dict[str, Any] = {
                 "model": self.model,
                 "messages": [
-                    {"role": "system", "content": "你是严谨的竞品分析多 Agent 系统。必须只输出纯 JSON，不要包含 ```json 代码块标记，不要输出任何解释文字。"},
+                    {
+                        "role": "system",
+                        "content": "你是严谨的竞品分析多 Agent 系统。必须只输出纯 JSON，不要包含 ```json 代码块标记，不要输出任何解释文字。",
+                    },
                     {"role": "user", "content": prompt},
                 ],
             }
@@ -640,11 +756,303 @@ JSON schema:
                 return fallback
             return parsed
         except json.JSONDecodeError:
-            logger.warning("LLM returned invalid JSON: %s", content[:200] if content else "empty")
+            logger.warning(
+                "LLM returned invalid JSON: %s", content[:200] if content else "empty"
+            )
             return fallback
         except Exception:
             logger.exception("LLM API call failed, using fallback")
             return fallback
+
+    def classify_chat_intent(
+        self,
+        user_message: str,
+        report_summary: str,
+        chat_history: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        history_text = "\n".join(
+            f"{msg['role']}: {msg['content'][:200]}" for msg in chat_history[-6:]
+        )
+        prompt = f"""判断用户的消息意图，决定是"小幅修改报告"还是"需要重新调研后重做报告"。
+
+当前报告摘要：{report_summary[:500]}
+
+对话历史：
+{history_text or "（无历史）"}
+
+用户最新消息：{user_message}
+
+判断规则：
+- report_edit: 用户要求修改报告细节、措辞、格式、增加/删除某些内容，不涉及新数据采集
+- report_redo: 用户认为报告方向不对、信息不准确、需要新的调研数据、或者对核心结论不满意
+
+输出严格 JSON：
+{{
+  "intent": "report_edit | report_redo",
+  "reason": "判断理由"
+}}"""
+        result = self._json_chat(prompt, {"intent": "report_edit", "reason": "默认"})
+        return result
+
+    def edit_report_markdown(
+        self,
+        report_markdown: str,
+        user_message: str,
+        context: str,
+    ) -> str:
+        prompt = f"""根据用户反馈修改以下竞品分析报告。
+
+报告内容：
+{report_markdown[:8000]}
+
+上下文信息（竞品分析数据摘要）：
+{context[:2000]}
+
+用户修改要求：{user_message}
+
+请直接输出修改后的完整 Markdown 报告。保持报告结构化格式，确保修改后的报告逻辑连贯、数据准确。
+只修改用户要求的部分，其余内容保持不变。
+【重要】必须保留原报告正文里的 `[[数字]](URL)` 引用标记；除非删除对应结论，否则不得移除引用。"""
+        result = self._chat(prompt)
+        return result if result else report_markdown
+
+    def generate_chat_queries(
+        self,
+        user_message: str,
+        report_summary: str,
+        existing_competitors: list[str],
+    ) -> dict[str, Any]:
+        competitors_text = (
+            "、".join(existing_competitors[:6]) if existing_competitors else "（无）"
+        )
+        prompt = f"""用户对当前竞品分析报告不满意，需要重新调研。请生成新的搜索查询。
+
+报告摘要：{report_summary[:500]}
+
+已有竞品：{competitors_text}
+
+用户反馈：{user_message}
+
+请为每个竞品生成 1-2 个针对性的搜索 query，重点关注用户反馈中提到的方向。输出严格 JSON：
+{{
+  "retry_queries": [
+    {{"competitor_name": "竞品名", "slot": "core_features|pricing|user_feedback|positioning|market_signal", "query": "搜索query"}}
+  ],
+  "retry_instructions": "给分析阶段的指导说明",
+  "additional_guidance": "额外的搜索方向建议"
+}}"""
+        result = self._json_chat(
+            prompt,
+            {
+                "retry_queries": [],
+                "retry_instructions": user_message,
+                "additional_guidance": "",
+            },
+        )
+        return result
+
+    def classify_revision_intent(
+        self,
+        user_message: str,
+        current_report: dict[str, Any],
+        chat_history: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        history_text = "\n".join(
+            f"{msg['role']}: {msg['content'][:200]}" for msg in chat_history[-6:]
+        )
+        prompt = f"""你是竞品分析报告的二轮修订调度 Agent。请判断用户反馈应该如何处理。
+
+当前报告标题：{current_report.get("title", "")}
+当前报告摘要：{current_report.get("summary", "")}
+对话历史：
+{history_text or "（无）"}
+
+用户最新反馈：{user_message}
+
+判断标准：
+- report_edit：只涉及措辞、格式、语气、删除/合并段落、在已有证据内补写，不需要新资料。
+- research_required：涉及事实准确性、竞品是否选错、产品定位/目标用户/价格/功能是否不对、证据不足、需要补充公开资料或重新核实。
+- 不确定时选择 research_required，因为竞品分析强调可信度和溯源。
+
+输出严格 JSON：
+{{
+  "intent": "report_edit | research_required",
+  "need_search": true,
+  "confidence": 0.0,
+  "reason": "判断理由",
+  "affected_sections": ["章节或维度"],
+  "affected_competitors": ["竞品名"],
+  "user_goal": "用户真正想解决的问题"
+}}"""
+        return self._json_chat(
+            prompt,
+            {
+                "intent": "report_edit",
+                "need_search": False,
+                "confidence": 0.5,
+                "reason": "默认按报告编辑处理",
+                "affected_sections": [],
+                "affected_competitors": [],
+                "user_goal": user_message,
+            },
+        )
+
+    def generate_revision_search_plan(
+        self,
+        user_message: str,
+        current_report: dict[str, Any],
+        competitors: list[dict[str, Any]],
+        existing_sources: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        competitors_text = "\n".join(
+            f"- {c.get('name', '')}: {c.get('description', '')}"
+            for c in competitors[:8]
+        )
+        source_text = "\n".join(
+            f"- [{s.get('reference_id', '?')}] {s.get('title', '')}: {s.get('snippet', '')[:120]}"
+            for s in existing_sources[:20]
+        )
+        prompt = f"""用户反馈需要补充调研。请生成有针对性的搜索计划。
+
+用户反馈：{user_message}
+当前报告摘要：{current_report.get("summary", "")}
+已有竞品：
+{competitors_text or "（无）"}
+已有来源摘要：
+{source_text or "（无）"}
+
+要求：
+1. 查询要能验证用户指出的问题，不要泛泛搜索。
+2. 优先覆盖官网/文档/定价页/第三方评测/用户评价。
+3. 每个 query 保持可直接搜索。
+
+输出严格 JSON：
+{{
+  "search_plan": [
+    {{
+      "competitor_name": "竞品名或目标对象",
+      "purpose": "为什么搜",
+      "queries": ["query1", "query2"],
+      "expected_evidence": "期望拿到的证据"
+    }}
+  ],
+  "plan_summary": "一句话说明搜索计划"
+}}"""
+        return self._json_chat(prompt, {"search_plan": [], "plan_summary": "补充调研"})
+
+    def generate_revision_plan(
+        self,
+        user_message: str,
+        current_report: dict[str, Any],
+        analyses: list[dict[str, Any]],
+        evidence: list[dict[str, Any]],
+        new_sources: list[dict[str, Any]],
+        intent_result: dict[str, Any],
+    ) -> dict[str, Any]:
+        new_source_text = "\n".join(
+            f"- [{s.get('reference_id', '?')}] {s.get('title', '')}: {s.get('snippet', '')[:180]}"
+            for s in new_sources[:20]
+        )
+        analysis_text = "\n".join(
+            f"- {a.get('competitor_name', '')}: 定位={a.get('positioning', '')[:120]}；价格={a.get('pricing_summary', '')[:80]}"
+            for a in analyses[:10]
+        )
+        prompt = f"""你是竞品分析报告修订规划 Agent。请基于用户反馈、当前报告、已有分析和新资料，先制定修订计划，不要直接写报告。
+
+用户反馈：{user_message}
+意图判断：{json.dumps(intent_result, ensure_ascii=False)}
+当前报告：
+{current_report.get("markdown_content", "")[:5000]}
+
+已有结构化分析摘要：
+{analysis_text or "（无）"}
+
+本轮新增资料：
+{new_source_text or "（无新增资料）"}
+
+请分析：
+1. 报告结构要不要改。
+2. 哪些章节要改，为什么改。
+3. 具体怎么改。
+4. 哪些新增/修改结论必须带正文引用。
+
+输出严格 JSON：
+{{
+  "revision_type": "minor | section_rewrite | structural_change",
+  "structure_change_needed": true,
+  "structure_change_reason": "原因",
+  "sections_to_change": [
+    {{"section": "章节名", "change_type": "rewrite|add|delete|reorder|keep", "reason": "原因", "new_direction": "具体修改方向"}}
+  ],
+  "citation_requirements": [
+    {{"claim": "需要引用支撑的结论", "must_cite_sources": [1, 2]}}
+  ],
+  "final_edit_instruction": "给报告撰写 Agent 的详细修改指令"
+}}"""
+        return self._json_chat(
+            prompt,
+            {
+                "revision_type": "minor",
+                "structure_change_needed": False,
+                "structure_change_reason": "默认局部修改",
+                "sections_to_change": [],
+                "citation_requirements": [],
+                "final_edit_instruction": user_message,
+            },
+        )
+
+    def revise_report_with_plan(
+        self,
+        current_report: dict[str, Any],
+        revision_plan: dict[str, Any],
+        citation_bundle: list[dict[str, Any]],
+        sources: list[dict[str, Any]],
+    ) -> dict[str, str]:
+        fallback = {
+            "title": current_report.get("title", "竞品分析报告"),
+            "summary": current_report.get("summary", "已根据反馈更新报告。"),
+            "markdown_content": current_report.get("markdown_content", ""),
+        }
+        prompt = f"""你是报告撰写 Agent。请严格根据修订计划改写当前 Markdown 报告。
+
+当前报告：
+{current_report.get("markdown_content", "")[:9000]}
+
+修订计划：
+{json.dumps(revision_plan, ensure_ascii=False)}
+
+citation_bundle：
+{json.dumps(citation_bundle, ensure_ascii=False)[:8000]}
+
+要求：
+1. 结构需要改就改；不需要改则只局部改。
+2. 每个新增或修改后的事实性结论必须就近引用，格式必须是 `[[数字]](URL)`。
+3. 不要减少原有有效引用；保留仍然成立的旧引用。
+4. 如果 citation_bundle 里没有证据，写“证据中未涉及”，不要编造。
+5. 不要自行生成参考来源部分，系统会自动补充。
+
+输出严格 JSON：
+{{"title": "标题", "summary": "摘要", "markdown_content": "完整 Markdown 报告"}}"""
+        result = self._json_chat(prompt, fallback)
+        result["markdown_content"] = _ensure_reference_section(
+            result.get("markdown_content", ""), sources
+        )
+        return result
+
+    def generate_revision_summary(
+        self,
+        user_message: str,
+        revision_plan: dict[str, Any],
+        new_report: dict[str, Any],
+    ) -> str:
+        prompt = f"""请为用户生成一段简短的报告修订总结，说明这次改了什么。不要超过 80 字。
+
+用户反馈：{user_message}
+修订计划：{json.dumps(revision_plan, ensure_ascii=False)}
+新报告摘要：{new_report.get("summary", "")}
+
+只输出总结文本，不要 Markdown。"""
+        return self._chat(prompt) or "已根据你的反馈更新报告，并生成新的报告版本。"
 
 
 def _json_list(value: Any) -> list[str]:

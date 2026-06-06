@@ -1,7 +1,17 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import analyses, competitors, health, qa, reports, runs, sources, timeline
+from app.api.routes import (
+    analyses,
+    chat,
+    competitors,
+    health,
+    qa,
+    reports,
+    runs,
+    sources,
+    timeline,
+)
 from app.core.config import get_settings
 from app.db.session import init_db
 
@@ -31,3 +41,4 @@ app.include_router(timeline.router, prefix="/api")
 app.include_router(sources.router, prefix="/api")
 app.include_router(reports.router, prefix="/api")
 app.include_router(qa.router, prefix="/api")
+app.include_router(chat.router, prefix="/api")

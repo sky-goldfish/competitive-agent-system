@@ -172,6 +172,25 @@ export type QARetryQuery = {
   query: string;
 };
 
+export type ChatMessage = {
+  id: string;
+  run_id: string;
+  role: string;
+  content: string;
+  intent: string | null;
+  action_type: string | null;
+  report_version: number | null;
+  metadata_json: string | null;
+  created_at: string;
+};
+
+export type ChatResponse = {
+  message: ChatMessage;
+  report_version: number | null;
+  intent: string | null;
+  action_type: string | null;
+};
+
 export type QAResult = {
   id: string;
   run_id: string;

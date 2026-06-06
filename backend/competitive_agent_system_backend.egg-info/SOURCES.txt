@@ -6,14 +6,18 @@ app/agents/state.py
 app/agents/trace.py
 app/agents/nodes/__init__.py
 app/agents/nodes/competitor_discovery.py
+app/agents/nodes/focus_profile.py
 app/agents/nodes/human_confirm_competitors.py
 app/agents/nodes/material_collection.py
+app/agents/nodes/quality_check.py
 app/agents/nodes/report_generation.py
 app/agents/nodes/requirement_understanding.py
 app/agents/nodes/structured_analysis.py
 app/api/routes/__init__.py
+app/api/routes/analyses.py
 app/api/routes/competitors.py
 app/api/routes/health.py
+app/api/routes/qa.py
 app/api/routes/reports.py
 app/api/routes/runs.py
 app/api/routes/sources.py
@@ -25,7 +29,9 @@ app/providers/llm/ark.py
 app/providers/llm/base.py
 app/providers/llm/factory.py
 app/providers/llm/mock.py
+app/providers/llm/openai_compatible.py
 app/providers/search/base.py
+app/providers/search/bocha.py
 app/providers/search/duckduckgo.py
 app/providers/search/factory.py
 app/providers/search/mock.py
@@ -34,6 +40,7 @@ app/schemas/__init__.py
 app/schemas/analysis.py
 app/schemas/competitor.py
 app/schemas/evidence.py
+app/schemas/qa.py
 app/schemas/report.py
 app/schemas/run.py
 app/schemas/source.py

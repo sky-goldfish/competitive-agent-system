@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { CheckCircle2, ChevronLeft, ChevronRight, Clipboard, Download, Loader2, MessageSquare, RotateCcw, XCircle } from 'lucide-react';
+import { CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Clipboard, Download, Loader2, MessageSquare, RotateCcw, Send, XCircle } from 'lucide-react';
 import CompetitorConfirmPanel from '../components/competitors/CompetitorConfirmPanel';
 import EvidenceList from '../components/evidence/EvidenceList';
 import SourceList from '../components/evidence/SourceList';
@@ -11,6 +11,7 @@ import CitationBundleView from '../components/report/CitationBundleView';
 import ReportMarkdown from '../components/report/ReportMarkdown';
 import {
   answerRunClarification,
+  getChatMessages,
   getCompetitors,
   getEvidence,
   getReport,
@@ -21,8 +22,9 @@ import {
   getSources,
   getTimeline,
   regenerateReport,
+  sendChatMessage,
 } from '../lib/api';
-import type { CitationBundleCompetitor, Competitor, Evidence, Run, Source, Trace } from '../lib/types';
+import type { ChatMessage, CitationBundleCompetitor, Competitor, Evidence, Run, Source, Trace } from '../lib/types';
 
 const stageOrder = [
   'requirement_understanding',
@@ -139,6 +141,14 @@ export default function RunDetailPage() {
   const [reportCollapsed, setReportCollapsed] = useState(false);
   const [mobileTab, setMobileTab] = useState<'process' | 'report'>('process');
   const [revealedStageCount, setRevealedStageCount] = useState(0);
+  const [stagesCollapsed, setStagesCollapsed] = useState(true);
+  const [manualStageCollapse, setManualStageCollapse] = useState(false);
+  const [chatInput, setChatInput] = useState('');
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [processingStage, setProcessingStage] = useState<'idle' | 'classifying' | 'searching' | 'analyzing' | 'editing' | 'generating' | 'done'>('idle');
+  const [completedSteps, setCompletedSteps] = useState<string[]>([]);
+  const [activeWorkflowKind, setActiveWorkflowKind] = useState<'edit' | 'redo'>('edit');
+  const chatListRef = useRef<HTMLDivElement>(null);
 
   const runQuery = useQuery({
     queryKey: ['run', id],
@@ -148,6 +158,18 @@ export default function RunDetailPage() {
   });
   const run = runQuery.data;
   const isActive = run?.status === 'running' || run?.status === 'waiting_for_human' || run?.status === 'waiting_for_clarification';
+
+  useEffect(() => {
+    if (run?.status === 'completed' && id) {
+      getChatMessages(id).then(setChatMessages).catch(() => {});
+    }
+  }, [id, run?.status]);
+
+  useEffect(() => {
+    if (chatListRef.current) {
+      chatListRef.current.scrollTop = chatListRef.current.scrollHeight;
+    }
+  }, [chatMessages, processingStage, completedSteps.length]);
 
   const timelineQuery = useQuery({ queryKey: ['timeline', id], queryFn: () => getTimeline(id), enabled: Boolean(id), refetchInterval: isActive ? 3000 : false });
   const competitorsQuery = useQuery({ queryKey: ['competitors', id], queryFn: () => getCompetitors(id), enabled: Boolean(id), refetchInterval: isActive ? 5000 : false });
@@ -191,6 +213,49 @@ export default function RunDetailPage() {
     },
   });
 
+  const chatSendMutation = useMutation({
+    mutationFn: async (message: string) => {
+      const userMsg: ChatMessage = {
+        id: `temp-${Date.now()}`,
+        run_id: id,
+        role: 'user',
+        content: message,
+        intent: null,
+        action_type: null,
+        report_version: null,
+        metadata_json: null,
+        created_at: new Date().toISOString(),
+      };
+      setChatMessages((prev) => [...prev, userMsg]);
+      setCompletedSteps([]);
+      setActiveWorkflowKind('edit');
+      setProcessingStage('classifying');
+      return sendChatMessage(id, message);
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['chat-messages', id] });
+      queryClient.invalidateQueries({ queryKey: ['run', id] });
+      queryClient.invalidateQueries({ queryKey: ['report', id] });
+      queryClient.invalidateQueries({ queryKey: ['report-versions', id] });
+      queryClient.invalidateQueries({ queryKey: ['report-citations', id] });
+      queryClient.invalidateQueries({ queryKey: ['citation-bundle', id] });
+      queryClient.invalidateQueries({ queryKey: ['sources', id] });
+      queryClient.invalidateQueries({ queryKey: ['evidence', id] });
+      setProcessingStage('idle');
+      setCompletedSteps([]);
+      setActiveWorkflowKind(data.intent === 'report_redo' ? 'redo' : 'edit');
+      setChatMessages((prev) => [...prev, data.message]);
+      setChatInput('');
+      if (data.report_version != null) {
+        setSelectedIteration(data.report_version);
+      }
+    },
+    onError: () => {
+      setProcessingStage('idle');
+      setCompletedSteps([]);
+    },
+  });
+
   useEffect(() => {
     if (run?.status === 'completed') setMobileTab('report');
   }, [run?.status]);
@@ -224,6 +289,7 @@ export default function RunDetailPage() {
 
   useEffect(() => {
     setRevealedStageCount(0);
+    setManualStageCollapse(false);
   }, [id]);
 
   useEffect(() => {
@@ -237,6 +303,17 @@ export default function RunDetailPage() {
   useEffect(() => {
     setRevealedStageCount((count) => Math.min(count, stages.length));
   }, [stages.length]);
+
+  useEffect(() => {
+    if (!run || manualStageCollapse) return;
+    if (run.status === 'running' || run.status === 'waiting_for_human' || run.status === 'waiting_for_clarification') {
+      setStagesCollapsed(false);
+      return;
+    }
+    if (run.status === 'completed' || run.status === 'failed') {
+      setStagesCollapsed(true);
+    }
+  }, [manualStageCollapse, run?.status]);
 
   if (runQuery.isLoading) return <p className="loading">加载任务中...</p>;
   if (runQuery.isError || !run) return <p className="error-text">任务加载失败。</p>;
@@ -278,7 +355,7 @@ export default function RunDetailPage() {
         ) : null}
       </div>
 
-      <div className="message-stream">
+      <div className="message-stream" ref={chatListRef}>
         <article className="message-row user">
           <div className="message-bubble">{run.user_requirement}</div>
         </article>
@@ -296,6 +373,154 @@ export default function RunDetailPage() {
             <div className="message-bubble">{answer}</div>
           </article>
         ))}
+        {stages.length > 0 ? (
+          <article className="message-row assistant">
+            <div className="stage-collapse-card">
+              <button
+                type="button"
+                className="stage-collapse-toggle"
+                onClick={() => {
+                  setManualStageCollapse(true);
+                  setStagesCollapsed(!stagesCollapsed);
+                }}
+              >
+                <div className="stage-collapse-title">
+                  <CheckCircle2 size={16} />
+                  <strong>分析过程</strong>
+                  <span className="stage-collapse-summary">
+                    {revealedStages.map(({ stage, status }) => status === 'completed' ? `${stageLabels[stage] ?? stage} ✓` : `...`).join(' → ')}
+                  </span>
+                </div>
+                {stagesCollapsed ? <ChevronDown size={18} /> : <ChevronUp size={18} />}
+              </button>
+              {!stagesCollapsed ? (
+                <div className="dialogue-stage-list">
+                  {revealedStages.map(({ stage, status }) => (
+                    <StageDialogueCard
+                      key={stage}
+                      stage={stage}
+                      status={status}
+                      run={run}
+                      counts={stageCounts}
+                      competitors={competitors}
+                      sources={sources}
+                      evidence={evidence}
+                      hasReport={Boolean(hasReport)}
+                      citationBundle={citationBundleQuery.data ?? []}
+                      runId={id}
+                      clarification={{
+                        value: clarificationAnswer,
+                        onChange: setClarificationAnswer,
+                        onSubmit: submitClarification,
+                        isPending: clarificationMutation.isPending,
+                        error: clarificationMutation.error,
+                      }}
+                    />
+                  ))}
+                  {nextStage ? (
+                    <article className="thinking-card">
+                      <Loader2 size={17} />
+                      <span>Agent 正在思考：{stageLabels[nextStage.stage] ?? nextStage.stage}</span>
+                    </article>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          </article>
+        ) : null}
+        {run.status === 'completed' ? (
+          <article className="message-row assistant">
+            <div className="assistant-card report-done-card">
+              <div className="assistant-card-title">
+                <CheckCircle2 size={17} />
+                <strong>报告已生成</strong>
+              </div>
+              <p>
+                第一轮分析已完成。右侧可查看完整报告，下方可以继续对话修改报告。
+              </p>
+              <button
+                type="button"
+                className="chat-view-report-btn"
+                onClick={() => {
+                  setSelectedIteration(latestReportIteration ?? undefined);
+                  setMobileTab('report');
+                  setReportCollapsed(false);
+                }}
+              >
+                查看报告
+              </button>
+            </div>
+          </article>
+        ) : null}
+
+        {chatMessages.length > 0 ? (
+          <div className="chat-round-divider">
+            <span>对话修改</span>
+          </div>
+        ) : null}
+        {(chatMessages ?? []).map((msg: ChatMessage) => (
+          msg.role === 'user' ? (
+            <article key={msg.id} className="message-row user">
+              <div className="message-bubble">{msg.content}</div>
+            </article>
+          ) : (
+            <article key={msg.id} className="message-row assistant">
+              <div className="assistant-card">
+                <div className="assistant-card-title">
+                  <CheckCircle2 size={17} />
+                  <strong>
+                    {msg.intent === 'report_redo' ? '已重新调研并更新报告' : '已修改报告'}
+                  </strong>
+                </div>
+                <AgentWorkflowBlock message={msg} />
+                <p>{msg.content}</p>
+                {msg.report_version ? (
+                  <button
+                    type="button"
+                    className="chat-view-report-btn"
+                    onClick={() => {
+                      setSelectedIteration(msg.report_version!);
+                      setMobileTab('report');
+                      setReportCollapsed(false);
+                    }}
+                  >
+                    查看报告 V{msg.report_version}
+                  </button>
+                ) : null}
+              </div>
+            </article>
+          )
+        ))}
+        {processingStage !== 'idle' ? (
+          <article className="message-row assistant chat-process-group">
+            <div className="agent-workflow-card live">
+              <div className="agent-workflow-title">
+                <Loader2 size={15} />
+                  <strong>Agent 正在规划修订流程</strong>
+              </div>
+              <div className="agent-workflow-list">
+                {completedSteps.map((step) => (
+                  <div key={step} className="agent-workflow-step done">
+                    <CheckCircle2 size={14} />
+                    <span>{step}</span>
+                  </div>
+                ))}
+                {processingStage !== 'done' ? (
+                  <div className="agent-workflow-step running">
+                    <Loader2 size={14} />
+                    <span>
+                      {processingStage === 'classifying' && '让大模型判断修改类型并生成修订方案'}
+                      {processingStage === 'searching' && (activeWorkflowKind === 'redo' ? '搜索/补充新资料' : '准备修改上下文')}
+                      {processingStage === 'analyzing' && '重新分析竞品'}
+                      {processingStage === 'editing' && '编辑报告内容'}
+                      {processingStage === 'generating' && '生成新报告'}
+                    </span>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </article>
+        ) : null}
         {run.error_message ? (
           <article className="message-row assistant">
             <div className="error-card">
@@ -309,36 +534,37 @@ export default function RunDetailPage() {
         ) : null}
       </div>
 
-      <section className="dialogue-stage-list" aria-label="分析流程">
-        {revealedStages.map(({ stage, status }) => (
-          <StageDialogueCard
-            key={stage}
-            stage={stage}
-            status={status}
-            run={run}
-            counts={stageCounts}
-            competitors={competitors}
-            sources={sources}
-            evidence={evidence}
-            hasReport={Boolean(hasReport)}
-            citationBundle={citationBundleQuery.data ?? []}
-            runId={id}
-            clarification={{
-              value: clarificationAnswer,
-              onChange: setClarificationAnswer,
-              onSubmit: submitClarification,
-              isPending: clarificationMutation.isPending,
-              error: clarificationMutation.error,
+      {run.status === 'completed' ? (
+        <form
+          className="conversation-input-row"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const msg = chatInput.trim();
+            if (!msg || chatSendMutation.isPending) return;
+            chatSendMutation.mutate(msg);
+          }}
+        >
+          <textarea
+            className="conversation-input"
+            value={chatInput}
+            onChange={(e) => setChatInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                const msg = chatInput.trim();
+                if (!msg || chatSendMutation.isPending) return;
+                chatSendMutation.mutate(msg);
+              }
             }}
+            placeholder="继续对话：删除定价章节 / 增加用户评价对比 / 重新调研某个方向..."
+            rows={2}
+            disabled={chatSendMutation.isPending}
           />
-        ))}
-        {nextStage ? (
-          <article className="thinking-card">
-            <Loader2 size={17} />
-            <span>Agent 正在思考：{stageLabels[nextStage.stage] ?? nextStage.stage}</span>
-          </article>
-        ) : null}
-      </section>
+          <button type="submit" className="conversation-send-btn" disabled={chatSendMutation.isPending || !chatInput.trim()}>
+            <Send size={18} />
+          </button>
+        </form>
+      ) : null}
     </section>
   );
 
@@ -455,6 +681,51 @@ function ClarificationCard({
         </button>
       </div>
     </form>
+  );
+}
+
+function AgentWorkflowBlock({ message }: { message: ChatMessage }) {
+  if (!message.metadata_json) return null;
+  let metadata: { workflow_steps?: Array<{ title?: string; detail?: string }>; revision_summary?: string; action_details?: Record<string, unknown>; new_queries?: Array<{ query?: string; competitor_name?: string }> } = {};
+  try {
+    metadata = JSON.parse(message.metadata_json);
+  } catch {
+    return null;
+  }
+  const steps = metadata.workflow_steps ?? [];
+  if (!steps.length) return null;
+
+  return (
+    <div className="agent-workflow-card">
+      <div className="agent-workflow-title">
+        <CheckCircle2 size={15} />
+        <strong>Agent 工作流</strong>
+      </div>
+      <div className="agent-workflow-list">
+        {steps.map((step, index) => (
+          <div key={`${step.title}-${index}`} className="agent-workflow-step done">
+            <CheckCircle2 size={14} />
+            <div>
+              <span>{step.title}</span>
+              {step.detail ? <p>{step.detail}</p> : null}
+            </div>
+          </div>
+        ))}
+      </div>
+      {metadata.new_queries?.length ? (
+        <div className="agent-query-list">
+          {metadata.new_queries.slice(0, 3).map((item, index) => (
+            <span key={`${item.query}-${index}`}>{item.competitor_name ? `${item.competitor_name}: ` : ''}{item.query}</span>
+          ))}
+        </div>
+      ) : null}
+      {metadata.revision_summary ? (
+        <div className="revision-summary-box">
+          <strong>修改总结</strong>
+          <p>{metadata.revision_summary}</p>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
