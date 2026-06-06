@@ -10,12 +10,14 @@ class MockSearchProvider:
             results = self._smart_cup_materials(query_lower)
         elif "slack" in query_lower and self._matches(query_lower, ["pricing", "docs", "reviews", "g2", "capterra", "features"]):
             results = self._slack_materials(query_lower)
-        elif self._matches(query_lower, ["保温杯", "智能杯", "水杯", "thermos", "mug", "ember"]):
+        elif self._matches(query_lower, ["保温杯", "智能杯", "水杯", "水壶", "水瓶", "杯子", "饮具", "thermos", "mug", "cup", "bottle", "ember"]):
             results = self._smart_cup_tools()
         elif self._matches(query_lower, ["飞书", "feishu", "lark", "协作", "协同", "办公平台", "dingtalk", "wecom", "slack", "teams"]):
             results = self._collaboration_tools()
         elif self._matches(query_lower, ["会议", "meeting", "minutes", "纪要"]):
             results = self._meeting_tools()
+        elif self._matches(query_lower, ["编程", "coding", "代码", "developer", "ide", "cursor", "copilot"]):
+            results = self._coding_tools()
         elif self._matches(query_lower, ["crm", "客户", "sales"]):
             results = self._crm_tools()
         elif self._matches(query_lower, ["competitive intelligence", "market research", "research tools", "analysis tools", "市场调研"]):
@@ -89,6 +91,47 @@ class MockSearchProvider:
                 url="https://example.com/tldv",
                 snippet="提供视频会议录制、多语言转写、片段剪辑和摘要能力，更偏视频会议知识沉淀，可视为替代方案型竞品。",
                 raw_content="tl;dv 强调视频会议录制、多语言转写、片段剪辑、标签管理和客户研究协作工作流。",
+            ),
+        ]
+
+    @staticmethod
+    def _coding_tools() -> list[SearchResult]:
+        return [
+            SearchResult(
+                title="Cursor（AI 代码编辑器）",
+                url="https://cursor.com",
+                snippet="Cursor 面向开发者提供 AI 代码生成、代码库问答、编辑器内重构和上下文辅助能力，是 AI 编程工具的直接竞品。",
+                raw_content="Cursor is an AI-powered code editor with codebase context, chat, autocomplete and agentic editing workflows.",
+            ),
+            SearchResult(
+                title="GitHub Copilot（AI 编程助手）",
+                url="https://github.com/features/copilot",
+                snippet="GitHub Copilot 提供代码补全、聊天、PR 辅助和多 IDE 集成，是 AI 编程助手市场的标杆竞品。",
+                raw_content="GitHub Copilot assists developers with code suggestions, chat, pull request support and IDE integrations.",
+            ),
+            SearchResult(
+                title="Windsurf（Agentic IDE）",
+                url="https://windsurf.com",
+                snippet="Windsurf 强调 agentic coding、上下文理解和 IDE 内自动化开发流程，是 Cursor 类产品的重要竞品。",
+                raw_content="Windsurf provides an agentic coding environment with contextual code understanding and workflow automation.",
+            ),
+            SearchResult(
+                title="Codeium（AI 代码补全与聊天工具）",
+                url="https://codeium.com",
+                snippet="Codeium 提供代码补全、AI Chat 和企业部署能力，是面向开发团队的 AI 编程工具竞品。",
+                raw_content="Codeium offers AI autocomplete, chat, enterprise controls and integrations for developer teams.",
+            ),
+            SearchResult(
+                title="通义灵码（AI 编程助手）",
+                url="https://tongyi.aliyun.com/lingma",
+                snippet="通义灵码提供代码生成、研发问答、单元测试生成和 IDE 插件能力，是中国本土 AI 编程助手代表。",
+                raw_content="通义灵码面向中文开发者提供智能编码、代码解释、测试生成和研发知识问答。",
+            ),
+            SearchResult(
+                title="豆包 MarsCode（AI 开发工具）",
+                url="https://www.marscode.cn",
+                snippet="豆包 MarsCode 面向开发者提供 AI 编程助手和云端开发环境，是国内 AI 编程产品竞品。",
+                raw_content="MarsCode provides AI coding assistance, cloud development workflows and developer productivity features.",
             ),
         ]
 
@@ -272,28 +315,34 @@ class MockSearchProvider:
     def _smart_cup_tools() -> list[SearchResult]:
         return [
             SearchResult(
-                title="Ember Mug（智能恒温杯）",
-                url="https://example.com/ember-mug",
-                snippet="Ember Mug 通过电子温控让饮品保持设定温度，是办公室智能保温杯场景的直接竞品。",
-                raw_content="Ember Mug 主打精准温控、手机 App 设置温度、办公桌面使用和高端礼品市场。",
+                title="Stanley Quencher（大容量随行水杯）",
+                url="https://example.com/stanley-quencher",
+                snippet="Stanley Quencher 主打大容量、车载杯架适配和户外/通勤场景，是水壶和随行杯产品的重要竞品。",
+                raw_content="Stanley Quencher 围绕大容量、手柄、吸管杯盖和户外生活方式定位，覆盖通勤、健身和日常饮水场景。",
             ),
             SearchResult(
-                title="Fellow Carter（高端随行保温杯）",
-                url="https://example.com/fellow-carter",
-                snippet="Fellow Carter 强调咖啡香气保留、便携设计和高端材质，是办公室与通勤水杯的高端替代选择。",
-                raw_content="Fellow Carter 面向咖啡和办公用户，强调保温、饮用体验、杯口设计和便携性。",
+                title="Hydro Flask（户外保温水瓶）",
+                url="https://example.com/hydro-flask",
+                snippet="Hydro Flask 强调户外便携、保温保冷和多容量规格，是中高端水瓶/水壶产品的直接竞品。",
+                raw_content="Hydro Flask 面向户外、运动和通勤用户，提供多容量保温瓶、吸管盖和不锈钢材质选择。",
             ),
             SearchResult(
-                title="小米智能保温杯",
-                url="https://example.com/xiaomi-smart-cup",
-                snippet="小米生态智能杯提供温度显示、饮水提醒和高性价比，是智能保温杯方向的重要竞品。",
-                raw_content="小米智能保温杯围绕温度显示、长效保温、饮水提醒和智能硬件生态构建卖点。",
+                title="YETI Rambler（户外保温杯壶系列）",
+                url="https://example.com/yeti-rambler",
+                snippet="YETI Rambler 面向户外和高耐用场景，强调保温性能、耐摔材质和丰富杯盖配件。",
+                raw_content="YETI Rambler 覆盖杯、瓶、壶等多形态，定位户外耐用和高端保温饮具市场。",
             ),
             SearchResult(
-                title="Vanow 智能保温杯",
-                url="https://example.com/vanow-smart-bottle",
-                snippet="Vanow 等国产智能保温杯强调温度显示、材质安全和办公便携，覆盖大众价格带。",
-                raw_content="Vanow 智能保温杯提供 LED 温度显示、不锈钢内胆和多容量选择，适合办公室和通勤人群。",
+                title="哈尔斯水杯（国产保温杯与水壶品牌）",
+                url="https://example.com/haers-bottle",
+                snippet="哈尔斯覆盖保温杯、运动水壶和家用户外饮具，是国内水壶产品的重要竞品。",
+                raw_content="哈尔斯面向大众消费和礼品渠道，提供不锈钢保温杯、运动水壶、儿童杯和户外饮具。",
+            ),
+            SearchResult(
+                title="富光水杯（大众饮具品牌）",
+                url="https://example.com/fuguang-bottle",
+                snippet="富光提供玻璃杯、塑料杯、保温杯和运动水壶，覆盖大众价格带和日常饮水场景。",
+                raw_content="富光主打大众饮具渠道，覆盖办公室、家庭、学生和户外饮水需求。",
             ),
         ]
 

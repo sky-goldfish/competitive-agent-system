@@ -18,12 +18,13 @@ INVALID_COMPETITOR_NAMES = {
     "and", "or", "of", "for", "with", "around", "围绕", "同类产品", "的同类产品",
     "亿元", "万元", "百万", "千万", "十亿", "美元", "人民币", "市场规模", "行业",
     "全球", "中国", "国内", "海外", "市场", "赛道", "趋势", "增长", "年的",
+    "我想做", "我要做", "想做", "要做", "同类产品榜单", "与竞品对比", "竞品对比",
 }
 GENERIC_CANDIDATE_TERMS = {
     "竞品", "竞争", "对手", "替代", "方案", "分析", "报告", "用户", "需求", "功能", "场景", "同类", "主要", "工具",
     "图表", "构筑", "护城", "纷纷", "入局", "领域", "机会", "是否", "此外", "其中", "以及", "但是", "因此", "所以",
     "目前", "可以", "通过", "年的", "全球", "市场", "行业", "方面", "这些", "一个", "这个", "那个", "如何", "什么",
-    "围绕", "同类产品", "的同类产品",
+    "围绕", "同类产品", "的同类产品", "我想做", "我要做", "想做", "要做", "同类产品榜单", "与竞品对比", "竞品对比",
     "alternatives", "alternative", "competitors", "competitor", "review", "reviews", "pricing", "product", "products", "top", "best",
     "and", "or", "of", "for", "with",
 }
@@ -449,6 +450,10 @@ def _looks_generic_name(name: str) -> bool:
     lowered = name.lower().strip()
     stripped = lowered.replace(" ", "")
     if stripped in GENERIC_CANDIDATE_TERMS or stripped in CHINESE_STOPWORDS:
+        return True
+    if stripped.startswith(("我想", "我要", "想做", "要做")):
+        return True
+    if any(term in stripped for term in ["同类产品榜单", "竞品对比", "替代方案讨论", "用户需求"]):
         return True
     if len(name) <= 1:
         return True

@@ -44,6 +44,13 @@ class MockLLMProvider(LLMProvider):
             domain = "会议"
             target_users = ["商务人士", "销售团队", "远程协作者"]
             core_capabilities = ["会议转写", "自动摘要", "发言人识别", "团队共享"]
+        elif any(keyword in text for keyword in ["编程", "coding", "代码", "程序员", "开发者", "ide", "cursor", "copilot"]):
+            input_type = "product_idea"
+            target_product = "AI 编程工具"
+            product_description = user_requirement
+            domain = "AI 编程"
+            target_users = ["软件工程师", "开发团队", "技术负责人"]
+            core_capabilities = ["代码补全", "代码生成", "上下文问答", "代码审查", "IDE 集成"]
         elif any(keyword in text for keyword in ["竞品分析", "市场调研", "competitive analysis"]):
             input_type = "product_idea"
             target_product = None
@@ -51,12 +58,12 @@ class MockLLMProvider(LLMProvider):
             domain = "竞品分析"
             target_users = ["产品经理", "市场分析师", "战略团队"]
             core_capabilities = ["公开资料搜索", "来源引用", "竞品识别", "结构化报告生成"]
-        elif any(keyword in text for keyword in ["保温杯", "水杯", "mug", "cup"]):
+        elif any(keyword in text for keyword in ["保温杯", "水杯", "水壶", "水瓶", "杯子", "饮具", "mug", "cup", "bottle"]):
             input_type = "existing_product"
-            target_product = "智能保温杯"
-            domain = "保温杯"
-            target_users = ["办公室人群", "通勤人士", "健康关注者"]
-            core_capabilities = ["温度控制", "保温保冷", "便携设计", "饮水提醒"]
+            target_product = "水壶产品" if any(keyword in text for keyword in ["水壶", "水瓶", "bottle"]) else "智能保温杯"
+            domain = "水壶/饮具"
+            target_users = ["办公室人群", "通勤人士", "户外运动人群", "健康关注者"]
+            core_capabilities = ["保温保冷", "便携设计", "材质安全", "容量规格", "饮水体验"]
         else:
             input_type = "product_idea"
             product_description = user_requirement
@@ -123,8 +130,11 @@ class MockLLMProvider(LLMProvider):
                 ["AI", "assistant", "summary", "automation", "智能", "总结", "问答"],
             ),
         ]
+        has_focus_intent = _has_focus_intent(text)
         for key, keywords, label, evidence_expectation, query_terms in focus_specs:
             if any(keyword in text for keyword in keywords):
+                if key in {"ai_capability", "collaboration"} and not has_focus_intent:
+                    continue
                 explicit_focuses.append(
                     {
                         "key": key,
@@ -173,14 +183,18 @@ class MockLLMProvider(LLMProvider):
             capabilities = ["会议转写", "自动摘要", "发言人识别", "团队共享"]
             use_cases = ["商务会议", "销售沟通", "远程协作"]
             positioning = f"{name} 面向会议场景提供记录、转写和摘要能力。"
+        elif "AI 编程" in domain or "编程" in domain:
+            capabilities = ["代码补全", "代码生成", "代码库问答", "重构建议", "IDE 集成"]
+            use_cases = ["日常编码", "代码理解", "重构维护", "团队研发提效"]
+            positioning = f"{name} 面向开发者提供 AI 辅助编码、代码理解和研发效率提升能力。"
         elif "竞品分析" in domain or "市场调研" in domain:
             capabilities = ["公开资料搜索", "来源引用", "竞品识别", "结构化报告生成"]
             use_cases = ["竞品调研", "市场分析", "产品决策", "报告自动化"]
             positioning = f"{name} 面向产品和市场团队提供 AI 调研与竞品分析自动化能力。"
-        elif "保温杯" in domain or "水杯" in domain:
-            capabilities = ["温度控制", "保温保冷", "便携设计", "饮水提醒"]
-            use_cases = ["办公室饮水", "通勤携带", "健康管理"]
-            positioning = f"{name} 面向办公室和通勤人群，解决饮水保温、温控和便携需求。"
+        elif any(keyword in domain for keyword in ["保温杯", "水杯", "水壶", "水瓶", "饮具"]):
+            capabilities = ["保温保冷", "便携设计", "材质安全", "容量规格", "饮水体验"]
+            use_cases = ["办公室饮水", "通勤携带", "户外运动", "健康管理"]
+            positioning = f"{name} 面向日常饮水、通勤和户外场景，解决便携、保温和饮水体验需求。"
         else:
             capabilities = requirement.get("core_capabilities") or ["核心流程自动化", "信息整理", "报告生成"]
             use_cases = requirement.get("use_cases") or ["业务调研", "团队协作"]
@@ -261,6 +275,21 @@ class MockLLMProvider(LLMProvider):
                 "科会通": "https://kehuitong.com",
                 "飞书妙计": "https://feishu.cn/medias"
             }
+        elif "AI 编程" in target_category or "编程" in target_category:
+            global_names = ["Cursor", "GitHub Copilot", "Windsurf", "Codeium"]
+            global_websites = {
+                "Cursor": "https://cursor.com",
+                "GitHub Copilot": "https://github.com/features/copilot",
+                "Windsurf": "https://windsurf.com",
+                "Codeium": "https://codeium.com",
+            }
+            china_names = ["通义灵码", "豆包 MarsCode", "百度 Comate", "腾讯云 AI 代码助手"]
+            china_websites = {
+                "通义灵码": "https://tongyi.aliyun.com/lingma",
+                "豆包 MarsCode": "https://www.marscode.cn",
+                "百度 Comate": "https://comate.baidu.com",
+                "腾讯云 AI 代码助手": "https://cloud.tencent.com/product/acc",
+            }
         elif "竞品分析" in target_category or "市场调研" in target_category:
             global_names = ["Perplexity", "ChatGPT Deep Research", "Similarweb", "Crayon"]
             global_websites = {
@@ -276,20 +305,20 @@ class MockLLMProvider(LLMProvider):
                 "爱企查": "https://aiqicha.baidu.com",
                 "启信宝": "https://qixin.com"
             }
-        elif "保温杯" in target_category or "水杯" in target_category:
-            global_names = ["Ember Mug", "Fellow Carter", "AQUAPHOR 智能杯", "HidrateSpark"]
+        elif any(keyword in target_category for keyword in ["保温杯", "水杯", "水壶", "水瓶", "饮具"]):
+            global_names = ["Stanley Quencher", "Hydro Flask", "YETI Rambler", "Fellow Carter"]
             global_websites = {
-                "Ember Mug": "https://ember.com",
+                "Stanley Quencher": "https://www.stanley1913.com",
+                "Hydro Flask": "https://www.hydroflask.com",
+                "YETI Rambler": "https://www.yeti.com",
                 "Fellow Carter": "https://fellowproducts.com",
-                "AQUAPHOR 智能杯": "https://aquaphor.com",
-                "HidrateSpark": "https://hidratespark.com"
             }
-            china_names = ["小米智能保温杯", "Vanow 智能保温杯", "苏泊尔智能杯", "哈尔斯智能水杯"]
+            china_names = ["膳魔师保温杯", "象印保温杯", "哈尔斯水杯", "富光水杯"]
             china_websites = {
-                "小米智能保温杯": "https://www.mi.com",
-                "Vanow 智能保温杯": "https://vanow.com.cn",
-                "苏泊尔智能杯": "https://supor.com.cn",
-                "哈尔斯智能水杯": "https://haers.com"
+                "膳魔师保温杯": "https://www.thermos.com.cn",
+                "象印保温杯": "https://www.zojirushi.com.cn",
+                "哈尔斯水杯": "https://haers.com",
+                "富光水杯": "https://www.fuguangchina.com",
             }
         else:
             global_names = names[:4] if len(names) >= 4 else (names + ["Slack", "Microsoft Teams"])[:4]
@@ -625,7 +654,7 @@ def _extract_product_names(search_results: list[dict[str, Any]], target_name: st
         text = f"{result.get('title', '')} {result.get('snippet', '')}"
         found = re.findall(r'[A-Za-z0-9\u4e00-\u9fa5]{2,30}', text)
         for name in found:
-            if len(name) >= 2 and name.lower() != target_name.lower():
+            if len(name) >= 2 and name.lower() != target_name.lower() and not _looks_mock_generic_name(name):
                 names.append(name)
     seen = set()
     unique = []
@@ -634,6 +663,20 @@ def _extract_product_names(search_results: list[dict[str, Any]], target_name: st
             seen.add(name.lower())
             unique.append(name)
     return unique[:8]
+
+
+def _looks_mock_generic_name(name: str) -> bool:
+    stripped = name.lower().replace(" ", "")
+    generic_terms = {
+        "我想做", "我要做", "想做", "要做", "同类产品榜单", "与竞品对比", "竞品对比",
+        "alternatives", "competitors", "用户需求", "替代方案讨论", "产品榜单", "同类产品",
+        "这是关于", "包含相关产品信息", "包含用户评价",
+    }
+    if stripped in generic_terms:
+        return True
+    if stripped.startswith(("我想", "我要", "想做", "要做")):
+        return True
+    return any(term in stripped for term in ["同类产品榜单", "竞品对比", "替代方案讨论"])
 
 
 def _find_related_result(name: str, search_results: list[dict[str, Any]]) -> dict[str, Any]:
@@ -721,9 +764,13 @@ def _should_mock_ask_clarification(user_requirement: str, requirement: dict[str,
     if any(keyword in text for keyword in ["关注", "侧重", "重点", "尤其", "比较", "是否", "privacy", "pricing", "local"]):
         return False
     domain = str(requirement.get("domain") or requirement.get("possible_market_category") or "")
-    return any(keyword in domain for keyword in ["知识管理", "会议", "办公", "通用产品", "竞品分析"]) or any(
+    return any(keyword in domain for keyword in ["知识管理", "会议", "办公", "通用产品", "竞品分析", "AI 编程", "编程", "水壶", "水杯", "饮具"]) or any(
         keyword in text for keyword in ["笔记", "文档", "工具", "软件", "竞品"]
     )
+
+
+def _has_focus_intent(text: str) -> bool:
+    return any(keyword in text for keyword in ["关注", "侧重", "重点", "尤其", "比较", "是否", "优先", "看重", "差异"])
 
 
 def _clarifying_question(requirement: dict[str, Any]) -> str:
@@ -732,4 +779,8 @@ def _clarifying_question(requirement: dict[str, Any]) -> str:
         return "你希望这份竞品报告重点关注哪类差异：本地存储/隐私、AI 能力、团队协作、价格，还是迁移成本？"
     if any(keyword in domain for keyword in ["会议", "办公", "协作"]):
         return "你希望这份竞品报告重点关注哪类差异：转写/总结质量、团队协作、CRM/日程集成、数据安全，还是价格？"
+    if any(keyword in domain for keyword in ["AI 编程", "编程"]):
+        return "你希望这份竞品报告重点关注哪类差异：代码生成质量、IDE/工作流集成、代码库上下文、团队协作、安全合规，还是价格？"
+    if any(keyword in domain for keyword in ["水壶", "水杯", "饮具", "保温杯"]):
+        return "你希望这份竞品报告重点关注哪类差异：保温性能、材质安全、便携设计、容量规格、用户评价，还是价格？"
     return "你希望这份竞品报告优先回答什么问题？例如功能差异、价格、用户痛点、隐私安全、落地成本或市场机会。"
