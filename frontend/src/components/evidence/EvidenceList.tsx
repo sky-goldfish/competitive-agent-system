@@ -1,5 +1,6 @@
 import type { Evidence, Source } from '../../lib/types';
 import { useState } from 'react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 
 type Props = {
   evidence: Evidence[];
@@ -8,7 +9,17 @@ type Props = {
 
 export default function EvidenceList({ evidence, sources }: Props) {
   const [detailEvidence, setDetailEvidence] = useState<Evidence | null>(null);
+  const [expandedIds, setExpandedIds] = useState<string[]>([]);
+  const [listExpanded, setListExpanded] = useState(false);
   const sourceById = new Map(sources.map((source) => [source.id, source]));
+  const visibleEvidence = listExpanded ? evidence : evidence.slice(0, 5);
+  const hiddenCount = Math.max(0, evidence.length - visibleEvidence.length);
+
+  function toggleExpanded(id: string) {
+    setExpandedIds((current) => (
+      current.includes(id) ? current.filter((item) => item !== id) : [...current, id]
+    ));
+  }
 
   return (
     <section className="panel">
@@ -23,20 +34,45 @@ export default function EvidenceList({ evidence, sources }: Props) {
             <p className="empty-state-desc">证据将在资料采集完成后自动提取。</p>
           </div>
         ) : null}
-        {evidence.map((item) => {
+        {visibleEvidence.map((item) => {
           const source = sourceById.get(item.source_id);
+          const expanded = expandedIds.includes(item.id);
           return (
-            <article key={item.id} className="evidence-item">
+            <article key={item.id} className={`evidence-item collapsible-evidence ${expanded ? 'expanded' : ''}`}>
               <div className="source-meta-row">
                 <span>{item.related_product} · {item.related_dimension}</span>
                 <strong>置信度 {(item.confidence * 100).toFixed(0)}%</strong>
               </div>
-              <button type="button" className="summary-title-button" onClick={() => setDetailEvidence(item)}>
-                {source?.title ?? item.summary}
-              </button>
+              <div className="evidence-collapse-head">
+                <button type="button" className="summary-title-button" onClick={() => setDetailEvidence(item)}>
+                  {source?.title ?? item.summary}
+                </button>
+                <button type="button" className="evidence-toggle" onClick={() => toggleExpanded(item.id)} aria-expanded={expanded}>
+                  {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                  {expanded ? '收起' : '展开'}
+                </button>
+              </div>
+              <p className="evidence-summary-preview">{item.summary}</p>
+              {expanded ? (
+                <div className="evidence-expanded-body">
+                  <div>
+                    <span>证据片段</span>
+                    <blockquote>{item.quote}</blockquote>
+                  </div>
+                  <button type="button" className="text-link evidence-detail-link" onClick={() => setDetailEvidence(item)}>
+                    查看完整详情
+                  </button>
+                </div>
+              ) : null}
             </article>
           );
         })}
+        {evidence.length > 5 ? (
+          <button type="button" className="source-list-toggle" onClick={() => setListExpanded((value) => !value)} aria-expanded={listExpanded}>
+            {listExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+            {listExpanded ? '收起证据片段' : `展开全部证据片段（还有 ${hiddenCount} 条）`}
+          </button>
+        ) : null}
       </div>
       {detailEvidence ? (
         <div className="modal-backdrop" role="presentation" onClick={() => setDetailEvidence(null)}>

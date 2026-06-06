@@ -1,5 +1,6 @@
 import type { Source } from '../../lib/types';
 import { useState } from 'react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 
 type Props = {
   sources: Source[];
@@ -28,6 +29,9 @@ function parseMetadata(metadataJson: string | null): Record<string, unknown> | n
 
 export default function SourceList({ sources, isCollecting = false }: Props) {
   const [detailSource, setDetailSource] = useState<Source | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const visibleSources = expanded ? sources : sources.slice(0, 5);
+  const hiddenCount = Math.max(0, sources.length - visibleSources.length);
 
   return (
     <section className="panel">
@@ -42,7 +46,7 @@ export default function SourceList({ sources, isCollecting = false }: Props) {
             <p className="empty-state-desc">{isCollecting ? 'Agent 正在搜索和采集，请稍候。' : '可能采集失败或来源不足，请检查任务状态。'}</p>
           </div>
         ) : null}
-        {sources.map((source) => {
+        {visibleSources.map((source) => {
           const iteration = parseCollectionIteration(source.metadata_json);
           return (
             <article key={source.id} className="source-item">
@@ -60,6 +64,12 @@ export default function SourceList({ sources, isCollecting = false }: Props) {
             </article>
           );
         })}
+        {sources.length > 5 ? (
+          <button type="button" className="source-list-toggle" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
+            {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+            {expanded ? '收起来源链接' : `展开全部来源链接（还有 ${hiddenCount} 条）`}
+          </button>
+        ) : null}
       </div>
       {detailSource ? (
         <div className="modal-backdrop" role="presentation" onClick={() => setDetailSource(null)}>
