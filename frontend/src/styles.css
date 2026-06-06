@@ -2971,8 +2971,8 @@ body {
   display: flex;
   flex-direction: column;
   gap: 18px;
-  overflow-x: hidden;
-  padding: 28px clamp(18px, 3vw, 44px);
+  overflow: hidden;
+  padding: 28px clamp(18px, 3vw, 44px) 0;
 }
 
 .conversation-panel > * {
@@ -3022,6 +3022,10 @@ body {
 .message-stream {
   display: grid;
   gap: 14px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 18px;
 }
 
 .message-row {
@@ -3623,7 +3627,7 @@ body {
   }
 
   .conversation-panel {
-    padding: 18px 14px;
+    padding: 18px 14px 0;
   }
 
   .message-bubble,
@@ -3717,7 +3721,11 @@ body {
   border-top: 1px solid #dbe4f0;
   background: #fafbfc;
   border-radius: 0 0 20px 20px;
-  margin-top: 8px;
+  box-shadow: 0 -12px 24px rgba(15, 23, 42, 0.06);
+  margin: 8px calc(-1 * clamp(18px, 3vw, 44px)) 0;
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
 }
 
 .conversation-input {

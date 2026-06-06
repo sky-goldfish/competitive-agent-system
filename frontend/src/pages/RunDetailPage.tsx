@@ -268,6 +268,7 @@ export default function RunDetailPage() {
   const reportVersions = reportVersionsQuery.data ?? [];
   const latestReportIteration = reportVersions.length ? reportVersions[reportVersions.length - 1].iteration : undefined;
   const completed = run?.status === 'completed' && Boolean(report);
+  const canSendChat = Boolean(report) && !chatSendMutation.isPending && Boolean(chatInput.trim());
   const stageCounts = useMemo(() => ({
     competitors: competitors.length,
     sources: sources.length,
@@ -534,37 +535,35 @@ export default function RunDetailPage() {
         ) : null}
       </div>
 
-      {run.status === 'completed' ? (
-        <form
-          className="conversation-input-row"
-          onSubmit={(e) => {
-            e.preventDefault();
-            const msg = chatInput.trim();
-            if (!msg || chatSendMutation.isPending) return;
-            chatSendMutation.mutate(msg);
+      <form
+        className="conversation-input-row"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const msg = chatInput.trim();
+          if (!canSendChat) return;
+          chatSendMutation.mutate(msg);
+        }}
+      >
+        <textarea
+          className="conversation-input"
+          value={chatInput}
+          onChange={(e) => setChatInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              const msg = chatInput.trim();
+              if (!canSendChat) return;
+              chatSendMutation.mutate(msg);
+            }
           }}
-        >
-          <textarea
-            className="conversation-input"
-            value={chatInput}
-            onChange={(e) => setChatInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                const msg = chatInput.trim();
-                if (!msg || chatSendMutation.isPending) return;
-                chatSendMutation.mutate(msg);
-              }
-            }}
-            placeholder="继续对话：删除定价章节 / 增加用户评价对比 / 重新调研某个方向..."
-            rows={2}
-            disabled={chatSendMutation.isPending}
-          />
-          <button type="submit" className="conversation-send-btn" disabled={chatSendMutation.isPending || !chatInput.trim()}>
-            <Send size={18} />
-          </button>
-        </form>
-      ) : null}
+          placeholder={report ? '继续对话：删除定价章节 / 增加用户评价对比 / 重新调研某个方向...' : '报告生成后可继续对话修改'}
+          rows={2}
+          disabled={chatSendMutation.isPending}
+        />
+        <button type="submit" className="conversation-send-btn" disabled={!canSendChat}>
+          <Send size={18} />
+        </button>
+      </form>
     </section>
   );
 
