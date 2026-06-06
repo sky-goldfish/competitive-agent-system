@@ -376,3 +376,36 @@ def test_feishu_competitor_discovery_uses_collaboration_context():
     discovery_trace = next(item for item in timeline if item["stage"] == "competitor_discovery")
     assert "飞书" in discovery_trace["output_json"]
     assert "target_search_result_count" in discovery_trace["output_json"]
+
+
+def test_ai_coding_competitor_discovery_uses_developer_tool_context():
+    llm = MockLLMProvider()
+    search = MockSearchProvider()
+    requirement = llm.understand_requirement("我想做 AI 编程")
+    focus_profile = llm.extract_focus_profile("我想做 AI 编程", requirement)
+    target = llm.understand_target(requirement, [])
+    results = [item.__dict__ for item in search.search(requirement["query"], limit=8)]
+    competitors = llm.extract_competitors(requirement, target, results)
+    names = {item["name"] for item in competitors}
+
+    assert requirement["domain"] == "AI 编程"
+    assert focus_profile["clarification_needed"] is True
+    assert "代码生成质量" in focus_profile["clarifying_question"]
+    assert names & {"Cursor", "GitHub Copilot", "Windsurf", "Codeium", "通义灵码", "豆包 MarsCode"}
+    assert not names & {"我想做", "编程", "同类产品榜单", "与竞品对比", "alternatives"}
+
+
+def test_product_idea_competitor_discovery_uses_drinkware_context():
+    llm = MockLLMProvider()
+    search = MockSearchProvider()
+    requirement = llm.understand_requirement("我要做一个水壶产品")
+    focus_profile = llm.extract_focus_profile("我要做一个水壶产品", requirement)
+    target = llm.understand_target(requirement, [])
+    results = [item.__dict__ for item in search.search(requirement["query"], limit=8)]
+    competitors = llm.extract_competitors(requirement, target, results)
+    names = {item["name"] for item in competitors}
+
+    assert requirement["domain"] == "水壶/饮具"
+    assert focus_profile["clarification_needed"] is True
+    assert names & {"Stanley Quencher", "Hydro Flask", "YETI Rambler", "Fellow Carter", "膳魔师保温杯", "哈尔斯水杯", "富光水杯"}
+    assert not names & {"我要做", "水壶", "水壶产品", "同类产品榜单", "与竞品对比", "用户需求"}
