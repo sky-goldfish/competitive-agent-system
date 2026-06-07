@@ -95,7 +95,7 @@ export default function ReportMarkdown({ markdown, citations }: Props) {
 
 function citationReferenceId(children: ReactNode): number | null {
   const text = flattenText(children).trim();
-  const match = text.match(/^\[(\d+)\]$/);
+  const match = text.match(/^\[\[?(\d+)\]?\]$/);
   return match ? Number(match[1]) : null;
 }
 

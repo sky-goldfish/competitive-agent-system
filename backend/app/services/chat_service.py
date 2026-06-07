@@ -1,11 +1,13 @@
 import json
 import logging
 import re
+import time
 from datetime import datetime
 from typing import Any
 
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session, joinedload
 
 from app.db.models import (
     Analysis,
@@ -33,10 +35,13 @@ def _get_run_context(db: Session, run_id: str) -> dict[str, Any]:
     run = db.get(Run, run_id)
     if run is None:
         raise ChatError(f"Run not found: {run_id}")
-    if run.status != "completed":
-        raise ChatError(
-            f"Run is not completed (status={run.status})，无法进行对话修改。"
-        )
+
+    # Align backend chat gating with the UI rule: if a report was already
+    # created after a stale running trace, the current round is complete.
+    from app.services.run_service import reconcile_stale_run_state
+
+    reconcile_stale_run_state(db, run)
+    db.refresh(run)
 
     latest_report = (
         db.query(Report)
@@ -45,7 +50,7 @@ def _get_run_context(db: Session, run_id: str) -> dict[str, Any]:
         .first()
     )
     if latest_report is None:
-        raise ChatError("Report not found.")
+        raise ChatError("报告尚未生成，暂不能进行对话修改。")
 
     analyses = db.query(Analysis).filter(Analysis.run_id == run_id).all()
     evidence_items = db.query(Evidence).filter(Evidence.run_id == run_id).all()
@@ -85,9 +90,41 @@ def process_chat_message(run_id: str, user_message: str) -> dict[str, Any]:
             role="user",
             content=user_message,
             report_version=report.iteration,
+            metadata_json=json.dumps(
+                _queued_metadata() if ctx["run"].status == "running" else {},
+                ensure_ascii=False,
+            ),
         )
         db.add(user_msg)
-        db.commit()
+        _commit_with_retry(db)
+        db.refresh(user_msg)
+
+        if ctx["run"].status == "running":
+            assistant_msg = ChatMessage(
+                run_id=run_id,
+                role="assistant",
+                content="已收到反馈。当前质检 Agent 仍在优化报告，我会在质检结束后基于最新版本处理你的修改。",
+                intent="queued_revision",
+                action_type="queued_revision",
+                report_version=report.iteration,
+                metadata_json=json.dumps(
+                    {
+                        "queued": True,
+                        "processed": False,
+                        "reason": "waiting_for_quality_check",
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            db.add(assistant_msg)
+            _commit_with_retry(db)
+            db.refresh(assistant_msg)
+            return {
+                "message": assistant_msg,
+                "report_version": report.iteration,
+                "intent": "queued_revision",
+                "action_type": "queued_revision",
+            }
 
         chat_history = [
             {"role": msg.role, "content": msg.content} for msg in ctx["chat_messages"]
@@ -125,7 +162,7 @@ def process_chat_message(run_id: str, user_message: str) -> dict[str, Any]:
             ),
         )
         db.add(assistant_msg)
-        db.commit()
+        _commit_with_retry(db)
         db.refresh(assistant_msg)
 
         return {
@@ -134,6 +171,202 @@ def process_chat_message(run_id: str, user_message: str) -> dict[str, Any]:
             "intent": intent,
             "action_type": result.get("action_type", intent),
         }
+    finally:
+        db.close()
+
+
+def enqueue_chat_message(run_id: str, user_message: str) -> dict[str, Any]:
+    db = SessionLocal()
+    try:
+        ctx = _get_run_context(db, run_id)
+        run: Run = ctx["run"]
+        report: Report = ctx["report"]
+        waiting_for_auto_flow = run.status == "running"
+
+        user_msg = ChatMessage(
+            run_id=run_id,
+            role="user",
+            content=user_message,
+            report_version=report.iteration,
+            metadata_json=json.dumps(
+                _queued_metadata(processing=False), ensure_ascii=False
+            ),
+        )
+        db.add(user_msg)
+        _commit_with_retry(db)
+        db.refresh(user_msg)
+
+        assistant_msg = ChatMessage(
+            run_id=run_id,
+            role="assistant",
+            content=(
+                "已收到反馈。当前质检 Agent 仍在优化报告，我会在质检结束后基于最新版本处理你的修改。"
+                if waiting_for_auto_flow
+                else "已收到反馈，Agent 正在基于当前报告规划修订流程。"
+            ),
+            intent="queued_revision"
+            if waiting_for_auto_flow
+            else "revision_processing",
+            action_type="queued_revision"
+            if waiting_for_auto_flow
+            else "revision_processing",
+            report_version=report.iteration,
+            metadata_json=json.dumps(
+                {
+                    "queued": True,
+                    "processing": not waiting_for_auto_flow,
+                    "processed": False,
+                    "reason": "waiting_for_quality_check"
+                    if waiting_for_auto_flow
+                    else "processing_revision",
+                    "queued_message_id": user_msg.id,
+                },
+                ensure_ascii=False,
+            ),
+        )
+        db.add(assistant_msg)
+        _commit_with_retry(db)
+        db.refresh(assistant_msg)
+        return {
+            "message": assistant_msg,
+            "report_version": report.iteration,
+            "intent": assistant_msg.intent,
+            "action_type": assistant_msg.action_type,
+        }
+    finally:
+        db.close()
+
+
+def _commit_with_retry(db: Session, *, attempts: int = 4) -> None:
+    for index in range(attempts):
+        try:
+            db.commit()
+            return
+        except OperationalError as exc:
+            if "database is locked" not in str(exc).lower() or index == attempts - 1:
+                db.rollback()
+                raise ChatError("Agent 当前正在写入数据，请稍后重试。") from exc
+            db.rollback()
+            time.sleep(0.35 * (index + 1))
+
+
+def _queued_metadata(
+    *, processed: bool = False, processing: bool = False
+) -> dict[str, Any]:
+    return {
+        "queued": True,
+        "processing": processing,
+        "processed": processed,
+        "reason": "waiting_for_quality_check",
+    }
+
+
+def _human_report_version(iteration: int | None) -> str:
+    return f"第 {(iteration or 0) + 1} 版"
+
+
+def _parse_metadata(metadata_json: str | None) -> dict[str, Any]:
+    if not metadata_json:
+        return {}
+    try:
+        parsed = json.loads(metadata_json)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def process_queued_revisions(run_id: str) -> None:
+    db = SessionLocal()
+    try:
+        ctx = _get_run_context(db, run_id)
+        run: Run = ctx["run"]
+        if run.status not in {"completed", "failed"}:
+            return
+
+        queued_messages = []
+        for msg in ctx["chat_messages"]:
+            metadata = _parse_metadata(msg.metadata_json)
+            if (
+                msg.role == "user"
+                and metadata.get("queued")
+                and not metadata.get("processed")
+                and not metadata.get("processing")
+            ):
+                queued_messages.append(msg)
+        if not queued_messages:
+            return
+
+        for msg in queued_messages:
+            msg.metadata_json = json.dumps(
+                _queued_metadata(processing=True), ensure_ascii=False
+            )
+        _commit_with_retry(db)
+
+        combined_feedback = "\n".join(
+            f"{index + 1}. {msg.content}" for index, msg in enumerate(queued_messages)
+        )
+        llm = get_llm_provider()
+        chat_history = [
+            {"role": msg.role, "content": msg.content}
+            for msg in ctx["chat_messages"]
+            if msg.id not in {queued.id for queued in queued_messages}
+        ] + [{"role": "user", "content": combined_feedback}]
+        result = _handle_revision_workflow(
+            db, ctx, llm, combined_feedback, chat_history
+        )
+        intent = result.get("intent", "report_edit")
+        intent_result = result.get("intent_result", {})
+
+        assistant_msg = ChatMessage(
+            run_id=run_id,
+            role="assistant",
+            content=result["reply"],
+            intent=intent,
+            action_type="queued_revision_processed",
+            report_version=result.get("report_version"),
+            metadata_json=json.dumps(
+                {
+                    "queued_batch_processed": True,
+                    "queued_message_ids": [msg.id for msg in queued_messages],
+                    "intent_reason": intent_result.get("reason"),
+                    "new_queries": result.get("new_queries", []),
+                    "workflow_steps": result.get("workflow_steps", []),
+                    "action_details": result.get("action_details", {}),
+                    "intent_result": intent_result,
+                    "search_plan": result.get("search_plan", {}),
+                    "revision_plan": result.get("revision_plan", {}),
+                    "revision_summary": result.get("revision_summary"),
+                },
+                ensure_ascii=False,
+            ),
+        )
+        db.add(assistant_msg)
+        for msg in queued_messages:
+            msg.metadata_json = json.dumps(
+                _queued_metadata(processed=True), ensure_ascii=False
+            )
+        _commit_with_retry(db)
+    except Exception:
+        logger.exception("Failed to process queued revisions for run %s", run_id)
+        db.rollback()
+        for msg in (
+            db.query(ChatMessage)
+            .filter(ChatMessage.run_id == run_id, ChatMessage.role == "user")
+            .all()
+        ):
+            metadata = _parse_metadata(msg.metadata_json)
+            if (
+                metadata.get("queued")
+                and metadata.get("processing")
+                and not metadata.get("processed")
+            ):
+                msg.metadata_json = json.dumps(
+                    _queued_metadata(processed=False), ensure_ascii=False
+                )
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
     finally:
         db.close()
 
@@ -184,7 +417,7 @@ def _handle_report_edit(
     db.refresh(new_report)
 
     return {
-        "reply": f"已根据你的反馈修改报告（版本 {new_report.iteration}）。你可以查看更新后的报告，或继续提出修改意见。",
+        "reply": f"已根据你的反馈修改报告（{_human_report_version(new_report.iteration)}）。你可以查看更新后的报告，或继续提出修改意见。",
         "report_version": new_report.iteration,
         "action_type": "report_edit",
         "action_details": {
@@ -201,7 +434,10 @@ def _handle_report_edit(
                 "title": "编辑报告内容",
                 "detail": "基于当前报告和结构化分析上下文执行局部改写。",
             },
-            {"title": "保存新版本", "detail": f"生成报告版本 {new_report.iteration}。"},
+            {
+                "title": "保存新版本",
+                "detail": f"生成{_human_report_version(new_report.iteration)}。",
+            },
         ],
     }
 
@@ -244,6 +480,43 @@ def _handle_revision_workflow(
 
     search_plan: dict[str, Any] = {}
     new_sources: list[Source] = []
+    added_competitors: list[Competitor] = []
+    activated_competitors: list[Competitor] = []
+    removed_competitors: list[Competitor] = []
+
+    # --- 竞品名单更新 (必须在搜索前执行) ---
+    competitor_result = _ensure_revision_competitors(
+        db,
+        report.run_id,
+        competitors,
+        [],
+        intent_result,
+    )
+    added_competitors = competitor_result.get("added", [])
+    activated_competitors = competitor_result.get("activated", [])
+    removed_competitors = competitor_result.get("removed", [])
+
+    if added_competitors or activated_competitors or removed_competitors:
+        # Fresh fetch: re-query from DB to ensure all IDs are populated
+        # and state is consistent (especially for newly added competitors)
+        competitors = (
+            db.query(Competitor)
+            .filter(Competitor.run_id == report.run_id, Competitor.selected.is_(True))
+            .all()
+        )
+        competitor_list = [_competitor_to_dict(item) for item in competitors]
+        add_names = [item.name for item in (added_competitors + activated_competitors)]
+        remove_names = [item.name for item in removed_competitors]
+        detail_parts: list[str] = []
+        if add_names:
+            detail_parts.append("已纳入：" + "、".join(add_names[:6]))
+        if remove_names:
+            detail_parts.append("已移除：" + "、".join(remove_names[:6]))
+        workflow_steps.append(
+            {"title": "处理竞品名单", "detail": "；".join(detail_parts)}
+        )
+
+    # --- 搜索与资料采集 ---
     if need_search:
         search_plan = llm.generate_revision_search_plan(
             user_message,
@@ -260,7 +533,12 @@ def _handle_revision_workflow(
                 "detail": f"生成 {sum(len(item.get('queries', [])) for item in plan_items if isinstance(item, dict))} 条补充检索 query。",
             }
         )
-        new_sources = _execute_revision_search_plan(db, report.run_id, plan_items or [])
+        new_sources = _execute_revision_search_plan(
+            db,
+            report.run_id,
+            plan_items or [],
+            {item.name: item for item in competitors},
+        )
         workflow_steps.append(
             {
                 "title": "收集新资料",
@@ -268,8 +546,22 @@ def _handle_revision_workflow(
             }
         )
 
+    # --- 新增/激活竞品的结构化分析 ---
+    to_analyze = added_competitors + activated_competitors
+    if to_analyze:
+        _analyze_revision_competitors(db, report.run_id, to_analyze, llm)
+        workflow_steps.append(
+            {
+                "title": "分析新增竞品",
+                "detail": f"已生成 {len(to_analyze)} 个竞品的结构化分析。",
+            }
+        )
+
     source_list = _source_list(db, report.run_id)
     evidence_list = _evidence_list(db, report.run_id, competitors)
+
+    _ensure_analyses_for_all_selected(db, report.run_id, competitors)
+
     analysis_list = _analysis_list(db, report.run_id, evidence_list=evidence_list)
     new_source_list = [_source_to_dict(item) for item in new_sources]
 
@@ -289,6 +581,18 @@ def _handle_revision_workflow(
     )
 
     citation_bundle = _build_citation_bundle(analysis_list, evidence_list)
+    bundle_competitor_names = {
+        c.get("competitor_name") for c in citation_bundle if c.get("competitor_name")
+    }
+    selected_competitor_names = {c.name for c in competitors if c.selected}
+    missing_from_bundle = selected_competitor_names - bundle_competitor_names
+    if missing_from_bundle:
+        logger.warning(
+            "citation_bundle missing competitors: %s (selected: %s, bundle: %s)",
+            missing_from_bundle,
+            selected_competitor_names,
+            bundle_competitor_names,
+        )
     new_report = llm.revise_report_with_plan(
         current_report,
         revision_plan,
@@ -330,7 +634,7 @@ def _handle_revision_workflow(
     workflow_steps.append(
         {
             "title": "生成新版本报告",
-            "detail": f"已保存为版本 {new_report_record.iteration}。",
+            "detail": f"已保存为{_human_report_version(new_report_record.iteration)}。",
         }
     )
 
@@ -348,6 +652,7 @@ def _handle_revision_workflow(
         "action_details": {
             "need_search": need_search,
             "new_sources_count": len(new_sources),
+            "added_competitors": [item.name for item in added_competitors],
             "original_report_version": report.iteration,
             "new_report_version": new_report_record.iteration,
         },
@@ -437,12 +742,8 @@ def _handle_report_redo(
         c.id for c in competitors if c.name in affected_comp_names
     }
 
-    if affected_competitor_ids and analyses:
-        db.query(Analysis).filter(
-            Analysis.run_id == report.run_id,
-            Analysis.competitor_id.in_(affected_competitor_ids),
-        ).delete(synchronize_session=False)
-        db.commit()
+    # We no longer delete old analyses to preserve history.
+    # New analyses will be created with a higher iteration number.
 
     analyses = db.query(Analysis).filter(Analysis.run_id == report.run_id).all()
 
@@ -592,7 +893,7 @@ def _handle_report_redo(
 
     return {
         "reply": (
-            f"已根据你的反馈重新调研并生成报告（版本 {new_report_record.iteration}）。\n"
+            f"已根据你的反馈重新调研并生成报告（{_human_report_version(new_report_record.iteration)}）。\n"
             f"新增了 {len(new_sources)} 个信息来源，重新分析了 {len(affected_competitor_ids)} 个竞品。\n"
             f"你可以查看更新后的报告，或继续提出意见。"
         ),
@@ -629,7 +930,7 @@ def _handle_report_redo(
             },
             {
                 "title": "生成新报告",
-                "detail": f"生成报告版本 {new_report_record.iteration}。",
+                "detail": f"生成{_human_report_version(new_report_record.iteration)}。",
             },
         ],
     }
@@ -675,6 +976,117 @@ def _source_to_dict(source: Source) -> dict[str, Any]:
         "reference_id": _extract_ref_id(source.metadata_json),
         "metadata_json": source.metadata_json,
     }
+
+
+def _ensure_revision_competitors(
+    db: Session,
+    run_id: str,
+    existing: list[Competitor],
+    plan_items: list[dict[str, Any]],
+    intent_result: dict[str, Any],
+) -> dict[str, list[Competitor]]:
+    existing_by_name: dict[str, Competitor] = {}
+    for item in existing:
+        key = _normalize_comp_name(item.name)
+        if key not in existing_by_name:
+            existing_by_name[key] = item
+
+    requested_names: list[str] = []
+    for value in intent_result.get("new_competitors") or []:
+        name = str(value).strip()
+        if name:
+            requested_names.append(name)
+    for value in intent_result.get("affected_competitors") or []:
+        name = str(value).strip()
+        if name:
+            requested_names.append(name)
+    for item in plan_items:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("competitor_name") or "").strip()
+        if name:
+            requested_names.append(name)
+
+    added: list[Competitor] = []
+    activated: list[Competitor] = []
+    existing_affected: list[Competitor] = []
+    removed: list[Competitor] = []
+
+    for name in requested_names:
+        key = _normalize_comp_name(name)
+        if not key or key in {"目标产品", "竞品名或目标对象"}:
+            continue
+        matched = existing_by_name.get(key)
+        if matched:
+            if not matched.selected:
+                matched.selected = True
+                matched.discovery_source = "user_revision"
+                activated.append(matched)
+            else:
+                existing_affected.append(matched)
+            continue
+        competitor = Competitor(
+            run_id=run_id,
+            name=name[:120],
+            website=None,
+            description="用户二轮反馈中新增的竞品，已进入补充调研。",
+            category="revision_added",
+            region=None,
+            confidence=0.9,
+            selected=True,
+            discovery_source="user_revision",
+            relationship_type="direct",
+            relationship_reason="用户要求补充到竞品分析报告中。",
+        )
+        db.add(competitor)
+        db.flush()
+        added.append(competitor)
+        existing_by_name[key] = competitor
+
+    for value in intent_result.get("removed_competitors") or []:
+        name = str(value).strip()
+        if not name:
+            continue
+        key = _normalize_comp_name(name)
+        matched = existing_by_name.get(key)
+        if matched and matched.selected:
+            matched.selected = False
+            removed.append(matched)
+            # LOGICAL DELETE: We no longer delete analysis records to preserve history.
+            # db.query(Analysis).filter(
+            #     Analysis.run_id == run_id,
+            #     Analysis.competitor_id == matched.id,
+            # ).delete(synchronize_session=False)
+
+    if added or activated or removed:
+        db.commit()
+    affected = added + activated + existing_affected
+    seen_ids = set()
+    unique_affected: list[Competitor] = []
+    for item in affected:
+        if item.id not in seen_ids:
+            seen_ids.add(item.id)
+            unique_affected.append(item)
+    return {
+        "added": added,
+        "activated": activated,
+        "existing": existing_affected,
+        "affected": unique_affected,
+        "removed": removed,
+    }
+
+
+def _normalize_comp_name(name: str) -> str:
+    return name.strip().lower().replace(" ", "")
+
+
+def _looks_like_new_competitor_request(
+    intent_result: dict[str, Any], name: str
+) -> bool:
+    goal = str(intent_result.get("user_goal") or "")
+    return name in goal and any(
+        keyword in goal for keyword in ["新增", "增加", "加上", "补充", "加入"]
+    )
 
 
 def _source_list(db: Session, run_id: str) -> list[dict[str, Any]]:
@@ -738,7 +1150,34 @@ def _analysis_list(
                     str(evidence_id)
                 )
 
-    analyses = db.query(Analysis).filter(Analysis.run_id == run_id).all()
+    # Fetch only analyses for currently selected competitors
+    analyses = (
+        db.query(Analysis)
+        .join(Competitor, Analysis.competitor_id == Competitor.id)
+        .filter(Analysis.run_id == run_id, Competitor.selected.is_(True))
+        .options(joinedload(Analysis.competitor))
+        .all()
+    )
+
+    # If multiple iterations exist for the same competitor, pick the latest one
+    latest_by_competitor: dict[str, Analysis] = {}
+    for item in analyses:
+        existing = latest_by_competitor.get(item.competitor_id)
+        if not existing or item.analysis_iteration > existing.analysis_iteration:
+            latest_by_competitor[item.competitor_id] = item
+
+    analyses = list(latest_by_competitor.values())
+    competitor_by_id: dict[str, Competitor] = {}
+    if not analyses:
+        return []
+    for item in analyses:
+        if item.competitor:
+            competitor_by_id[item.competitor_id] = item.competitor
+    if not competitor_by_id:
+        competitor_by_id = {
+            c.id: c
+            for c in db.query(Competitor).filter(Competitor.run_id == run_id).all()
+        }
     result = []
     for item in analyses:
         evidence_ids = _json_list(item.evidence_ids_json)
@@ -747,11 +1186,21 @@ def _analysis_list(
                 evidence_ids + evidence_by_competitor.get(item.competitor_id, [])
             )
         )
+        competitor_name = ""
+        if item.competitor:
+            competitor_name = item.competitor.name
+        elif item.competitor_id in competitor_by_id:
+            competitor_name = competitor_by_id[item.competitor_id].name
+            logger.warning(
+                "Analysis %s competitor relation missing, fallback lookup: %s",
+                item.id,
+                competitor_name,
+            )
         result.append(
             {
                 "id": item.id,
                 "competitor_id": item.competitor_id,
-                "competitor_name": item.competitor.name if item.competitor else "",
+                "competitor_name": competitor_name,
                 "positioning": item.positioning,
                 "target_users": item.target_users,
                 "core_features_json": item.core_features_json,
@@ -766,10 +1215,76 @@ def _analysis_list(
     return result
 
 
+def _analyze_revision_competitors(
+    db: Session,
+    run_id: str,
+    competitors: list[Competitor],
+    llm,
+) -> None:
+    if not competitors:
+        return
+
+    # Calculate next iteration based on existing reports
+    max_iteration = (
+        db.query(func.max(Report.iteration)).filter(Report.run_id == run_id).scalar()
+        or 0
+    )
+    next_analysis_iteration = max_iteration + 1
+
+    evidence_items = db.query(Evidence).filter(Evidence.run_id == run_id).all()
+    for competitor in competitors:
+        comp_evidence = [
+            {
+                "id": item.id,
+                "competitor_id": competitor.id,
+                "related_product": item.related_product,
+                "related_dimension": item.related_dimension,
+                "quote": item.quote,
+                "summary": item.summary,
+                "confidence": item.confidence,
+                "source_url": item.source.url if item.source else None,
+                "source_title": item.source.title if item.source else None,
+                "reference_id": _extract_ref_id(
+                    item.source.metadata_json if item.source else None
+                ),
+                "source_type": item.source.source_type if item.source else "unknown",
+            }
+            for item in evidence_items
+            if item.related_product == competitor.name
+            or (item.source and item.source.competitor_id == competitor.id)
+        ]
+        analysis = llm.analyze_competitor(
+            _competitor_to_dict(competitor), comp_evidence
+        )
+        db.add(
+            Analysis(
+                run_id=run_id,
+                competitor_id=competitor.id,
+                positioning=analysis.get("positioning", ""),
+                target_users=analysis.get("target_users", "[]"),
+                core_features_json=analysis.get("core_features_json", "[]"),
+                pricing_summary=analysis.get("pricing_summary", ""),
+                strengths_json=analysis.get("strengths_json", "[]"),
+                weaknesses_json=analysis.get("weaknesses_json", "[]"),
+                opportunities_json=analysis.get("opportunities_json", "[]"),
+                custom_focus_analysis_json=analysis.get(
+                    "custom_focus_analysis_json", "[]"
+                ),
+                evidence_ids_json=json.dumps(
+                    [item["id"] for item in comp_evidence if item.get("id")],
+                    ensure_ascii=False,
+                ),
+                analysis_iteration=next_analysis_iteration,
+            )
+        )
+    db.commit()
+
+
 def _execute_revision_search_plan(
     db: Session,
     run_id: str,
     plan_items: list[dict[str, Any]],
+    competitors_by_name: dict[str, Competitor] | None = None,
 ) -> list[Source]:
     search = get_search_provider()
     seen_urls = {
@@ -781,6 +1296,7 @@ def _execute_revision_search_plan(
         if not isinstance(item, dict):
             continue
         competitor_name = str(item.get("competitor_name") or "").strip()
+        competitor = (competitors_by_name or {}).get(competitor_name)
         purpose = str(item.get("purpose") or "补充调研").strip()
         queries = item.get("queries") or []
         if isinstance(queries, str):
@@ -797,6 +1313,7 @@ def _execute_revision_search_plan(
                 seen_urls.add(result.url)
                 source = Source(
                     run_id=run_id,
+                    competitor_id=competitor.id if competitor else None,
                     title=result.title,
                     url=result.url,
                     snippet=result.snippet,
@@ -945,3 +1462,44 @@ def list_chat_messages(db: Session, run_id: str) -> list[ChatMessage]:
         .order_by(ChatMessage.created_at.asc())
         .all()
     )
+
+
+def _ensure_analyses_for_all_selected(
+    db: Session, run_id: str, competitors: list[Any]
+) -> None:
+    selected = [c for c in competitors if getattr(c, "selected", False)]
+    if not selected:
+        return
+    selected_ids = {c.id for c in selected}
+    existing_ids = {
+        row[0]
+        for row in db.query(Analysis.competitor_id)
+        .filter(Analysis.run_id == run_id)
+        .all()
+    }
+    missing = [c for c in selected if c.id not in existing_ids]
+    if not missing:
+        return
+    logger.warning(
+        "Creating stub analyses for %d competitors missing from analyses table: %s",
+        len(missing),
+        [c.name for c in missing],
+    )
+    for competitor in missing:
+        db.add(
+            Analysis(
+                run_id=run_id,
+                competitor_id=competitor.id,
+                positioning=getattr(competitor, "description", "") or "待补充",
+                target_users="[]",
+                core_features_json="[]",
+                pricing_summary="证据中未涉及",
+                strengths_json="[]",
+                weaknesses_json="[]",
+                opportunities_json="[]",
+                custom_focus_analysis_json="[]",
+                evidence_ids_json="[]",
+                analysis_iteration=0,
+            )
+        )
+    db.commit()

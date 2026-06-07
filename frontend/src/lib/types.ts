@@ -8,6 +8,7 @@ export type Run = {
   error_message: string | null;
   clarification_question: string | null;
   feedback_loop_count: number;
+  active_revision_id: string | null;
   created_at: string;
   updated_at: string;
   completed_at: string | null;
@@ -110,6 +111,8 @@ export type Report = {
   title: string;
   markdown_content: string;
   summary: string;
+  competitor_names: string[];
+  competitor_names_json: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -189,6 +192,36 @@ export type ChatResponse = {
   report_version: number | null;
   intent: string | null;
   action_type: string | null;
+};
+
+export type Revision = {
+  id: string;
+  run_id: string;
+  base_report_iteration: number;
+  target_report_iteration: number | null;
+  user_message: string;
+  intent: string | null;
+  status: string;
+  error_message: string | null;
+  summary: string | null;
+  chat_user_message_id: string | null;
+  chat_assistant_message_id: string | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+};
+
+export type RevisionTrace = {
+  id: string;
+  revision_id: string;
+  stage: string;
+  status: string;
+  input_json: string | null;
+  output_json: string | null;
+  error_message: string | null;
+  started_at: string;
+  ended_at: string | null;
+  duration_ms: number | null;
 };
 
 export type QAResult = {

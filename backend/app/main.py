@@ -8,6 +8,7 @@ from app.api.routes import (
     health,
     qa,
     reports,
+    revisions,
     runs,
     sources,
     timeline,
@@ -42,3 +43,4 @@ app.include_router(sources.router, prefix="/api")
 app.include_router(reports.router, prefix="/api")
 app.include_router(qa.router, prefix="/api")
 app.include_router(chat.router, prefix="/api")
+app.include_router(revisions.router, prefix="/api")

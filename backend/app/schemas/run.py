@@ -41,6 +41,7 @@ class RunResponse(BaseModel):
     error_message: str | None = None
     clarification_question: str | None = None
     feedback_loop_count: int = 0
+    active_revision_id: str | None = None
     created_at: datetime
     updated_at: datetime
     completed_at: datetime | None = None

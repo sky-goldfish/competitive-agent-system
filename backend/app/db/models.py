@@ -32,6 +32,7 @@ class Run(Base):
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    active_revision_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
     messages: Mapped[list["Message"]] = relationship(
         back_populates="run", cascade="all, delete-orphan"
@@ -58,6 +59,9 @@ class Run(Base):
         back_populates="run", cascade="all, delete-orphan"
     )
     chat_messages: Mapped[list["ChatMessage"]] = relationship(
+        back_populates="run", cascade="all, delete-orphan"
+    )
+    revisions: Mapped[list["Revision"]] = relationship(
         back_populates="run", cascade="all, delete-orphan"
     )
 
@@ -224,6 +228,7 @@ class Report(Base):
     title: Mapped[str] = mapped_column(String)
     markdown_content: Mapped[str] = mapped_column(Text)
     summary: Mapped[str] = mapped_column(Text, default="")
+    competitor_names_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
@@ -269,3 +274,48 @@ class ChatMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     run: Mapped[Run] = relationship(back_populates="chat_messages")
+
+
+class Revision(Base):
+    __tablename__ = "revisions"
+
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: new_id("rev")
+    )
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"))
+    base_report_iteration: Mapped[int] = mapped_column(Integer, default=0)
+    target_report_iteration: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    user_message: Mapped[str] = mapped_column(Text)
+    intent: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="queued")
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    chat_user_message_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    chat_assistant_message_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    run: Mapped[Run] = relationship(back_populates="revisions")
+    traces: Mapped[list["RevisionTrace"]] = relationship(
+        back_populates="revision", cascade="all, delete-orphan"
+    )
+
+
+class RevisionTrace(Base):
+    __tablename__ = "revision_traces"
+
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: new_id("revtrace")
+    )
+    revision_id: Mapped[str] = mapped_column(ForeignKey("revisions.id"))
+    stage: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String)
+    input_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    output_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    revision: Mapped[Revision] = relationship(back_populates="traces")

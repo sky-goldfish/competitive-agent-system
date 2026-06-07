@@ -6,8 +6,8 @@ from app.schemas.chat import ChatMessageResponse, ChatRequest, ChatResponse
 from app.services.chat_service import (
     ChatError,
     list_chat_messages,
-    process_chat_message,
 )
+from app.services.revision_service import create_revision, execute_revision_run
 
 router = APIRouter(prefix="/runs/{run_id}/chat", tags=["chat"])
 
@@ -20,12 +20,13 @@ def send_chat_message(
     db: Session = Depends(get_db),
 ):
     try:
-        result = process_chat_message(run_id, payload.message)
+        revision, message = create_revision(db, run_id, payload.message)
+        background_tasks.add_task(execute_revision_run, revision.id)
         return ChatResponse(
-            message=ChatMessageResponse.model_validate(result["message"]),
-            report_version=result.get("report_version"),
-            intent=result.get("intent"),
-            action_type=result.get("action_type"),
+            message=ChatMessageResponse.model_validate(message),
+            report_version=message.report_version,
+            intent=message.intent,
+            action_type=message.action_type,
         )
     except ChatError as exc:
         raise HTTPException(

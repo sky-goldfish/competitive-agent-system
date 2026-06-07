@@ -1,14 +1,144 @@
 import json
 import logging
 import re
+import difflib
 from typing import Any
 
 from openai import OpenAI
-
 from app.core.config import get_settings
 from app.providers.llm.mock import MockLLMProvider
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_citation_fingerprints(markdown: str) -> list[dict[str, Any]]:
+    """Extract context fingerprints for each citation in the markdown."""
+    fingerprints = []
+    # Match [[n]] or [n]
+    matches = list(re.finditer(r"\[\[?(\d+)\]?\]", markdown))
+
+    for match in matches:
+        ref_id = int(match.group(1))
+        start = match.start()
+        end = match.end()
+
+        # Get context: 30-40 chars before and 30-40 chars after
+        prefix = markdown[max(0, start - 40) : start].strip()
+        suffix = markdown[end : min(len(markdown), end + 40)].strip()
+
+        # Clean context (remove other citations and excess whitespace)
+        prefix = re.sub(r"\[\[?\d+\]?\]", "", prefix)
+        suffix = re.sub(r"\[\[?\d+\]?\]", "", suffix)
+
+        # Take the last/first few words as they are more likely to be preserved
+        prefix_words = prefix.split()
+        suffix_words = suffix.split()
+
+        prefix_short = " ".join(prefix_words[-4:]) if prefix_words else ""
+        suffix_short = " ".join(suffix_words[:4]) if suffix_words else ""
+
+        fingerprints.append(
+            {
+                "id": ref_id,
+                "prefix": prefix,
+                "suffix": suffix,
+                "prefix_short": prefix_short,
+                "suffix_short": suffix_short,
+                "full_match": match.group(0),
+            }
+        )
+    return fingerprints
+
+
+def _stitch_citations(new_markdown: str, fingerprints: list[dict[str, Any]]) -> str:
+    """Try to re-insert missing citations using robust context matching."""
+    if not fingerprints:
+        return new_markdown
+
+    result_markdown = new_markdown
+    # Get current citations to avoid duplicates
+    existing_ids = {int(m) for m in re.findall(r"\[\[?(\d+)\]?\]", result_markdown)}
+
+    # We only care about citations that were lost
+    missing_fingerprints = [f for f in fingerprints if f["id"] not in existing_ids]
+    if not missing_fingerprints:
+        return result_markdown
+
+    # Process each missing fingerprint
+    for f in missing_fingerprints:
+        best_pos = -1
+
+        # 1. Exact Match: Long prefix + Long suffix
+        if len(f["prefix"]) >= 10 and len(f["suffix"]) >= 10:
+            pattern = re.escape(f["prefix"]) + r".{0,150}?" + re.escape(f["suffix"])
+            match = re.search(pattern, result_markdown, re.DOTALL)
+            if match:
+                best_pos = match.start() + len(f["prefix"])
+
+        # 2. Match: Last word of prefix + First word of suffix
+        # (Very common anchor point)
+        if best_pos == -1:
+            prefix_words = [w for w in re.findall(r"\w+", f["prefix"]) if len(w) > 1]
+            suffix_words = [w for w in re.findall(r"\w+", f["suffix"]) if len(w) > 1]
+
+            if prefix_words and suffix_words:
+                last_p = prefix_words[-1]
+                first_s = suffix_words[0]
+                # Look for these two words near each other
+                pattern = re.escape(last_p) + r".{0,50}?" + re.escape(first_s)
+                match = re.search(pattern, result_markdown, re.DOTALL | re.IGNORECASE)
+                if match:
+                    # Insert after the last_p
+                    best_pos = match.start() + len(last_p)
+
+        # 3. Match: Short prefix + Short suffix (word based)
+        if best_pos == -1 and f["prefix_short"] and f["suffix_short"]:
+            pattern = (
+                re.escape(f["prefix_short"])
+                + r".{0,200}?"
+                + re.escape(f["suffix_short"])
+            )
+            match = re.search(pattern, result_markdown, re.DOTALL)
+            if match:
+                best_pos = match.start() + len(f["prefix_short"])
+
+        # 4. Fallback: Prefix only (at least 2 words)
+        if best_pos == -1:
+            prefix_words = [w for w in re.findall(r"\w+", f["prefix"]) if len(w) > 1]
+            if len(prefix_words) >= 2:
+                anchor = " ".join(prefix_words[-2:])
+                pos = result_markdown.rfind(
+                    anchor
+                )  # Use rfind to get the one closer to end of sentence
+                if pos != -1:
+                    best_pos = pos + len(anchor)
+
+        # 5. Fallback: Suffix only (at least 2 words)
+        if best_pos == -1:
+            suffix_words = [w for w in re.findall(r"\w+", f["suffix"]) if len(w) > 1]
+            if len(suffix_words) >= 2:
+                anchor = " ".join(suffix_words[:2])
+                pos = result_markdown.find(anchor)
+                if pos != -1:
+                    best_pos = pos
+
+        if best_pos != -1:
+            citation = f" [[{f['id']}]]"
+            # Avoid duplicate insertion at exact same point
+            context_area = result_markdown[
+                max(0, best_pos - 15) : min(len(result_markdown), best_pos + 15)
+            ]
+            if f"[{f['id']}]" in context_area or f"[[{f['id']}]]" in context_area:
+                continue
+
+            result_markdown = (
+                result_markdown[:best_pos].rstrip()
+                + citation
+                + " "
+                + result_markdown[best_pos:].lstrip()
+            )
+
+    return result_markdown
 
 
 def _safe_confidence(value: Any) -> float:
@@ -120,13 +250,18 @@ def _normalize_inline_citations(
 def _ensure_reference_section(
     markdown_content: str, sources: list[dict[str, Any]]
 ) -> str:
+    # Ensure all sources have a reference_id for filtering and display
+    for i, s in enumerate(sources, 1):
+        if s.get("reference_id") is None:
+            s["reference_id"] = i
+
     stripped = markdown_content.strip()
     body_only = re.sub(
         r"\n*##\s*(?:(?:\d+|[一二三四五六七八九十]+)[\.、]\s*)?(?:参考来源|参考文献|References)\s*\n[\s\S]*$",
         "",
         stripped,
     ).strip()
-    cited_ids = {int(m) for m in re.findall(r"\[\[(\d+)\]\]", body_only)}
+    cited_ids = {int(m) for m in re.findall(r"\[\[?(\d+)\]?\]", body_only)}
     reference_section = _format_reference_section(
         sources, cited_ids if cited_ids else None
     )
@@ -158,7 +293,10 @@ class ArkLLMProvider:
             raise ValueError("ARK_API_KEY is required when LLM_PROVIDER=ark.")
         self.model = settings.ark_endpoint_id or settings.ark_model
         self.client = OpenAI(
-            api_key=settings.ark_api_key, base_url=settings.ark_base_url
+            api_key=settings.ark_api_key,
+            base_url=settings.ark_base_url,
+            timeout=60.0,
+            max_retries=2,
         )
         self.temperature: float | None = 0.2
         self.fallback = MockLLMProvider()
@@ -271,6 +409,10 @@ JSON schema:
 - core_capabilities 必须来自目标产品真实能力或搜索结果，不要输出"核心流程自动化、信息整理、报告生成"这类通用占位。
 - 如果搜索结果混入广告平台、开发者文档、企业版或同品牌其他产品，要区分它们与目标产品本体，不要让噪声主导画像。
 - 对 QQ、微信、小红书、B站、抖音、淘宝等 C 端产品，优先识别消费级社交、内容、交易、支付、社区等真实用户场景。
+- 如果用户输入的是已有产品名，必须先明确这个产品到底解决什么问题、属于什么具体赛道，再生成竞品检索口径。例如 Lovable 应识别为 AI app builder / AI product prototyping / PRD-to-prototype 相关工具，而不是泛泛的“AI 工具”。
+- competitor_search_category 必须是用于找竞品的具体赛道短语，不要照抄产品名。
+- competitor_search_terms 必须包含 4-8 个可直接搜索的中英文短语，围绕产品定位、核心能力和使用场景找同类产品。
+- non_competitor_boundaries 用来说明哪些相邻品类不要误判为竞品。
 
 输出严格 JSON，不要输出 Markdown。
 JSON schema:
@@ -281,6 +423,9 @@ JSON schema:
   "target_users": ["目标用户"],
   "core_capabilities": ["核心能力"],
   "primary_use_cases": ["使用场景"],
+  "competitor_search_category": "用于搜索竞品的具体赛道/品类",
+  "competitor_search_terms": ["英文检索词", "中文检索词"],
+  "non_competitor_boundaries": ["不应纳入竞品的相邻品类"],
   "source_ids": ["支撑来源 URL"],
   "evidence_ids": [],
   "confidence": 0.0,
@@ -318,10 +463,10 @@ JSON schema:
 3. 优先从搜索结果中出现的品牌名、产品名、公司名提取。
 4. 如果搜索结果中提到了具体品牌（如"CATLINK智能猫砂盆"），提取品牌名"CATLINK"。
 5. 排除目标产品自身。
-6. 分两组输出：
-   - 国外产品组：2~4 个来自海外市场的国际产品
-   - 国内产品组：2~4 个来自中国本土市场的产品
-7. 每个竞品必须增加 region 字段：
+6. 不要固定输出数量。只输出你认为与目标对象“具体定位”匹配、且证据置信度 >= 0.85 的候选竞品；如果高置信候选很多，最多输出 12 个。
+7. confidence 必须综合判断：目标定位一致性、目标用户/使用场景重合、搜索结果证据强度、是否为具体产品而非泛品类。低于 0.85 不要输出。
+8. 优先覆盖直接竞品；间接竞品/替代方案只有在能解释清楚竞争关系且 confidence >= 0.85 时才输出。
+9. 每个竞品必须增加 region 字段：
    - "global" 表示国外/海外产品
    - "china" 表示国内/中国本土产品
 
@@ -358,9 +503,8 @@ JSON schema:
             region = str(item.get("region", "global")).lower()
             if region not in {"global", "china"}:
                 region = "global"
-            if region == "global" and global_count >= 4:
-                continue
-            if region == "china" and china_count >= 4:
+            confidence = _safe_confidence(item.get("confidence"))
+            if confidence < 0.85:
                 continue
             cleaned.append(
                 {
@@ -394,10 +538,8 @@ JSON schema:
                     "evidence_ids": item.get("evidence_ids")
                     if isinstance(item.get("evidence_ids"), list)
                     else [],
-                    "selected_by_default": bool(
-                        item.get("selected_by_default", len(cleaned) < 3)
-                    ),
-                    "confidence": _safe_confidence(item.get("confidence")),
+                    "selected_by_default": bool(item.get("selected_by_default", True)),
+                    "confidence": confidence,
                     "discovery_source": f"{self.name}+search",
                 }
             )
@@ -405,7 +547,7 @@ JSON schema:
                 global_count += 1
             else:
                 china_count += 1
-            if global_count >= 4 and china_count >= 4:
+            if len(cleaned) >= 12:
                 break
         return cleaned or fallback
 
@@ -871,8 +1013,9 @@ JSON schema:
 
 判断标准：
 - report_edit：只涉及措辞、格式、语气、删除/合并段落、在已有证据内补写，不需要新资料。
-- research_required：涉及事实准确性、竞品是否选错、产品定位/目标用户/价格/功能是否不对、证据不足、需要补充公开资料或重新核实。
+- research_required：涉及事实准确性、竞品是否选错、产品定位/目标用户/价格/功能是否不对、证据不足、需要补充公开资料或重新核实；用户要求新增/补充某个竞品时也属于 research_required。
 - 不确定时选择 research_required，因为竞品分析强调可信度和溯源。
+- 如果用户明确要求删除某个竞品或说某个竞品不需要，请将其列入 removed_competitors。
 
 输出严格 JSON：
 {{
@@ -881,7 +1024,9 @@ JSON schema:
   "confidence": 0.0,
   "reason": "判断理由",
   "affected_sections": ["章节或维度"],
-  "affected_competitors": ["竞品名"],
+  "affected_competitors": ["已有或新增竞品名"],
+  "new_competitors": ["用户要求新增但当前报告未覆盖的竞品名"],
+  "removed_competitors": ["用户要求删除或移除的竞品名"],
   "user_goal": "用户真正想解决的问题"
 }}"""
         return self._json_chat(
@@ -893,6 +1038,8 @@ JSON schema:
                 "reason": "默认按报告编辑处理",
                 "affected_sections": [],
                 "affected_competitors": [],
+                "new_competitors": [],
+                "removed_competitors": [],
                 "user_goal": user_message,
             },
         )
@@ -925,6 +1072,7 @@ JSON schema:
 1. 查询要能验证用户指出的问题，不要泛泛搜索。
 2. 优先覆盖官网/文档/定价页/第三方评测/用户评价。
 3. 每个 query 保持可直接搜索。
+4. 如果用户要求新增某个竞品，即使它不在“已有竞品”列表里，也必须为它生成 search_plan 条目，competitor_name 填新增竞品名。
 
 输出严格 JSON：
 {{
@@ -975,6 +1123,7 @@ JSON schema:
 2. 哪些章节要改，为什么改。
 3. 具体怎么改。
 4. 哪些新增/修改结论必须带正文引用。
+5. 如果意图判断中指定了 removed_competitors，必须为这些竞品生成 delete 类型的章节变更。
 
 输出严格 JSON：
 {{
@@ -1013,6 +1162,12 @@ JSON schema:
             "summary": current_report.get("summary", "已根据反馈更新报告。"),
             "markdown_content": current_report.get("markdown_content", ""),
         }
+
+        # Extract fingerprints from current report
+        fingerprints = _extract_citation_fingerprints(
+            current_report.get("markdown_content", "")
+        )
+
         prompt = f"""你是报告撰写 Agent。请严格根据修订计划改写当前 Markdown 报告。
 
 当前报告：
@@ -1028,12 +1183,23 @@ citation_bundle：
 1. 结构需要改就改；不需要改则只局部改。
 2. 每个新增或修改后的事实性结论必须就近引用，格式必须是 `[[数字]](URL)`。
 3. 不要减少原有有效引用；保留仍然成立的旧引用。
-4. 如果 citation_bundle 里没有证据，写“证据中未涉及”，不要编造。
+4. 如果 citation_bundle 里没有证据，写"证据中未涉及"，不要编造。
 5. 不要自行生成参考来源部分，系统会自动补充。
+6. 如果修订计划要求新增竞品章节（sections_to_change.change_type==add），必须在正文中新增独立 ## 二级标题章节，不得只在参考来源中体现。
+7. 如果修订计划要求删除竞品章节（sections_to_change.change_type==delete），必须完全移除该竞品的 ## 章节及其所有子内容，不得保留任何痕迹。
+8. 更新"分析概览"中的"分析竞品数量"，需与正文中实际 ## 竞品章节数量一致。
+9. 禁止同一个竞品出现多次同名 ## 章节。
+10.【最重要】citation_bundle 中的每一个竞品（competitor_name）都必须在正文中拥有独立的 ## 二级标题章节，一个都不能遗漏。如果 citation_bundle 里有 N 个竞品，正文就必须有 N 个 ## 竞品章节。这是硬性要求，违反此规则视为任务失败。
 
 输出严格 JSON：
 {{"title": "标题", "summary": "摘要", "markdown_content": "完整 Markdown 报告"}}"""
         result = self._json_chat(prompt, fallback)
+
+        # Stitch back missing citations
+        result["markdown_content"] = _stitch_citations(
+            result.get("markdown_content", ""), fingerprints
+        )
+
         result["markdown_content"] = _ensure_reference_section(
             result.get("markdown_content", ""), sources
         )

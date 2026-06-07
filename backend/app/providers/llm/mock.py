@@ -146,6 +146,21 @@ class MockLLMProvider(LLMProvider):
                 "容量规格",
                 "饮水体验",
             ]
+        elif any(
+            keyword in text
+            for keyword in ["lovable", "原型", "prd", "产品原型", "app builder"]
+        ):
+            input_type = "existing_product" if "lovable" in text else "product_idea"
+            target_product = "Lovable" if "lovable" in text else "AI 原型生成工具"
+            product_description = user_requirement
+            domain = "AI 原型生成与 AI App Builder"
+            target_users = ["产品经理", "设计师", "前端开发者", "创业团队"]
+            core_capabilities = [
+                "自然语言生成应用",
+                "PRD 生成原型",
+                "前端代码生成",
+                "快速迭代部署",
+            ]
         else:
             input_type = "product_idea"
             product_description = user_requirement
@@ -364,6 +379,18 @@ class MockLLMProvider(LLMProvider):
             "target_users": requirement.get("target_users", []),
             "core_capabilities": capabilities,
             "primary_use_cases": use_cases,
+            "competitor_search_category": domain,
+            "competitor_search_terms": [
+                f"{domain} competitors 2026",
+                f"{domain} alternatives",
+                f"{name} alternatives",
+                f"{domain} 竞品 替代品",
+            ],
+            "non_competitor_boundaries": [
+                "泛 AI 聊天工具",
+                "纯代码编辑器",
+                "传统项目管理工具",
+            ],
             "source_ids": [
                 item.get("url") for item in target_search_results[:3] if item.get("url")
             ],
@@ -1077,8 +1104,19 @@ class MockLLMProvider(LLMProvider):
                 "证据",
                 "竞品",
                 "定位",
+                "增加",
+                "新增",
+                "加上",
+                "补充",
             ]
         )
+        new_competitors = []
+        for marker in ["增加", "新增", "加上", "补充"]:
+            if marker in user_message:
+                name = user_message.split(marker, 1)[1].strip().split()[0][:40]
+                if name:
+                    new_competitors.append(name)
+                break
         return {
             "intent": "research_required" if research else "report_edit",
             "need_search": research,
@@ -1087,7 +1125,8 @@ class MockLLMProvider(LLMProvider):
             if research
             else "Mock 判断为局部报告修改",
             "affected_sections": ["产品定位"] if research else ["报告正文"],
-            "affected_competitors": [],
+            "affected_competitors": new_competitors,
+            "new_competitors": new_competitors,
             "user_goal": user_message,
         }
 
@@ -1099,6 +1138,12 @@ class MockLLMProvider(LLMProvider):
         existing_sources: list[dict[str, Any]],
     ) -> dict[str, Any]:
         targets = competitors[:3] or [{"name": "目标产品"}]
+        for marker in ["增加", "新增", "加上", "补充"]:
+            if marker in user_message:
+                name = user_message.split(marker, 1)[1].strip().split()[0][:40]
+                if name and all(item.get("name") != name for item in targets):
+                    targets = [{"name": name}] + targets
+                break
         return {
             "search_plan": [
                 {

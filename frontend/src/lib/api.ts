@@ -1,4 +1,4 @@
-import type { Analysis, ChatMessage, ChatResponse, CitationBundleCompetitor, CitationMapItem, Competitor, CustomCompetitorInput, Evidence, QAResult, Report, Run, Source, Trace } from './types';
+import type { Analysis, ChatMessage, ChatResponse, CitationBundleCompetitor, CitationMapItem, Competitor, CustomCompetitorInput, Evidence, QAResult, Report, Revision, RevisionTrace, Run, Source, Trace } from './types';
 
 const API_BASE = '/api';
 
@@ -106,4 +106,12 @@ export function sendChatMessage(runId: string, message: string): Promise<ChatRes
 
 export function getChatMessages(runId: string): Promise<ChatMessage[]> {
   return request<ChatMessage[]>(`/runs/${runId}/chat`);
+}
+
+export function getRevisions(runId: string): Promise<Revision[]> {
+  return request<Revision[]>(`/runs/${runId}/revisions`);
+}
+
+export function getRevisionTimeline(revisionId: string): Promise<RevisionTrace[]> {
+  return request<RevisionTrace[]>(`/revisions/${revisionId}/timeline`);
 }
