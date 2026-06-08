@@ -33,10 +33,24 @@ export default function NewAnalysisPage() {
   return (
     <section className="chat-home">
       <div className="chat-home-inner">
-        <h1>输入产品或想法，让 Agent 小组生成竞品分析报告</h1>
+        <h1>突然有idea？快来找竞品</h1>
         <p>
-          MVP 会先理解需求并发现候选竞品，等待人工确认后继续采集资料、结构化分析并生成带来源的 Markdown 报告
+          输入产品、功能或创业想法，Agent 会发现候选竞品、采集公开资料，并生成带来源的 Markdown 报告。
         </p>
+        <ol className="analysis-flow" aria-label="竞品分析流程">
+          <li>
+            <strong>理解需求</strong>
+          </li>
+          <li>
+            <strong>发现竞品</strong>
+          </li>
+          <li>
+            <strong>人工确认</strong>
+          </li>
+          <li>
+            <strong>生成报告</strong>
+          </li>
+        </ol>
         <form className="prompt-composer" onSubmit={handleSubmit}>
           <textarea
             value={value}

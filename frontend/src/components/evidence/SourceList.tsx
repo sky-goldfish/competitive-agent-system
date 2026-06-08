@@ -5,6 +5,7 @@ import { ChevronDown, ChevronRight } from 'lucide-react';
 type Props = {
   sources: Source[];
   isCollecting?: boolean;
+  initialVisibleCount?: number;
 };
 
 function parseCollectionIteration(metadataJson: string | null): number | null {
@@ -27,10 +28,10 @@ function parseMetadata(metadataJson: string | null): Record<string, unknown> | n
   }
 }
 
-export default function SourceList({ sources, isCollecting = false }: Props) {
+export default function SourceList({ sources, isCollecting = false, initialVisibleCount = 5 }: Props) {
   const [detailSource, setDetailSource] = useState<Source | null>(null);
   const [expanded, setExpanded] = useState(false);
-  const visibleSources = expanded ? sources : sources.slice(0, 5);
+  const visibleSources = expanded ? sources : sources.slice(0, initialVisibleCount);
   const hiddenCount = Math.max(0, sources.length - visibleSources.length);
 
   return (
@@ -64,7 +65,7 @@ export default function SourceList({ sources, isCollecting = false }: Props) {
             </article>
           );
         })}
-        {sources.length > 5 ? (
+        {sources.length > initialVisibleCount ? (
           <button type="button" className="source-list-toggle" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
             {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
             {expanded ? '收起来源链接' : `展开全部来源链接（还有 ${hiddenCount} 条）`}
