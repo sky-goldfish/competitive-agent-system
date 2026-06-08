@@ -1,11 +1,12 @@
-import { Component, useState, type ErrorInfo, type ReactNode } from 'react';
+import { Component, useEffect, useState, type ErrorInfo, type ReactNode } from 'react';
 import { Link, NavLink, Route, Routes, useLocation } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { Menu, PanelLeftClose, Plus, Settings } from 'lucide-react';
+import { Menu, PanelLeftClose, Pin, Plus, Settings, Trash2 } from 'lucide-react';
 import HistoryPage from './pages/HistoryPage';
 import NewAnalysisPage from './pages/NewAnalysisPage';
 import ReportPage from './pages/ReportPage';
 import RunDetailPage from './pages/RunDetailPage';
+import SettingsPage from './pages/SettingsPage';
 import { listRuns } from './lib/api';
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -49,13 +50,44 @@ function AppSidebar() {
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(true);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [pinnedRunIds, setPinnedRunIds] = useState<string[]>(() => readStoredList('pinned-history-runs'));
+  const [deletedRunIds, setDeletedRunIds] = useState<string[]>(() => readStoredList('deleted-history-runs'));
   const runsQuery = useQuery({ queryKey: ['runs'], queryFn: listRuns, refetchInterval: 5000 });
   const runs = runsQuery.data ?? [];
+  const visibleRuns = runs
+    .filter((run) => !deletedRunIds.includes(run.id))
+    .sort((a, b) => {
+      const aPinned = pinnedRunIds.includes(a.id);
+      const bPinned = pinnedRunIds.includes(b.id);
+      if (aPinned !== bPinned) return aPinned ? -1 : 1;
+      return 0;
+    });
   const sidebarClass = [
     'ai-sidebar',
     collapsed ? 'collapsed' : '',
     drawerOpen ? 'drawer-open' : '',
   ].filter(Boolean).join(' ');
+
+  function togglePin(runId: string) {
+    setPinnedRunIds((current) => {
+      const next = current.includes(runId) ? current.filter((id) => id !== runId) : [runId, ...current];
+      localStorage.setItem('pinned-history-runs', JSON.stringify(next));
+      return next;
+    });
+  }
+
+  function deleteHistoryItem(runId: string) {
+    setDeletedRunIds((current) => {
+      const next = current.includes(runId) ? current : [...current, runId];
+      localStorage.setItem('deleted-history-runs', JSON.stringify(next));
+      return next;
+    });
+    setPinnedRunIds((current) => {
+      const next = current.filter((id) => id !== runId);
+      localStorage.setItem('pinned-history-runs', JSON.stringify(next));
+      return next;
+    });
+  }
 
   return (
     <>
@@ -78,28 +110,59 @@ function AppSidebar() {
                 <Plus size={18} />
                 <span>新建对话</span>
               </Link>
-              <button type="button" className="sidebar-action" onClick={() => window.alert('设置暂未开放')}>
+              <Link className="sidebar-action" to="/settings" onClick={() => setDrawerOpen(false)}>
                 <Settings size={18} />
                 <span>设置</span>
-              </button>
+              </Link>
             </div>
 
             <div className="history-list-wrap">
               <div className="history-list-title">历史竞品检索</div>
               <nav className="sidebar-history" aria-label="历史竞品检索记录">
-                {runs.length === 0 && !runsQuery.isLoading ? <span className="sidebar-empty">暂无历史记录</span> : null}
-                {runs.map((run) => {
+                {visibleRuns.length === 0 && !runsQuery.isLoading ? <span className="sidebar-empty">暂无历史记录</span> : null}
+                {visibleRuns.map((run) => {
                   const active = location.pathname.includes(`/runs/${run.id}`);
+                  const pinned = pinnedRunIds.includes(run.id);
                   return (
-                    <NavLink
+                    <div
                       key={run.id}
-                      to={`/runs/${run.id}`}
-                      className={`history-item ${active ? 'active' : ''}`}
-                      onClick={() => setDrawerOpen(false)}
+                      className={`history-item ${active ? 'active' : ''} ${pinned ? 'pinned' : ''}`}
                     >
-                      <span className="history-item-title">{run.title || run.user_requirement}</span>
-                      <span className={`history-item-status ${run.status}`}>{statusText(run.status)}</span>
-                    </NavLink>
+                      <NavLink
+                        to={`/runs/${run.id}`}
+                        className="history-item-link"
+                        onClick={() => setDrawerOpen(false)}
+                      >
+                        <span className="history-item-main">
+                          <span className="history-item-title">{run.title || run.user_requirement}</span>
+                          <span className={`history-item-status ${run.status}`}>{pinned ? '已置顶 · ' : ''}{statusText(run.status)}</span>
+                        </span>
+                      </NavLink>
+                      <span className="history-item-actions">
+                        <button
+                          type="button"
+                          className="history-action-button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            togglePin(run.id);
+                          }}
+                          title={pinned ? '取消置顶' : '置顶'}
+                        >
+                          <Pin size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          className="history-action-button danger"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            deleteHistoryItem(run.id);
+                          }}
+                          title="从历史列表删除"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </span>
+                    </div>
                   );
                 })}
               </nav>
@@ -122,15 +185,34 @@ function statusText(status: string) {
   return map[status] ?? status;
 }
 
+function readStoredList(key: string) {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) ?? '[]');
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function ThemeSync() {
+  useEffect(() => {
+    const theme = localStorage.getItem('appearance-theme') === 'dark' ? 'dark' : 'light';
+    document.documentElement.dataset.theme = theme;
+  }, []);
+  return null;
+}
+
 export default function App() {
   return (
     <ErrorBoundary>
+      <ThemeSync />
       <div className="ai-app-shell">
         <AppSidebar />
         <main className="ai-main">
           <Routes>
             <Route path="/" element={<NewAnalysisPage />} />
             <Route path="/history" element={<HistoryPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
             <Route path="/runs/:runId" element={<RunDetailPage />} />
             <Route path="/runs/:runId/report" element={<ReportPage />} />
             <Route path="*" element={<NotFoundPage />} />

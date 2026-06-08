@@ -84,7 +84,8 @@ export default function QAResultsPanel({ runId }: Props) {
     </section>
   );
 
-  const sorted = [...results].sort((a, b) => b.iteration - a.iteration);
+  const dedupedResults = dedupeQAResultsByIteration(results);
+  const sorted = [...dedupedResults].sort((a, b) => b.iteration - a.iteration);
   const latest = sorted[0];
   const historical = sorted.slice(1);
 
@@ -102,6 +103,17 @@ export default function QAResultsPanel({ runId }: Props) {
       </div>
     </section>
   );
+}
+
+function dedupeQAResultsByIteration(results: QAResultType[]) {
+  const byIteration = new Map<number, QAResultType>();
+  results.forEach((result) => {
+    const existing = byIteration.get(result.iteration);
+    if (!existing || new Date(result.created_at).getTime() >= new Date(existing.created_at).getTime()) {
+      byIteration.set(result.iteration, result);
+    }
+  });
+  return Array.from(byIteration.values());
 }
 
 function QACurrentRound({ result }: { result: QAResultType; isLatest: boolean }) {

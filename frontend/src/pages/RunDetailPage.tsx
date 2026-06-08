@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { AlertCircle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Clipboard, Download, Loader2, MessageSquare, RefreshCw, RotateCcw, Send, XCircle } from 'lucide-react';
 import CompetitorConfirmPanel from '../components/competitors/CompetitorConfirmPanel';
 import EvidenceList from '../components/evidence/EvidenceList';
@@ -14,6 +14,7 @@ import {
   getChatMessages,
   getCompetitors,
   getEvidence,
+  getQAResults,
   getReport,
   getReportCitationBundle,
   getReportCitations,
@@ -26,7 +27,7 @@ import {
   regenerateReport,
   sendChatMessage,
 } from '../lib/api';
-import type { ChatMessage, CitationBundleCompetitor, Competitor, Evidence, Report as AppReport, Revision, RevisionTrace, Run, Source, Trace } from '../lib/types';
+import type { ChatMessage, CitationBundleCompetitor, Competitor, Evidence, QAResult, Report as AppReport, Revision, RevisionTrace, Run, Source, Trace } from '../lib/types';
 
 const stageOrder = [
   'requirement_understanding',
@@ -203,13 +204,52 @@ function formatReportVersion(iteration: number | null | undefined) {
   return `第 ${(iteration ?? 0) + 1} 版`;
 }
 
-function getReportStatusLabel(run: Run | undefined, report: { iteration: number } | undefined) {
+function formatDateTime(value: string | null | undefined) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function getReportStatusLabel(run: Run | undefined, report: { iteration: number } | undefined, qaResults: QAResult[], traces: Trace[]) {
   if (!report) return '';
+  const isQualityChecking = run?.status === 'running' && normalizeStage(run.current_stage) === 'quality_check';
+  const hasReportGenerationTrace = traces.some((trace) => normalizeStage(trace.stage) === 'report_generation' && trace.status === 'completed');
+  const latestQA = qaResults[qaResults.length - 1];
   if (run?.status === 'revising') return '修订中';
-  if (run?.status === 'running') return '报告已完成';
-  if (run?.status === 'completed') return '报告已完成';
+  if (isQualityChecking || (run?.status === 'running' && hasReportGenerationTrace && !latestQA)) return '正在质检';
+  if (latestQA?.decision === 'pass') return '质检通过';
+  if (latestQA?.decision === 'retry_collection') return '质检要求补采资料';
+  if (latestQA?.decision === 'retry_analysis') return '质检要求重分析';
+  if (run?.status === 'running') return '报告已生成，等待质检';
+  if (run?.status === 'completed') return '报告已生成';
   if (run?.status === 'failed') return '任务已中断';
   return '报告已生成';
+}
+
+function getReportStatusTone(statusLabel: string) {
+  if (statusLabel.includes('通过')) return 'pass';
+  if (statusLabel.includes('重') || statusLabel.includes('中断')) return 'retry';
+  if (statusLabel.includes('质检') || statusLabel.includes('等待')) return 'checking';
+  return 'ready';
+}
+
+function getQALabel(result: QAResult | undefined) {
+  if (!result) return '待质检';
+  if (result.decision === 'pass') return `质检通过 · ${Math.round(result.overall_score * 100)} 分`;
+  if (result.decision === 'retry_collection') return `需补采 · ${Math.round(result.overall_score * 100)} 分`;
+  if (result.decision === 'retry_analysis') return `需重分析 · ${Math.round(result.overall_score * 100)} 分`;
+  return `质检完成 · ${Math.round(result.overall_score * 100)} 分`;
+}
+
+function getQATone(result: QAResult | undefined) {
+  if (!result) return 'checking';
+  return result.decision === 'pass' ? 'pass' : 'retry';
 }
 
 function ReportDiffBanner({ current, previous }: { current: AppReport; previous?: AppReport }) {
@@ -250,15 +290,16 @@ export default function RunDetailPage() {
   const [selectedIteration, setSelectedIteration] = useState<number | undefined>(undefined);
   const [reportCollapsed, setReportCollapsed] = useState(false);
   const [mobileTab, setMobileTab] = useState<'process' | 'report'>('process');
+  const [resultView, setResultView] = useState<'report' | 'evidence'>('report');
   const [revealedStageCount, setRevealedStageCount] = useState(0);
-  const [stagesCollapsed, setStagesCollapsed] = useState(true);
-  const [manualStageCollapse, setManualStageCollapse] = useState(false);
   const [chatInput, setChatInput] = useState('');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [processingStage, setProcessingStage] = useState<'idle' | 'classifying' | 'searching' | 'analyzing' | 'editing' | 'generating' | 'done'>('idle');
   const [completedSteps, setCompletedSteps] = useState<string[]>([]);
   const [activeWorkflowKind, setActiveWorkflowKind] = useState<'edit' | 'redo'>('edit');
   const chatListRef = useRef<HTMLDivElement>(null);
+  const reportPanelRef = useRef<HTMLElement>(null);
+  const reportDocumentRef = useRef<HTMLElement>(null);
   const currentRunIdRef = useRef(id);
 
   const runQuery = useQuery({
@@ -311,6 +352,12 @@ export default function RunDetailPage() {
   const shouldFetchReport = Boolean(reportGenerated);
   const reportQuery = useQuery({ queryKey: ['report', id, selectedIteration], queryFn: () => getReport(id, selectedIteration), enabled: Boolean(id) && Boolean(shouldFetchReport), refetchInterval: isActive ? 3000 : false });
   const reportVersionsQuery = useQuery({ queryKey: ['report-versions', id], queryFn: () => getReportVersions(id), enabled: Boolean(id) && Boolean(shouldFetchReport), refetchInterval: isActive ? 3000 : false });
+  const qaResultsQuery = useQuery({
+    queryKey: ['qa-results', id],
+    queryFn: () => getQAResults(id),
+    enabled: Boolean(id) && Boolean(shouldFetchReport),
+    refetchInterval: isActive ? 3000 : false,
+  });
   const displayedReportIteration = reportQuery.data?.iteration;
   const citationsQuery = useQuery({
     queryKey: ['report-citations', id, displayedReportIteration],
@@ -447,7 +494,16 @@ export default function RunDetailPage() {
   }, [chatMessages, chatSendMutation.isPending, id, isActive, revisionsQuery.data, queryClient]);
 
   useEffect(() => {
-    if (reportQuery.data) setMobileTab('report');
+    if (!reportQuery.data) return;
+    setMobileTab('report');
+    setResultView('report');
+    setReportCollapsed(false);
+    window.requestAnimationFrame(() => {
+      reportPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      if (reportDocumentRef.current) {
+        reportDocumentRef.current.scrollTop = 0;
+      }
+    });
   }, [reportQuery.data]);
 
   useEffect(() => {
@@ -463,12 +519,46 @@ export default function RunDetailPage() {
   const evidence = evidenceQuery.data ?? [];
   const report = reportQuery.data;
   const reportVersions = reportVersionsQuery.data ?? [];
+  const qaResults = qaResultsQuery.data ?? [];
+  const latestQAResult = qaResults[qaResults.length - 1];
+  const retryQAResults = qaResults.filter((result) => result.decision !== 'pass');
   const latestReportIteration = reportVersions.length ? reportVersions[reportVersions.length - 1].iteration : undefined;
   const completed = Boolean(report) && processingStage === 'idle' && !chatSendMutation.isPending && !isRevisionRunning;
   const shouldShowReportPanel = Boolean(report);
-  const isOptimizingReport = false;
   const isFailedWithReport = Boolean(report) && run?.status === 'failed';
-  const reportStatusLabel = getReportStatusLabel(run, report);
+  const reportStatusLabel = getReportStatusLabel(run, report, qaResults, traces);
+  const reportStatusTone = getReportStatusTone(reportStatusLabel);
+  const isOptimizingReport = reportStatusTone === 'checking';
+  const reportStatusDetail = report
+    ? [
+        retryQAResults.length > 0 ? `已根据质检重试 ${retryQAResults.length} 次` : null,
+      ].filter(Boolean).join(' · ')
+    : '报告生成后会显示在这里';
+  const currentVersion = selectedIteration ?? latestReportIteration;
+  const latestReportVersion = reportVersions.find((version) => version.iteration === latestReportIteration);
+  const selectedReportVersion = reportVersions.find((version) => version.iteration === currentVersion);
+  const versionQaByIteration = useMemo(() => {
+    const map = new Map<number, QAResult>();
+    qaResults.forEach((result) => {
+      const reportIteration = Math.max(0, result.iteration - 1);
+      map.set(reportIteration, result);
+    });
+    return map;
+  }, [qaResults]);
+
+  const viewReport = (iteration?: number) => {
+    setSelectedIteration(iteration);
+    setMobileTab('report');
+    setResultView('report');
+    setReportCollapsed(false);
+    window.requestAnimationFrame(() => {
+      reportPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      reportPanelRef.current?.focus({ preventScroll: true });
+      if (reportDocumentRef.current) {
+        reportDocumentRef.current.scrollTop = 0;
+      }
+    });
+  };
   const canSendChat = Boolean(report) && !chatSendMutation.isPending && Boolean(chatInput.trim());
   const revisions = revisionsQuery.data ?? [];
   const activeRevision = revisions.find((r) => r.status === 'queued' || r.status === 'running');
@@ -491,39 +581,34 @@ export default function RunDetailPage() {
       .filter(({ status }) => isStageVisible(status));
     return visibleStages.length > 0 ? visibleStages : [{ stage: 'requirement_understanding', status: 'running' }];
   }, [completed, run, traces, reportVersions]);
-  const revealedStages = stages.slice(0, revealedStageCount);
-  const nextStage = stages[revealedStageCount];
+  const shouldAnimateStages = run?.status !== 'completed' && run?.status !== 'failed';
+  const visibleStageCount = shouldAnimateStages ? revealedStageCount : stages.length;
+  const revealedStages = stages.slice(0, visibleStageCount);
+  const nextStage = shouldAnimateStages ? stages[revealedStageCount] : undefined;
 
   useEffect(() => {
     setRevealedStageCount(0);
-    setManualStageCollapse(false);
     setSelectedIteration(undefined);
     setReportCollapsed(false);
+    setResultView('report');
     setMobileTab('process');
   }, [id]);
 
   useEffect(() => {
-    if (!run || revealedStageCount >= stages.length) return undefined;
+    if (!run || !shouldAnimateStages) {
+      setRevealedStageCount(stages.length);
+      return undefined;
+    }
+    if (revealedStageCount >= stages.length) return undefined;
     const timer = window.setTimeout(() => {
       setRevealedStageCount((count) => Math.min(count + 1, stages.length));
     }, 1000);
     return () => window.clearTimeout(timer);
-  }, [revealedStageCount, run, stages.length]);
+  }, [revealedStageCount, run, shouldAnimateStages, stages.length]);
 
   useEffect(() => {
     setRevealedStageCount((count) => Math.min(count, stages.length));
   }, [stages.length]);
-
-  useEffect(() => {
-    if (!run || manualStageCollapse) return;
-    if (run.status === 'running' || run.status === 'waiting_for_human' || run.status === 'waiting_for_clarification') {
-      setStagesCollapsed(false);
-      return;
-    }
-    if (run.status === 'completed' || run.status === 'failed') {
-      setStagesCollapsed(true);
-    }
-  }, [manualStageCollapse, run?.status]);
 
   if (runQuery.isLoading) return <p className="loading">加载任务中...</p>;
   if (runQuery.isError || !run) return <p className="error-text">任务加载失败。</p>;
@@ -555,7 +640,7 @@ export default function RunDetailPage() {
       <div className="conversation-header">
         <div>
           <h1>{run.title}</h1>
-          <p>{isRevisionRunning ? '正在修订报告...' : completed ? '报告已完成' : (statusLabels[run.status] ?? run.status)}</p>
+          <p>{isRevisionRunning ? '正在修订报告...' : report ? reportStatusDetail : (statusLabels[run.status] ?? run.status)}</p>
         </div>
         {completed ? (
           <button type="button" className="icon-text-button" onClick={() => regenerateMutation.mutate()} disabled={regenerateMutation.isPending}>
@@ -567,7 +652,10 @@ export default function RunDetailPage() {
 
       <div className="message-stream" ref={chatListRef}>
         <article className="message-row user">
-          <div className="message-bubble">{run.user_requirement}</div>
+          <div className="message-bubble">
+            <span className="message-speaker">你的需求</span>
+            <span>{run.user_requirement}</span>
+          </div>
         </article>
         <article className="message-row assistant">
           <div className="assistant-card">
@@ -580,63 +668,53 @@ export default function RunDetailPage() {
         </article>
 {submittedAnswers.map((answer, index) => (
           <article className="message-row user" key={`${answer}-${index}`}>
-            <div className="message-bubble">{answer}</div>
+            <div className="message-bubble">
+              <span className="message-speaker">你的补充</span>
+              <span>{answer}</span>
+            </div>
           </article>
         ))}
         {stages.length > 0 ? (
           <article className="message-row assistant">
             <div className="stage-collapse-card">
-              <button
-                type="button"
-                className="stage-collapse-toggle"
-                onClick={() => {
-                  setManualStageCollapse(true);
-                  setStagesCollapsed(!stagesCollapsed);
-                }}
-              >
+              <div className="stage-collapse-toggle stage-collapse-static">
                 <div className="stage-collapse-title">
                   <CheckCircle2 size={16} />
                   <strong>分析过程</strong>
-                  <span className="stage-collapse-summary">
-                    {revealedStages.map(({ stage, status }) => status === 'completed' ? `${stageLabels[stage] ?? stage} ✓` : `...`).join(' → ')}
-                  </span>
                 </div>
-                {stagesCollapsed ? <ChevronDown size={18} /> : <ChevronUp size={18} />}
-              </button>
-              {!stagesCollapsed ? (
-                <div className="dialogue-stage-list">
-                  {revealedStages.map(({ stage, status }) => (
-                    <StageDialogueCard
-                      key={stage}
-                      stage={stage}
-                      status={status}
-                      run={run}
-                      counts={stageCounts}
-                      competitors={competitors}
-                      sources={sources}
-                      evidence={evidence}
-                      hasReport={Boolean(report)}
-                      citationBundle={citationBundleQuery.data ?? []}
-                      traces={traces}
-                      runId={id}
-                      selectedIteration={selectedIteration ?? latestReportIteration}
-                      clarification={{
-                        value: clarificationAnswer,
-                        onChange: setClarificationAnswer,
-                        onSubmit: submitClarification,
-                        isPending: clarificationMutation.isPending,
-                        error: clarificationMutation.error,
-                      }}
-                    />
-                  ))}
-                  {nextStage ? (
-                    <article className="thinking-card">
-                      <Loader2 size={17} />
-                      <span>Agent 正在思考：{stageLabels[nextStage.stage] ?? nextStage.stage}</span>
-                    </article>
-                  ) : null}
-                </div>
-              ) : null}
+              </div>
+              <div className="dialogue-stage-list">
+                {revealedStages.map(({ stage, status }) => (
+                  <StageDialogueCard
+                    key={stage}
+                    stage={stage}
+                    status={status}
+                    run={run}
+                    counts={stageCounts}
+                    competitors={competitors}
+                    sources={sources}
+                    evidence={evidence}
+                    hasReport={Boolean(report)}
+                    citationBundle={citationBundleQuery.data ?? []}
+                    traces={traces}
+                    runId={id}
+                    selectedIteration={selectedIteration ?? latestReportIteration}
+                    clarification={{
+                      value: clarificationAnswer,
+                      onChange: setClarificationAnswer,
+                      onSubmit: submitClarification,
+                      isPending: clarificationMutation.isPending,
+                      error: clarificationMutation.error,
+                    }}
+                  />
+                ))}
+                {nextStage ? (
+                  <article className="thinking-card">
+                    <Loader2 size={17} />
+                    <span>Agent 正在思考：{stageLabels[nextStage.stage] ?? nextStage.stage}</span>
+                  </article>
+                ) : null}
+              </div>
             </div>
           </article>
         ) : null}
@@ -645,22 +723,23 @@ export default function RunDetailPage() {
             <div className="assistant-card report-done-card">
               <div className="assistant-card-title">
                 <CheckCircle2 size={17} />
-                <strong>报告已生成</strong>
+                <strong>{reportStatusLabel}</strong>
               </div>
               <p>
-                第一轮分析已完成。右侧可查看完整报告，下方可以继续对话修改报告。
+                当前展示 {report ? formatReportVersion(report.iteration) : '最新报告'}。报告区已准备好，你可以查看完整报告，也可以继续对话修改。
               </p>
-              <button
-                type="button"
-                className="chat-view-report-btn"
-                onClick={() => {
-                  setSelectedIteration(latestReportIteration ?? undefined);
-                  setMobileTab('report');
-                  setReportCollapsed(false);
-                }}
-              >
-                查看报告
-              </button>
+              <div className="chat-card-actions">
+                <button
+                  type="button"
+                  className="chat-view-report-btn"
+                  onClick={() => viewReport(latestReportIteration)}
+                >
+                  查看完整报告
+                </button>
+                <Link className="chat-view-report-btn secondary" to={`/runs/${id}/report`}>
+                  打开完整报告页
+                </Link>
+              </div>
             </div>
           </article>
         ) : null}
@@ -683,7 +762,8 @@ export default function RunDetailPage() {
               {msg.role === 'user' ? (
                 <article className="message-row user">
                   <div className="message-bubble">
-                    {msg.content}
+                    <span className="message-speaker">你</span>
+                    <span>{msg.content}</span>
                     {isQueuedChatMessage(msg) ? <span className="queued-message-tag">等待质检结束后处理</span> : null}
                   </div>
                 </article>
@@ -715,11 +795,7 @@ export default function RunDetailPage() {
                       <button
                         type="button"
                         className="chat-view-report-btn"
-                        onClick={() => {
-                          setSelectedIteration(reportVersion);
-                          setMobileTab('report');
-                          setReportCollapsed(false);
-                        }}
+                        onClick={() => viewReport(reportVersion)}
                       >
                         查看{formatReportVersion(reportVersion)}
                       </button>
@@ -759,11 +835,7 @@ export default function RunDetailPage() {
                       <button
                         type="button"
                         className="chat-view-report-btn"
-                        onClick={() => {
-                          setSelectedIteration(revision.target_report_iteration!);
-                          setMobileTab('report');
-                          setReportCollapsed(false);
-                        }}
+                        onClick={() => viewReport(revision.target_report_iteration!)}
                       >
                         查看{formatReportVersion(revision.target_report_iteration)}
                       </button>
@@ -804,22 +876,24 @@ export default function RunDetailPage() {
           chatSendMutation.mutate({ runId: id, message: msg });
         }}
       >
-        <textarea
-          className="conversation-input"
-          value={chatInput}
-          onChange={(e) => setChatInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              const msg = chatInput.trim();
-              if (!canSendChat) return;
-              chatSendMutation.mutate({ runId: id, message: msg });
-            }
-          }}
-          placeholder={report ? '继续对话：删除定价章节 / 增加用户评价对比 / 重新调研某个方向...' : '报告生成后可继续对话修改'}
-          rows={2}
-          disabled={chatSendMutation.isPending}
-        />
+        <div className="conversation-input-shell">
+          <textarea
+            className="conversation-input"
+            value={chatInput}
+            onChange={(e) => setChatInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                const msg = chatInput.trim();
+                if (!canSendChat) return;
+                chatSendMutation.mutate({ runId: id, message: msg });
+              }
+            }}
+            placeholder={report ? '继续对话：删除定价章节 / 增加用户评价对比 / 重新调研某个方向...' : '报告生成后可继续对话修改'}
+            rows={2}
+            disabled={chatSendMutation.isPending}
+          />
+        </div>
         <button type="submit" className="conversation-send-btn" disabled={!canSendChat}>
           <Send size={18} />
         </button>
@@ -828,15 +902,18 @@ export default function RunDetailPage() {
   );
 
   const reportColumn = (
-    <section className="report-panel">
+    <section className="report-panel" ref={reportPanelRef} tabIndex={-1}>
       <div className="report-toolbar">
         <div>
-          <h2>{report?.title ?? '竞品分析报告'}</h2>
+          <h2>
+            {report?.title ?? '竞品分析报告'}
+            {report && retryQAResults.length > 0 ? (
+              <small>质检曾触发 {retryQAResults.length} 次重试，当前展示的是 {formatReportVersion(report.iteration)}。</small>
+            ) : null}
+          </h2>
           <p className="report-status-line">
             {isRevisionRunning && <Loader2 size={12} className="animate-spin" />}
-            {report
-              ? `${formatReportVersion(report.iteration)} · ${reportStatusLabel} · ${report.summary}`
-              : '报告生成后会显示在这里'}
+            {report ? [reportStatusDetail, report.summary].filter(Boolean).join(' · ') : '报告生成后会显示在这里'}
           </p>
           {isOptimizingReport ? (
             <p className="report-intervention-hint">Agent 正在质检这份报告。你也可以通过左侧对话人工介入修改。</p>
@@ -857,49 +934,87 @@ export default function RunDetailPage() {
           </button>
         </div>
       </div>
-      {selectedIteration !== undefined && latestReportIteration !== undefined && selectedIteration !== latestReportIteration ? (
-        <div className="historical-version-banner">
-          <span>您正在查看历史版本（{formatReportVersion(selectedIteration)}）。当前任务已产生最新版本（{formatReportVersion(latestReportIteration)}）。</span>
-          <button type="button" onClick={() => setSelectedIteration(undefined)}>切换至最新版本</button>
-        </div>
-      ) : null}
-      {report && (
-        <ReportDiffBanner 
-          current={report} 
-          previous={reportVersions.find(v => v.iteration === report.iteration - 1)} 
-        />
-      )}
-      {reportVersions.length > 1 ? (
-        <div className="report-version-selector">
-          <span className="report-version-label">报告版本</span>
-          {reportVersions.map((version) => (
-            <button
-              key={version.id}
-              type="button"
-              className={`report-version-btn ${(selectedIteration ?? latestReportIteration) === version.iteration ? 'active' : ''}`}
-              onClick={() => setSelectedIteration(version.iteration)}
-            >
-                {formatReportVersion(version.iteration)}
-            </button>
-          ))}
-        </div>
-      ) : null}
-      <article className="report-document conversational-report">
-        {reportQuery.isLoading ? <p className="loading">加载报告中...</p> : null}
-        {reportQuery.isError ? <p className="error-text">报告加载失败。</p> : null}
-        {report ? <ReportMarkdown markdown={report.markdown_content} citations={citationsQuery.data ?? []} /> : null}
-        {!reportQuery.isLoading && !reportQuery.isError && !report ? (
-          <div className="empty-state">
-            <p className="empty-state-title">报告尚未生成</p>
-            <p className="empty-state-desc">完成竞品确认后，Agent 会继续采集资料并生成报告。</p>
+      <div className="result-view-body">
+        {resultView === 'report' ? (
+          <>
+            {reportVersions.length > 1 ? (
+              <div className="report-version-selector">
+                <span className="report-version-label">报告版本</span>
+                {reportVersions.map((version) => (
+                  <button
+                    key={version.id}
+                    type="button"
+                    className={`report-version-btn ${currentVersion === version.iteration ? 'active' : ''}`}
+                    onClick={() => setSelectedIteration(version.iteration)}
+                  >
+                    <span className="report-version-title">
+                      {formatReportVersion(version.iteration)}
+                      {version.iteration === latestReportIteration ? <em>最新</em> : <em>历史</em>}
+                    </span>
+                    <span className="report-version-meta">{formatDateTime(version.created_at)}</span>
+                    <span className={`report-version-qa ${getQATone(versionQaByIteration.get(version.iteration))}`}>
+                      {getQALabel(versionQaByIteration.get(version.iteration))}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {selectedIteration !== undefined && latestReportIteration !== undefined && selectedIteration !== latestReportIteration ? (
+              <div className="historical-version-banner">
+                <div>
+                  <strong>正在查看历史版本</strong>
+                  <span>
+                    {formatReportVersion(selectedIteration)}
+                    {selectedReportVersion ? ` · ${formatDateTime(selectedReportVersion.created_at)}` : ''}
+                    。最新版本是 {formatReportVersion(latestReportIteration)}
+                    {latestReportVersion ? ` · ${formatDateTime(latestReportVersion.created_at)}` : ''}。
+                  </span>
+                </div>
+                <button type="button" onClick={() => setSelectedIteration(undefined)}>切换至最新版本</button>
+              </div>
+            ) : null}
+            {report && (
+              <ReportDiffBanner
+                current={report}
+                previous={reportVersions.find(v => v.iteration === report.iteration - 1)}
+              />
+            )}
+            <article className="report-document conversational-report" ref={reportDocumentRef}>
+              {reportQuery.isLoading ? <p className="loading">加载报告中...</p> : null}
+              {reportQuery.isError ? <p className="error-text">报告加载失败。</p> : null}
+              {report ? <ReportMarkdown markdown={report.markdown_content} citations={citationsQuery.data ?? []} /> : null}
+              {!reportQuery.isLoading && !reportQuery.isError && !report ? (
+                <div className="empty-state">
+                  <p className="empty-state-title">报告尚未生成</p>
+                  <p className="empty-state-desc">完成竞品确认后，Agent 会继续采集资料并生成报告。</p>
+                </div>
+              ) : null}
+            </article>
+          </>
+        ) : (
+          <div className="result-insights">
+            <QASummaryBanner runId={id} />
+            <CitationBundleView bundle={citationBundleQuery.data ?? []} />
+            <div className="result-insights-grid">
+              <SourceList sources={sources} />
+              <EvidenceList evidence={evidence} sources={sources} />
+            </div>
           </div>
-        ) : null}
-      </article>
+        )}
+      </div>
+      <div className="result-view-tabs">
+        <button type="button" className={resultView === 'report' ? 'active' : ''} onClick={() => setResultView('report')}>
+          报告
+        </button>
+        <button type="button" className={resultView === 'evidence' ? 'active' : ''} onClick={() => setResultView('evidence')}>
+          证据与分析
+        </button>
+      </div>
     </section>
   );
 
   return (
-    <div className={`analysis-workspace ${completed ? 'completed' : ''} ${reportCollapsed ? 'report-collapsed' : ''}`}>
+    <div className={`analysis-workspace ${completed ? 'completed' : ''} ${report ? 'has-report' : ''} ${reportCollapsed ? 'report-collapsed' : ''}`}>
       <div className="mobile-result-tabs">
         <button type="button" className={mobileTab === 'process' ? 'active' : ''} onClick={() => setMobileTab('process')}>过程</button>
         <button type="button" className={mobileTab === 'report' ? 'active' : ''} onClick={() => setMobileTab('report')}>报告</button>
@@ -1058,9 +1173,9 @@ function RevisionWorkflowCard({ revision }: { revision: Revision }) {
             ) : null}
           </div>
           {isFailed && revision.error_message ? (
-            <div className="revision-summary-box" style={{ background: '#fef2f2', borderColor: '#fecaca' }}>
-              <strong style={{ color: '#991b1b' }}>错误原因</strong>
-              <p style={{ color: '#7f1d1d' }}>{revision.error_message}</p>
+            <div className="revision-summary-box failed">
+              <strong>错误原因</strong>
+              <p>{revision.error_message}</p>
             </div>
           ) : null}
         </>
@@ -1222,7 +1337,6 @@ function FocusProfileBlock({ output, question }: { output: Record<string, unknow
           {focuses.map((focus) => <span key={focus}>{focus}</span>)}
         </div>
       ) : null}
-      {assumptions.length ? <p className="requirement-compact-line">假设：{assumptions.join('；')}</p> : null}
     </div>
   );
 }
@@ -1335,8 +1449,8 @@ function StageDialogueCard({
 
         {showSources ? (
           <div className="stage-embedded-block resource-grid">
-            <SourceList sources={sources} isCollecting={run.status === 'running'} />
-            <EvidenceList evidence={evidence} sources={sources} />
+            <SourceList sources={sources} isCollecting={run.status === 'running'} initialVisibleCount={3} />
+            <EvidenceList evidence={evidence} sources={sources} initialVisibleCount={3} />
           </div>
         ) : null}
 

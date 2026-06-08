@@ -5,14 +5,15 @@ import { ChevronDown, ChevronRight } from 'lucide-react';
 type Props = {
   evidence: Evidence[];
   sources: Source[];
+  initialVisibleCount?: number;
 };
 
-export default function EvidenceList({ evidence, sources }: Props) {
+export default function EvidenceList({ evidence, sources, initialVisibleCount = 5 }: Props) {
   const [detailEvidence, setDetailEvidence] = useState<Evidence | null>(null);
   const [expandedIds, setExpandedIds] = useState<string[]>([]);
   const [listExpanded, setListExpanded] = useState(false);
   const sourceById = new Map(sources.map((source) => [source.id, source]));
-  const visibleEvidence = listExpanded ? evidence : evidence.slice(0, 5);
+  const visibleEvidence = listExpanded ? evidence : evidence.slice(0, initialVisibleCount);
   const hiddenCount = Math.max(0, evidence.length - visibleEvidence.length);
 
   function toggleExpanded(id: string) {
@@ -67,7 +68,7 @@ export default function EvidenceList({ evidence, sources }: Props) {
             </article>
           );
         })}
-        {evidence.length > 5 ? (
+        {evidence.length > initialVisibleCount ? (
           <button type="button" className="source-list-toggle" onClick={() => setListExpanded((value) => !value)} aria-expanded={listExpanded}>
             {listExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
             {listExpanded ? '收起证据片段' : `展开全部证据片段（还有 ${hiddenCount} 条）`}
