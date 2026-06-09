@@ -503,17 +503,20 @@ def _normalize_inline_citations(
     normalized = re.sub(
         r"(?<!\[)\[(\d{1,2})\]\((https?://[^)\s]+)\)", r"[[\1]](\2)", markdown_content
     )
+    normalized = re.sub(r"(?<!\[)\[(\d{1,2})\](?!\()(?!\])", r"[[\1]]", normalized)
     if max_reference_id is None:
         return normalized
 
-    def keep_known_reference(match: re.Match[str]) -> str:
+    def strip_unknown_reference_url(match: re.Match[str]) -> str:
         reference_id = int(match.group(1))
         if 1 <= reference_id <= max_reference_id:
             return match.group(0)
-        return ""
+        return f"[[{reference_id}]]"
 
     return re.sub(
-        r"\[\[(\d{1,2})\]\]\((https?://[^)\s]+)\)", keep_known_reference, normalized
+        r"\[\[(\d{1,2})\]\]\((https?://[^)\s]+)\)",
+        strip_unknown_reference_url,
+        normalized,
     )
 
 
@@ -541,9 +544,7 @@ def _ensure_reference_section(
     cited_ids = {
         int(a or b) for a, b in re.findall(r"\[{2}(\d+)\]{2}|\[(\d+)\]", body_only)
     }
-    reference_section = _format_reference_section(
-        working_sources, cited_ids if cited_ids else None
-    )
+    reference_section = _format_reference_section(working_sources, cited_ids)
     max_reference_id = max(
         (
             s.get("reference_id", 0)
@@ -558,9 +559,63 @@ def _ensure_reference_section(
         stripped, max_reference_id=max_reference_id
     )
     pattern = r"\n*##\s*(?:(?:\d+|[一二三四五六七八九十]+)[\.、]\s*)?(?:参考来源|参考文献|References)\s*\n[\s\S]*$"
+    result = normalized
     if re.search(pattern, normalized):
-        return re.sub(pattern, f"\n\n{reference_section}", normalized).strip()
-    return f"{normalized}\n\n{reference_section}".strip()
+        result = re.sub(pattern, f"\n\n{reference_section}", normalized).strip()
+    else:
+        result = f"{normalized}\n\n{reference_section}".strip()
+
+    valid_ids = {
+        s.get("reference_id")
+        for s in working_sources
+        if isinstance(s.get("reference_id"), int)
+    }
+    body_ids = {
+        int(a or b) for a, b in re.findall(r"\[{2}(\d+)\]{2}|\[(\d+)\]", result)
+    }
+    orphan_ids = body_ids - valid_ids
+    if orphan_ids:
+        logger.warning(
+            "Citation consistency: body references %s have no matching source (valid: %s)",
+            orphan_ids,
+            sorted(valid_ids),
+        )
+
+    return result
+
+
+def _validate_citation_whitelist(
+    markdown_content: str, citation_bundle: list[dict[str, Any]]
+) -> str:
+    if not citation_bundle:
+        return markdown_content
+    all_allowed: set[int] = set()
+    for competitor in citation_bundle:
+        for claim in competitor.get("claims", []):
+            for rid in claim.get("allowed_reference_ids", []):
+                if isinstance(rid, int):
+                    all_allowed.add(rid)
+            for ev in claim.get("evidence", []):
+                rid = ev.get("source_reference_id")
+                if isinstance(rid, int):
+                    all_allowed.add(rid)
+    if not all_allowed:
+        return markdown_content
+
+    def remove_disallowed(match: re.Match[str]) -> str:
+        rid = int(match.group(1) or match.group(2))
+        if rid in all_allowed:
+            return match.group(0)
+        logger.warning(
+            "Removing disallowed citation [[%d]] not in any claim's evidence", rid
+        )
+        return ""
+
+    return re.sub(
+        r"\[\[(\d{1,2})\]\](?:\([^)]*\))?|\[(\d{1,2})\](?!\()",
+        remove_disallowed,
+        markdown_content,
+    )
 
 
 def _strip_code_fences(content: str) -> str:
@@ -997,7 +1052,7 @@ citation_bundle：{citation_bundle}{qa_guidance_section}
    - 维度顺序：先排列基础维度（产品定位、核心功能、定价策略、优势、劣势或痛点、机会点），再排列用户特别关注的自定义维度（来自 citation_bundle 中 claim_type 以 focus: 开头的条目）
    - 用户自定义维度的维度名应使用其 label 字段，并在后面标注"（重点关注）"
 4. 每个单元格的关键结论必须引用该 claim 下 evidence 中提供的 source_reference_id，格式为 `[[1]]`；禁止写成 `[1]` 或 `[1](URL)`
-5. 【重要】不同 claim 有各自不同的 evidence 和 source_reference_id。你必须为每个 claim 使用该 claim 自己的 evidence 中的 source_reference_id，严禁把同一个 source_reference_id 用于所有 claim
+5. 【重要】不同 claim 有各自不同的 evidence 和 source_reference_id。你必须为每个 claim 使用该 claim 自己的 evidence 中的 source_reference_id，严禁把同一个 source_reference_id 用于所有 claim。严禁使用任何 claim 的 evidence 列表中没有出现的 source_reference_id——如果你不确定，宁可不写引用也不要编造引用号
 6. 如果某些信息不确定或缺失，如实填入"证据中未涉及"，不要编造
 7. 单元格内容控制在 20-60 字，力求简练但信息完整；不要在单元格内写长段落；单元格内禁止使用换行符，如需分行请用「；」或「——」连接
 8. 在表格之后，可以为特别重要的维度或需要深入解释的结论补充简短的「深度解读」段落，每个段落不超过 3-4 句话
@@ -1016,6 +1071,9 @@ JSON schema:
             return fallback
         result["markdown_content"] = _ensure_reference_section(
             result.get("markdown_content", ""), sources
+        )
+        result["markdown_content"] = _validate_citation_whitelist(
+            result["markdown_content"], citation_bundle
         )
         return result
 
@@ -1539,7 +1597,8 @@ JSON schema:
 
         citation_bundle_json = json.dumps(citation_bundle, ensure_ascii=False)
         if len(citation_bundle_json) > 8000:
-            per_competitor = {}
+            _CORE_CLAIM_TYPES = {"positioning", "core_features", "pricing"}
+            per_competitor: dict[str, list[dict]] = {}
             for item in citation_bundle:
                 name = item.get("competitor_name", "unknown")
                 per_competitor.setdefault(name, []).append(item)
@@ -1547,8 +1606,17 @@ JSON schema:
             trimmed_chunks: list[str] = []
             used = 0
             for name, items in per_competitor.items():
+                core_items = [
+                    i
+                    for i in items
+                    if any(
+                        c.get("claim_type", "") in _CORE_CLAIM_TYPES
+                        for c in i.get("claims", [])
+                    )
+                ]
+                other_items = [i for i in items if i not in core_items]
                 chunk_items: list[dict] = []
-                for item in items:
+                for item in core_items + other_items:
                     item_json = json.dumps(item, ensure_ascii=False)
                     candidate = ("," + item_json) if chunk_items else item_json
                     if used + len(candidate) + 2 > budget:
@@ -1592,7 +1660,7 @@ JSON schema:
 3. 如果修订计划要求新增竞品（sections_to_change.change_type==add），请在表格中增加对应的列。
 4. 如果修订计划要求删除竞品（sections_to_change.change_type==delete），请从表格中移除对应的列及其所有内容。
 5. 如果修订计划涉及新的分析维度，请在表格中增加对应的行；维度名使用其 label 字段，用户特别关注的维度标注"（重点关注）"。
-6. 每个单元格的关键结论必须引用该条目下证据提供的 source_reference_id，格式为 `[[1]]`；严禁写成 `[1]` 或 `[1](URL)`。
+6. 每个单元格的关键结论必须引用该条目下 evidence 中提供的 source_reference_id，格式为 `[[1]]`；严禁写成 `[1]` 或 `[1](URL)`。严禁使用 citation_bundle 中该 claim 的 evidence 列表里没有出现的引用号——如果不确定，宁可不写引用也不要编造引用号
 7. 【引用保留——硬性要求】对于未被修订计划涉及的旧结论和旧单元格，必须原封不动地保留其 `[[n]]` 引用标记。即使你微调了措辞，也绝对不得丢弃原有的引用编号。引用是报告可信度的唯一来源，丢失引用等同于数据造假。
 8. 如果某些信息不确定或缺失，如实填入"证据中未涉及"，不要编造。
 9. 单元格内容控制在 20-60 字，单元格内禁止使用换行符，如需分行请用「；」或「——」连接。
@@ -1613,6 +1681,9 @@ JSON schema:
         )
 
         result["markdown_content"] = _ensure_reference_section(new_markdown, sources)
+        result["markdown_content"] = _validate_citation_whitelist(
+            result["markdown_content"], citation_bundle
+        )
         return result
 
     def generate_revision_summary(

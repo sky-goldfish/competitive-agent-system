@@ -152,6 +152,36 @@ def _ensure_compatible_schema() -> None:
                         "ALTER TABLE qa_results ADD COLUMN retry_queries_json TEXT NOT NULL DEFAULT '[]'"
                     )
                 )
+    if "sources" in inspector.get_table_names():
+        source_columns = {column["name"] for column in inspector.get_columns("sources")}
+        with engine.begin() as connection:
+            if "reference_id" not in source_columns:
+                connection.execute(
+                    text("ALTER TABLE sources ADD COLUMN reference_id INTEGER")
+                )
+                connection.execute(
+                    text(
+                        "UPDATE sources SET reference_id = json_extract(metadata_json, '$.reference_id') "
+                        "WHERE metadata_json IS NOT NULL AND json_extract(metadata_json, '$.reference_id') IS NOT NULL"
+                    )
+                )
+    if "evidence_items" in inspector.get_table_names():
+        evidence_columns = {
+            column["name"] for column in inspector.get_columns("evidence_items")
+        }
+        with engine.begin() as connection:
+            if "reference_id" not in evidence_columns:
+                connection.execute(
+                    text("ALTER TABLE evidence_items ADD COLUMN reference_id INTEGER")
+                )
+                connection.execute(
+                    text(
+                        "UPDATE evidence_items SET reference_id = ("
+                        "  SELECT json_extract(s.metadata_json, '$.reference_id') "
+                        "  FROM sources s WHERE s.id = evidence_items.source_id"
+                        ") WHERE reference_id IS NULL"
+                    )
+                )
 
 
 def _has_reports_unique(connection) -> bool:

@@ -231,7 +231,14 @@ def get_report_citation_bundle(
                 pass
 
     sources = db.query(Source).filter(Source.run_id == run_id).all()
-    source_ref_by_id = {s.id: _extract_ref_id(s.metadata_json) for s in sources}
+    source_ref_by_id = {
+        s.id: (
+            s.reference_id
+            if s.reference_id is not None
+            else _extract_ref_id(s.metadata_json)
+        )
+        for s in sources
+    }
     source_by_id = {s.id: s for s in sources}
 
     evidence_items = db.query(Evidence).filter(Evidence.run_id == run_id).all()

@@ -156,6 +156,7 @@ class Source(Base):
     retrieved_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     raw_content: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reference_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     run: Mapped[Run] = relationship(back_populates="sources")
     competitor: Mapped[Competitor | None] = relationship(back_populates="sources")
@@ -177,6 +178,7 @@ class Evidence(Base):
     quote: Mapped[str] = mapped_column(Text)
     summary: Mapped[str] = mapped_column(Text)
     confidence: Mapped[float] = mapped_column(Float, default=0.8)
+    reference_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     run: Mapped[Run] = relationship(back_populates="evidence_items")
     source: Mapped[Source] = relationship(back_populates="evidence_items")

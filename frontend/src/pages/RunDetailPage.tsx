@@ -1434,7 +1434,7 @@ function StageDialogueCard({
           <div className="stage-status-icon">{statusIcon(status)}</div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <h3>{stageLabels[stage] ?? stage}</h3>
-            <span>{statusText(status)}</span>
+            <span>{statusText(status, stage)}</span>
           </div>
           {canCollapse ? (
             <button type="button" className="stage-card-collapse-btn" onClick={(e) => { e.stopPropagation(); setManuallyExpanded((v) => !v); }}>
@@ -1510,10 +1510,18 @@ function statusIcon(status: string) {
   return <span className="pending-dot" />;
 }
 
-function statusText(status: string) {
+function statusText(status: string, stage?: string) {
+  if (status === 'completed-retry') {
+    const retryLabels: Record<string, string> = {
+      material_collection: '重新采集中',
+      structured_analysis: '重新分析中',
+      report_generation: '重新生成中',
+      quality_check: '质检修正中',
+    };
+    return retryLabels[stage ?? ''] ?? '重新执行中';
+  }
   const map: Record<string, string> = {
     completed: '已完成',
-    'completed-retry': '质检修正中',
     running: '进行中',
     waiting: '待你处理',
     failed: '失败',

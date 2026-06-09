@@ -288,7 +288,6 @@ def execute_revision_run(revision_id: str) -> None:
                 }
             )
 
-        source_list = _source_list(db, revision.run_id)
         evidence_list = _evidence_list(db, revision.run_id, ctx["competitors"])
 
         _ensure_analyses_for_all_selected(db, revision.run_id, ctx["competitors"])
@@ -360,7 +359,7 @@ def execute_revision_run(revision_id: str) -> None:
             }
             for src in db.query(Source).filter(Source.run_id == revision.run_id).all():
                 if src.competitor_id in removed_comp_ids:
-                    ref_id = _extract_ref_id(src.metadata_json)
+                    ref_id = src.reference_id or _extract_ref_id(src.metadata_json)
                     if ref_id:
                         removed_citation_ids.add(str(ref_id))
         ctx["excluded_citation_ids"] = {

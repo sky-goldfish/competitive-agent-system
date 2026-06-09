@@ -785,6 +785,7 @@ def _handle_report_redo(
                 source_type="unknown",
                 provider=search.name,
                 competitor_id=competitor.id if competitor else None,
+                reference_id=next_reference_id,
                 metadata_json=json.dumps(
                     {"reference_id": next_reference_id}, ensure_ascii=False
                 ),
@@ -808,6 +809,7 @@ def _handle_report_redo(
                 quote=(result.snippet or "")[:800],
                 summary=result.snippet or "",
                 confidence=0.65,
+                reference_id=source.reference_id,
             )
             db.add(evidence)
             try:
@@ -846,8 +848,10 @@ def _handle_report_redo(
                 "confidence": e.confidence,
                 "source_url": e.source.url if e.source else None,
                 "source_title": e.source.title if e.source else None,
-                "reference_id": _extract_ref_id(
-                    e.source.metadata_json if e.source else None
+                "reference_id": (
+                    e.reference_id
+                    if e.reference_id is not None
+                    else _extract_ref_id(e.source.metadata_json if e.source else None)
                 ),
                 "source_type": e.source.source_type if e.source else "unknown",
             }
@@ -888,71 +892,13 @@ def _handle_report_redo(
         )
     _commit_with_retry(db)
 
-    analyses = db.query(Analysis).filter(Analysis.run_id == report.run_id).all()
     selected_comp_ids = {c.id for c in competitors if c.selected}
-    sources = (
-        db.query(Source)
-        .filter(
-            Source.run_id == report.run_id,
-            (Source.competitor_id.in_(selected_comp_ids))
-            | (Source.competitor_id.is_(None)),
-        )
-        .all()
-    )
+    source_list = _source_list(db, report.run_id, selected_comp_ids)
+    evidence_list = _evidence_list(db, report.run_id, competitors)
 
-    analysis_list = [
-        {
-            "id": a.id,
-            "competitor_id": a.competitor_id,
-            "competitor_name": a.competitor.name if a.competitor else "",
-            "positioning": a.positioning,
-            "target_users": a.target_users,
-            "core_features_json": a.core_features_json,
-            "pricing_summary": a.pricing_summary,
-            "strengths_json": a.strengths_json,
-            "weaknesses_json": a.weaknesses_json,
-            "opportunities_json": a.opportunities_json,
-            "custom_focus_analysis_json": a.custom_focus_analysis_json,
-            "evidence_ids_json": a.evidence_ids_json,
-        }
-        for a in analyses
-    ]
-    source_list = [
-        {
-            "id": s.id,
-            "competitor_id": s.competitor_id,
-            "title": s.title,
-            "url": s.url,
-            "snippet": s.snippet,
-            "source_type": s.source_type,
-            "provider": s.provider,
-            "raw_content": s.raw_content,
-            "reference_id": _extract_ref_id(s.metadata_json),
-            "metadata_json": s.metadata_json,
-        }
-        for s in sources
-    ]
-    evidence_list = [
-        {
-            "id": e.id,
-            "competitor_id": e.source.competitor_id if e.source else None,
-            "related_product": e.related_product,
-            "related_dimension": e.related_dimension,
-            "quote": e.quote,
-            "summary": e.summary,
-            "confidence": e.confidence,
-            "source_url": e.source.url if e.source else None,
-            "source_title": e.source.title if e.source else None,
-            "reference_id": _extract_ref_id(
-                e.source.metadata_json if e.source else None
-            ),
-            "source_type": e.source.source_type if e.source else "unknown",
-        }
-        for e in db.query(Evidence).filter(Evidence.run_id == report.run_id).all()
-        if (e.source and e.source.competitor_id in selected_comp_ids)
-        or (e.source and e.source.competitor_id is None)
-        or not e.source
-    ]
+    _ensure_analyses_for_all_selected(db, report.run_id, competitors)
+
+    analysis_list = _analysis_list(db, report.run_id, evidence_list=evidence_list)
     citation_bundle = _build_citation_bundle(analysis_list, evidence_list)
 
     new_report = llm.generate_report(
@@ -1063,6 +1009,11 @@ def _competitor_to_dict(competitor: Competitor) -> dict[str, Any]:
 
 
 def _source_to_dict(source: Source) -> dict[str, Any]:
+    ref_id = (
+        source.reference_id
+        if source.reference_id and source.reference_id > 0
+        else _extract_ref_id(source.metadata_json)
+    )
     return {
         "id": source.id,
         "competitor_id": source.competitor_id,
@@ -1072,7 +1023,7 @@ def _source_to_dict(source: Source) -> dict[str, Any]:
         "source_type": source.source_type,
         "provider": source.provider,
         "raw_content": source.raw_content,
-        "reference_id": _extract_ref_id(source.metadata_json),
+        "reference_id": ref_id,
         "metadata_json": source.metadata_json,
     }
 
@@ -1247,6 +1198,11 @@ def _evidence_list(
         )
         if comp_id and comp_id not in selected_ids:
             continue
+        ref_id = (
+            item.reference_id
+            if item.reference_id is not None
+            else _extract_ref_id(item.source.metadata_json if item.source else None)
+        )
         result.append(
             {
                 "id": item.id,
@@ -1258,9 +1214,7 @@ def _evidence_list(
                 "confidence": item.confidence,
                 "source_url": item.source.url if item.source else None,
                 "source_title": item.source.title if item.source else None,
-                "reference_id": _extract_ref_id(
-                    item.source.metadata_json if item.source else None
-                ),
+                "reference_id": ref_id,
                 "source_type": item.source.source_type if item.source else "unknown",
             }
         )
@@ -1385,8 +1339,12 @@ def _analyze_revision_competitors(
                 "confidence": item.confidence,
                 "source_url": item.source.url if item.source else None,
                 "source_title": item.source.title if item.source else None,
-                "reference_id": _extract_ref_id(
-                    item.source.metadata_json if item.source else None
+                "reference_id": (
+                    item.reference_id
+                    if item.reference_id is not None
+                    else _extract_ref_id(
+                        item.source.metadata_json if item.source else None
+                    )
                 ),
                 "source_type": item.source.source_type if item.source else "unknown",
             }
@@ -1534,6 +1492,7 @@ def _execute_revision_search_plan(
                     source_type="revision_search",
                     provider=search.name,
                     raw_content=getattr(result, "raw_content", None),
+                    reference_id=next_reference_id,
                     metadata_json=json.dumps(
                         {
                             "reference_id": next_reference_id,
@@ -1565,6 +1524,7 @@ def _execute_revision_search_plan(
                         quote=(result.snippet or "")[:800],
                         summary=result.snippet or "",
                         confidence=0.68,
+                        reference_id=source.reference_id,
                     )
                 )
                 new_sources.append(source)
@@ -1725,14 +1685,31 @@ def _looks_like_research_feedback(message: str) -> bool:
 
 
 def _next_reference_id(db: Session, run_id: str) -> int:
-    max_id = 0
-    for source in db.query(Source).filter(Source.run_id == run_id).all():
+    max_from_source = (
+        db.query(func.max(Source.reference_id)).filter(Source.run_id == run_id).scalar()
+    ) or 0
+    max_from_evidence = (
+        db.query(func.max(Evidence.reference_id))
+        .filter(Evidence.run_id == run_id)
+        .scalar()
+    ) or 0
+    max_id = max(max_from_source, max_from_evidence)
+    for source in (
+        db.query(Source)
+        .filter(Source.run_id == run_id, Source.reference_id.is_(None))
+        .all()
+    ):
         ref_id = _extract_ref_id(source.metadata_json)
         if ref_id:
             max_id = max(max_id, ref_id)
-    for source in db.new:
-        if isinstance(source, Source) and source.run_id == run_id:
-            ref_id = _extract_ref_id(source.metadata_json)
+            source.reference_id = ref_id
+    for obj in db.new:
+        if isinstance(obj, Source) and obj.run_id == run_id:
+            ref_id = obj.reference_id or _extract_ref_id(obj.metadata_json)
+            if ref_id:
+                max_id = max(max_id, ref_id)
+        elif isinstance(obj, Evidence) and obj.run_id == run_id:
+            ref_id = obj.reference_id
             if ref_id:
                 max_id = max(max_id, ref_id)
     return max_id + 1

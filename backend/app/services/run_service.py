@@ -32,6 +32,7 @@ from app.db.session import SessionLocal
 from app.providers.llm.factory import get_llm_provider
 from app.providers.search.factory import get_search_provider
 
+
 VALID_RUN_STATUSES = frozenset(
     {
         "created",
@@ -58,6 +59,9 @@ VALID_CURRENT_STAGES = frozenset(
         "structured_analysis",
         "report_generation",
         "quality_check",
+        "retry_collection",
+        "retry_analysis",
+        "retry_collection_and_analysis",
     }
 )
 
@@ -427,7 +431,13 @@ def _resume_from_report_generation(
         route,
         run_id,
     )
-    _set_run_status(run, "running", route)
+    _RETRY_ROUTE_STAGE = {
+        "retry_collection": "material_collection",
+        "retry_analysis": "structured_analysis",
+        "retry_collection_and_analysis": "material_collection",
+    }
+    resolved_stage = _RETRY_ROUTE_STAGE.get(route, route)
+    _set_run_status(run, "running", resolved_stage)
     db.commit()
     return False
 
@@ -460,56 +470,17 @@ def _rebuild_state_from_db(db: Session, run: Run) -> AgentState | None:
         .all()
     )
 
-    sources = db.query(Source).filter(Source.run_id == run.id).all()
-    evidence_items = db.query(Evidence).filter(Evidence.run_id == run.id).all()
-    analyses = db.query(Analysis).filter(Analysis.run_id == run.id).all()
+    selected_comp_ids = {item.id for item in selected}
 
-    source_list = [
-        {
-            "id": s.id,
-            "competitor_id": s.competitor_id,
-            "title": s.title,
-            "url": s.url,
-            "snippet": s.snippet,
-            "source_type": s.source_type,
-            "provider": s.provider,
-            "raw_content": s.raw_content,
-            "reference_id": _extract_reference_id(s.metadata_json),
-            "metadata_json": s.metadata_json,
-        }
-        for s in sources
-    ]
-    evidence_list = [
-        {
-            "id": e.id,
-            "competitor_id": e.source.competitor_id if e.source else None,
-            "related_product": e.related_product,
-            "related_dimension": e.related_dimension,
-            "summary": e.summary,
-            "quote": e.quote,
-            "confidence": e.confidence,
-            "source_id": e.source_id,
-            "source_url": e.source.url if e.source else None,
-        }
-        for e in evidence_items
-    ]
-    analysis_list = [
-        {
-            "id": a.id,
-            "competitor_id": a.competitor_id,
-            "competitor_name": a.competitor.name if a.competitor else "",
-            "positioning": a.positioning,
-            "target_users": a.target_users,
-            "core_features_json": a.core_features_json,
-            "pricing_summary": a.pricing_summary,
-            "strengths_json": a.strengths_json,
-            "weaknesses_json": a.weaknesses_json,
-            "opportunities_json": a.opportunities_json,
-            "custom_focus_analysis_json": a.custom_focus_analysis_json,
-            "evidence_ids_json": a.evidence_ids_json,
-        }
-        for a in analyses
-    ]
+    from app.services.chat_service import (
+        _analysis_list,
+        _evidence_list,
+        _source_list,
+    )
+
+    source_list = _source_list(db, run.id, selected_comp_ids)
+    evidence_list = _evidence_list(db, run.id, selected)
+    analysis_list = _analysis_list(db, run.id, evidence_list=evidence_list)
 
     state: AgentState = {
         "run_id": run.id,
@@ -649,6 +620,7 @@ def execute_report_run(run_id: str) -> None:
                     if key not in ("reference_id", "credibility_score")
                 }
                 source_data["metadata_json"] = metadata
+                source_data["reference_id"] = item.get("reference_id")
                 source = Source(run_id=run_id, **source_data)
                 db.add(source)
                 db.flush()
@@ -700,9 +672,13 @@ def execute_report_run(run_id: str) -> None:
                         "source_url",
                         "source_title",
                         "source_type",
-                        "reference_id",
                     }
                 }
+                if (
+                    "reference_id" not in evidence_data
+                    and source.reference_id is not None
+                ):
+                    evidence_data["reference_id"] = source.reference_id
                 evidence = Evidence(run_id=run_id, source_id=source.id, **evidence_data)
                 db.add(evidence)
                 db.flush()
@@ -1014,60 +990,20 @@ def regenerate_report(run_id: str) -> None:
         llm = get_llm_provider()
 
         sources = db.query(Source).filter(Source.run_id == run_id).all()
-        evidence_items = db.query(Evidence).filter(Evidence.run_id == run_id).all()
-        analyses = db.query(Analysis).filter(Analysis.run_id == run_id).all()
         competitors = db.query(Competitor).filter(Competitor.run_id == run_id).all()
+        selected_comp_ids = {c.id for c in competitors if c.selected}
 
-        source_list = [
-            {
-                "id": source.id,
-                "competitor_id": source.competitor_id,
-                "title": source.title,
-                "url": source.url,
-                "snippet": source.snippet,
-                "source_type": source.source_type,
-                "provider": source.provider,
-                "raw_content": source.raw_content,
-                "reference_id": _extract_reference_id(source.metadata_json),
-                "metadata_json": source.metadata_json,
-            }
-            for source in sources
-        ]
-        evidence_list = [
-            {
-                "id": evidence.id,
-                "competitor_id": evidence.source.competitor_id
-                if evidence.source
-                else None,
-                "related_product": evidence.related_product,
-                "related_dimension": evidence.related_dimension,
-                "summary": evidence.summary,
-                "quote": evidence.quote,
-                "confidence": evidence.confidence,
-                "source_id": evidence.source_id,
-                "source_url": evidence.source.url if evidence.source else None,
-            }
-            for evidence in evidence_items
-        ]
-        analysis_list = [
-            {
-                "id": analysis.id,
-                "competitor_id": analysis.competitor_id,
-                "competitor_name": analysis.competitor.name
-                if analysis.competitor
-                else "",
-                "positioning": analysis.positioning,
-                "target_users": analysis.target_users,
-                "core_features_json": analysis.core_features_json,
-                "pricing_summary": analysis.pricing_summary,
-                "strengths_json": analysis.strengths_json,
-                "weaknesses_json": analysis.weaknesses_json,
-                "opportunities_json": analysis.opportunities_json,
-                "custom_focus_analysis_json": analysis.custom_focus_analysis_json,
-                "evidence_ids_json": analysis.evidence_ids_json,
-            }
-            for analysis in analyses
-        ]
+        from app.services.chat_service import (
+            _analysis_list,
+            _evidence_list,
+            _source_list,
+        )
+
+        source_list = _source_list(db, run_id, selected_comp_ids)
+        evidence_list = _evidence_list(
+            db, run_id, [c for c in competitors if c.selected]
+        )
+        analysis_list = _analysis_list(db, run_id, evidence_list=evidence_list)
         requirement = (
             json.loads(run.requirement_json)
             if run.requirement_json
@@ -1186,17 +1122,6 @@ def _merge_reference_id(metadata_json: str | None, reference_id: object) -> str 
         metadata = {}
     metadata["reference_id"] = reference_id
     return json.dumps(metadata, ensure_ascii=False)
-
-
-def _extract_reference_id(metadata_json: str | None) -> int | None:
-    if not metadata_json:
-        return None
-    try:
-        metadata = json.loads(metadata_json)
-    except (json.JSONDecodeError, TypeError):
-        return None
-    value = metadata.get("reference_id")
-    return int(value) if isinstance(value, int | float) else None
 
 
 def _trace_input(stage: str, state: AgentState) -> dict:
