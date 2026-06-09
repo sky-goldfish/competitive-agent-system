@@ -1,10 +1,14 @@
+from datetime import datetime
+
 from app.providers.search.base import SearchResult
+from app.services import call_tracer
 
 
 class MockSearchProvider:
     name = "mock"
 
     def search(self, query: str, *, limit: int = 5) -> list[SearchResult]:
+        started_at = datetime.utcnow()
         query_lower = query.lower()
         if "ember mug" in query_lower and self._matches(query_lower, ["京东", "天猫", "淘宝", "小红书", "知乎", "b站", "差评", "评价", "测评", "体验", "参数"]):
             results = self._smart_cup_materials(query_lower)
@@ -24,6 +28,19 @@ class MockSearchProvider:
             results = self._research_tools()
         else:
             results = self._fallback_tools(query)
+        call_tracer.record_search_call(
+            provider=self.name,
+            input_data={"query": query, "limit": limit},
+            output_data={
+                "results": [
+                    {"title": r.title, "url": r.url, "snippet": r.snippet[:200]}
+                    for r in results[:limit]
+                ],
+                "count": len(results[:limit]),
+            },
+            duration_ms=int((datetime.utcnow() - started_at).total_seconds() * 1000),
+            started_at=started_at,
+        )
         return results[:limit]
 
     @staticmethod

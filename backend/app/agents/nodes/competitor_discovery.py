@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 from app.agents.state import AgentState
 from app.providers.llm.base import LLMProvider
 from app.providers.search.base import SearchProvider
+from app.services import call_tracer
 
 
 BLOCKED_SOURCE_DOMAINS = {
@@ -368,12 +369,13 @@ def competitor_discovery_node(
 
     t0 = datetime.utcnow()
     product_results: dict[str, dict | None] = {}
+    trace_ctx = call_tracer.get_trace_context()
     with ThreadPoolExecutor(
         max_workers=min(4, max(1, len(filtered_candidates)))
     ) as executor:
         futures = {
             executor.submit(
-                _resolve_product_result, item["name"], requirement, search
+                _resolve_product_result, item["name"], requirement, search, trace_ctx
             ): item["name"]
             for item in filtered_candidates
         }
@@ -657,7 +659,8 @@ def _focus_query_terms(requirement: dict) -> list[str]:
 def _run_queries(
     queries: list[dict], search: SearchProvider, *, limit: int
 ) -> list[dict]:
-    def _search_one(query_item: dict) -> list[dict]:
+    def _search_one(query_item: dict, trace_ctx: dict | None) -> list[dict]:
+        call_tracer.set_worker_trace_context(trace_ctx)
         try:
             results = search.search(query_item["query"], limit=limit)
         except Exception:
@@ -673,8 +676,9 @@ def _run_queries(
 
     collected = []
     seen_urls: set[str] = set()
+    trace_ctx = call_tracer.get_trace_context()
     with ThreadPoolExecutor(max_workers=min(4, len(queries))) as executor:
-        futures = {executor.submit(_search_one, q): q for q in queries}
+        futures = {executor.submit(_search_one, q, trace_ctx): q for q in queries}
         try:
             for future in as_completed(futures, timeout=60):
                 for item in future.result():
@@ -699,8 +703,9 @@ def _serialize_result(result, provider: str) -> dict:
 
 
 def _resolve_product_result(
-    name: str, requirement: dict, search: SearchProvider
+    name: str, requirement: dict, search: SearchProvider, trace_ctx: dict | None
 ) -> dict | None:
+    call_tracer.set_worker_trace_context(trace_ctx)
     query = f"{name} official site product"
     try:
         results = search.search(query, limit=5)

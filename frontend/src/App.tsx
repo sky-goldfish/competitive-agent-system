@@ -5,6 +5,7 @@ import { Menu, PanelLeftClose, Pin, Plus, Settings, Trash2 } from 'lucide-react'
 import HistoryPage from './pages/HistoryPage';
 import NewAnalysisPage from './pages/NewAnalysisPage';
 import ReportPage from './pages/ReportPage';
+import ObservabilityPage from './pages/ObservabilityPage';
 import RunDetailPage from './pages/RunDetailPage';
 import SettingsPage from './pages/SettingsPage';
 import { listRuns } from './lib/api';
@@ -215,6 +216,7 @@ export default function App() {
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/runs/:runId" element={<RunDetailPage />} />
             <Route path="/runs/:runId/report" element={<ReportPage />} />
+            <Route path="/runs/:runId/observability" element={<ObservabilityPage />} />
             <Route path="*" element={<NotFoundPage />} />
           </Routes>
         </main>

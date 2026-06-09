@@ -17,6 +17,7 @@ from app.db.models import (
     Run,
 )
 from app.db.session import SessionLocal
+from app.services import call_tracer
 from app.services.chat_service import (
     ChatError,
     _analysis_list,
@@ -104,7 +105,9 @@ def execute_revision_run(revision_id: str) -> None:
     try:
         revision = db.get(Revision, revision_id)
         if revision is None or revision.status not in {"queued", "failed"}:
+            db.close()
             return
+        call_tracer.set_trace_context(revision.run_id, "revision_workflow")
         revision.status = "running"
         revision.started_at = datetime.utcnow()
 
@@ -477,6 +480,7 @@ def execute_revision_run(revision_id: str) -> None:
             )
             _commit_with_retry(db)
     finally:
+        call_tracer.clear_trace_context()
         db.close()
 
 

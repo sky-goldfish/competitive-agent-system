@@ -64,6 +64,9 @@ class Run(Base):
     revisions: Mapped[list["Revision"]] = relationship(
         back_populates="run", cascade="all, delete-orphan"
     )
+    call_traces: Mapped[list["CallTrace"]] = relationship(
+        back_populates="run", cascade="all, delete-orphan"
+    )
 
     @property
     def clarification_question(self) -> str | None:
@@ -319,3 +322,26 @@ class RevisionTrace(Base):
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     revision: Mapped[Revision] = relationship(back_populates="traces")
+
+
+class CallTrace(Base):
+    __tablename__ = "call_traces"
+
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: new_id("call")
+    )
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"))
+    stage: Mapped[str] = mapped_column(String)
+    call_type: Mapped[str] = mapped_column(String)
+    provider: Mapped[str] = mapped_column(String)
+    model: Mapped[str | None] = mapped_column(String, nullable=True)
+    input_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    output_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    token_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="completed")
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    run: Mapped[Run] = relationship(back_populates="call_traces")

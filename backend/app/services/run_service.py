@@ -15,6 +15,7 @@ from app.agents.trace import record_progress_trace, run_traced_stage
 from app.db.models import (
     AgentTrace,
     Analysis,
+    CallTrace,
     ChatMessage,
     Competitor,
     Evidence,
@@ -27,6 +28,7 @@ from app.db.models import (
 from app.db.session import SessionLocal
 from app.providers.llm.factory import get_llm_provider
 from app.providers.search.factory import get_search_provider
+from app.services import call_tracer
 
 
 def _progress_callback(
@@ -137,6 +139,7 @@ def execute_discovery_run(run_id: str) -> None:
         run = get_run_or_raise(db, run_id)
         llm = get_llm_provider()
         search = get_search_provider()
+        call_tracer.set_trace_context(run_id, run.current_stage)
         state: AgentState = {"run_id": run.id, "user_requirement": run.user_requirement}
         if run.requirement_json:
             state["requirement"] = json.loads(run.requirement_json)
@@ -144,13 +147,16 @@ def execute_discovery_run(run_id: str) -> None:
         graph = build_competitor_discovery_graph(
             llm,
             search,
-            trace=lambda stage, current_state, action: run_traced_stage(
-                db,
-                run.id,
-                stage,
-                _trace_input(stage, current_state),
-                action,
-            ),
+            trace=lambda stage, current_state, action: (
+                call_tracer.update_stage(stage),
+                run_traced_stage(
+                    db,
+                    run.id,
+                    stage,
+                    _trace_input(stage, current_state),
+                    action,
+                ),
+            )[1],
             progress=lambda stage, message, metadata: _progress_callback(
                 db, run.id, stage, message, metadata
             ),
@@ -194,6 +200,7 @@ def execute_discovery_run(run_id: str) -> None:
             run.error_message = str(exc)
             db.commit()
     finally:
+        call_tracer.clear_trace_context()
         db.close()
 
 
@@ -297,6 +304,7 @@ def confirm_and_continue_run(
 
 def execute_report_run(run_id: str) -> None:
     db = SessionLocal()
+    call_tracer.set_trace_context(run_id, "")
     should_process_queued_revisions = False
     source_by_key: dict[str, Source] = {}
     source_by_competitor_url: dict[str, Source] = {}
@@ -525,13 +533,16 @@ def execute_report_run(run_id: str) -> None:
         graph = build_report_generation_graph(
             llm,
             search,
-            trace=lambda stage, current_state, action: run_traced_stage(
-                db,
-                run.id,
-                stage,
-                _trace_input(stage, current_state),
-                action,
-            ),
+            trace=lambda stage, current_state, action: (
+                call_tracer.update_stage(stage),
+                run_traced_stage(
+                    db,
+                    run.id,
+                    stage,
+                    _trace_input(stage, current_state),
+                    action,
+                ),
+            )[1],
             progress=lambda stage, message, metadata: record_progress_trace(
                 db, run.id, stage, message, metadata
             ),
@@ -560,6 +571,7 @@ def execute_report_run(run_id: str) -> None:
             db.commit()
             should_process_queued_revisions = True
     finally:
+        call_tracer.clear_trace_context()
         db.close()
     if should_process_queued_revisions:
         from app.services.chat_service import process_queued_revisions
@@ -569,6 +581,7 @@ def execute_report_run(run_id: str) -> None:
 
 def regenerate_report(run_id: str) -> None:
     db = SessionLocal()
+    call_tracer.set_trace_context(run_id, "report_generation")
     try:
         run = get_run_or_raise(db, run_id)
 
@@ -671,6 +684,7 @@ def regenerate_report(run_id: str) -> None:
             run.error_message = str(exc)
             db.commit()
     finally:
+        call_tracer.clear_trace_context()
         db.close()
 
 

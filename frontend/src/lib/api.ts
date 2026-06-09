@@ -1,4 +1,4 @@
-import type { Analysis, ChatMessage, ChatResponse, CitationBundleCompetitor, CitationMapItem, Competitor, CustomCompetitorInput, Evidence, QAResult, Report, Revision, RevisionTrace, Run, Source, Trace } from './types';
+import type { Analysis, CallTrace, ChatMessage, ChatResponse, CitationBundleCompetitor, CitationMapItem, Competitor, CustomCompetitorInput, Evidence, ObservabilityData, QAResult, Report, Revision, RevisionTrace, Run, Source, Trace } from './types';
 
 const API_BASE = '/api';
 
@@ -114,4 +114,8 @@ export function getRevisions(runId: string): Promise<Revision[]> {
 
 export function getRevisionTimeline(revisionId: string): Promise<RevisionTrace[]> {
   return request<RevisionTrace[]>(`/revisions/${revisionId}/timeline`);
+}
+
+export function getObservability(runId: string): Promise<ObservabilityData> {
+  return request<ObservabilityData>(`/runs/${runId}/observability`);
 }

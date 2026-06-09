@@ -1,9 +1,11 @@
 import json
 import logging
 import re
+from datetime import datetime
 from typing import Any
 
 from app.providers.llm.base import LLMProvider
+from app.services import call_tracer
 
 logger = logging.getLogger(__name__)
 
@@ -970,7 +972,8 @@ class MockLLMProvider(LLMProvider):
         }
 
     def search(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
-        return [
+        started_at = datetime.utcnow()
+        results = [
             {
                 "title": f"Mock 搜索结果 1 - {query}",
                 "url": f"https://example.com/result-1",
@@ -984,6 +987,20 @@ class MockLLMProvider(LLMProvider):
                 "raw_content": f"# Mock 搜索结果 2\n\n这是关于 {query} 的用户评价内容，讨论产品的优缺点。",
             },
         ][:limit]
+        duration_ms = int((datetime.utcnow() - started_at).total_seconds() * 1000)
+        call_tracer.record_search_call(
+            provider="mock",
+            input_data={"query": query, "limit": limit},
+            output_data={
+                "results": [
+                    {"title": r["title"], "url": r["url"], "snippet": r["snippet"][:200]}
+                    for r in results
+                ],
+                "count": len(results),
+            },
+            duration_ms=duration_ms,
+        )
+        return results
 
     def classify_chat_intent(
         self,

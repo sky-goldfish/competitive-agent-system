@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { AlertCircle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Clipboard, Download, Loader2, MessageSquare, RefreshCw, RotateCcw, Send, XCircle } from 'lucide-react';
+import { AlertCircle, BarChart3, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Clipboard, Download, Loader2, MessageSquare, RefreshCw, RotateCcw, Send, XCircle } from 'lucide-react';
 import CompetitorConfirmPanel from '../components/competitors/CompetitorConfirmPanel';
 import EvidenceList from '../components/evidence/EvidenceList';
 import SourceList from '../components/evidence/SourceList';
@@ -648,6 +648,10 @@ export default function RunDetailPage() {
             {regenerateMutation.isPending ? '生成中' : '重新生成'}
           </button>
         ) : null}
+        <a href={`/runs/${id}/observability`} target="_blank" rel="noopener noreferrer" className="icon-text-button" title="在新标签页中查看可观测详情">
+          <BarChart3 size={16} />
+          查看详情
+        </a>
       </div>
 
       <div className="message-stream" ref={chatListRef}>
