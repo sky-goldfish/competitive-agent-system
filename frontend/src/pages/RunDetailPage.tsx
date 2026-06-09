@@ -503,9 +503,9 @@ export default function RunDetailPage() {
             (m) => m.id.startsWith('temp-') || m.id.startsWith('error-'),
           );
           if (!pendingLocal.length) return serverMessages;
-          const serverContents = new Set(serverMessages.map((m) => m.content));
+          const serverIds = new Set(serverMessages.map((m) => m.id));
           const unreconciled = pendingLocal.filter(
-            (m) => !serverContents.has(m.content),
+            (m) => !serverIds.has(m.id),
           );
           return [...serverMessages, ...unreconciled];
         });
@@ -678,7 +678,6 @@ export default function RunDetailPage() {
           <h1>{run.title}</h1>
           <p>{isRevisionRunning ? '正在修订报告...' : completed ? '报告已完成' : (statusLabels[run.status] ?? run.status)}</p>
         </div>
-        {completed ? null : null}
       </div>
 
       <div className="message-stream" ref={chatListRef}>

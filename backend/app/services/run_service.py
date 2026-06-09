@@ -14,7 +14,7 @@ from app.agents.graph import (
 )
 from app.agents.nodes.focus_profile import normalize_focus_profile
 from app.agents.nodes.report_generation import report_generation_node
-from app.agents.state import AgentState
+from app.agents.state import AgentState, ensure_dict
 from app.agents.trace import record_progress_trace, run_traced_stage
 from app.db.models import (
     AgentTrace,
@@ -221,7 +221,7 @@ def execute_discovery_run(run_id: str) -> None:
         search = get_search_provider()
         state: AgentState = {"run_id": run.id, "user_requirement": run.user_requirement}
         if run.requirement_json:
-            state["requirement"] = json.loads(run.requirement_json)
+            state["requirement"] = ensure_dict(json.loads(run.requirement_json))
 
         graph = build_competitor_discovery_graph(
             llm,
@@ -245,19 +245,13 @@ def execute_discovery_run(run_id: str) -> None:
             )
             raise
 
-        run.requirement_summary = state.get("requirement", {}).get(
-            "summary", "分析需求已收录"
-        )
-        run.title = state.get("requirement", {}).get("domain", "竞品分析报告")
-        run.requirement_json = json.dumps(
-            state.get("requirement", {}), ensure_ascii=False
-        )
-        if (
-            state.get("requirement", {})
-            .get("focus_profile", {})
-            .get("clarification_needed")
-        ):
-            focus_profile = state["requirement"].get("focus_profile", {})
+        req_dict = ensure_dict(state.get("requirement"))
+        run.requirement_summary = req_dict.get("summary", "分析需求已收录")
+        run.title = req_dict.get("domain", "竞品分析报告")
+        run.requirement_json = json.dumps(req_dict, ensure_ascii=False)
+        focus_profile_raw = ensure_dict(req_dict.get("focus_profile"))
+        if focus_profile_raw.get("clarification_needed"):
+            focus_profile = focus_profile_raw
             question = str(focus_profile.get("clarifying_question") or "").strip()
             if question:
                 db.add(
@@ -282,7 +276,25 @@ def execute_discovery_run(run_id: str) -> None:
         for item in state["competitors"]:
             if "selected" not in item:
                 item["selected"] = True
-            db.add(Competitor(run_id=run.id, **item))
+            competitor_data = {
+                k: v
+                for k, v in item.items()
+                if k
+                in {
+                    "name",
+                    "website",
+                    "description",
+                    "category",
+                    "region",
+                    "confidence",
+                    "selected",
+                    "discovery_source",
+                    "relationship_type",
+                    "relationship_reason",
+                    "overlap_dimensions_json",
+                }
+            }
+            db.add(Competitor(run_id=run.id, **competitor_data))
         _set_run_status(run, "waiting_for_human", "human_confirm_competitors")
         db.commit()
     except Exception as exc:
@@ -304,7 +316,7 @@ def answer_requirement_clarification(db: Session, run_id: str, answer: str) -> R
     if len(answer) < 1:
         raise InvalidRunStateError("Clarification answer cannot be empty.")
 
-    requirement = json.loads(run.requirement_json or "{}")
+    requirement = ensure_dict(json.loads(run.requirement_json or "{}"))
     llm = get_llm_provider()
     combined_requirement = f"{run.user_requirement}\n\n用户补充侧重点：{answer}"
     focus_profile = normalize_focus_profile(
@@ -450,7 +462,7 @@ def _rebuild_state_from_db(db: Session, run: Run) -> AgentState | None:
     if stage_index == 0:
         return None
 
-    requirement = (
+    requirement = ensure_dict(
         json.loads(run.requirement_json)
         if run.requirement_json
         else {
@@ -460,7 +472,7 @@ def _rebuild_state_from_db(db: Session, run: Run) -> AgentState | None:
         }
     )
     target_understanding = (
-        json.loads(run.target_understanding_json)
+        ensure_dict(json.loads(run.target_understanding_json))
         if run.target_understanding_json
         else None
     )
@@ -668,6 +680,7 @@ def execute_report_run(run_id: str) -> None:
                     for key, value in item.items()
                     if key
                     not in {
+                        "id",
                         "competitor_id",
                         "source_url",
                         "source_title",
@@ -881,7 +894,7 @@ def execute_report_run(run_id: str) -> None:
                     state = None
 
         if not skip_graph and state is None:
-            requirement = (
+            requirement = ensure_dict(
                 json.loads(run.requirement_json)
                 if run.requirement_json
                 else {
@@ -891,7 +904,7 @@ def execute_report_run(run_id: str) -> None:
                 }
             )
             target_understanding = (
-                json.loads(run.target_understanding_json)
+                ensure_dict(json.loads(run.target_understanding_json))
                 if run.target_understanding_json
                 else None
             )
@@ -1004,7 +1017,7 @@ def regenerate_report(run_id: str) -> None:
             db, run_id, [c for c in competitors if c.selected]
         )
         analysis_list = _analysis_list(db, run_id, evidence_list=evidence_list)
-        requirement = (
+        requirement = ensure_dict(
             json.loads(run.requirement_json)
             if run.requirement_json
             else {
@@ -1038,7 +1051,9 @@ def regenerate_report(run_id: str) -> None:
                 for c in competitors
                 if c.selected
             ],
-            "target_understanding": json.loads(run.target_understanding_json)
+            "target_understanding": ensure_dict(
+                json.loads(run.target_understanding_json)
+            )
             if run.target_understanding_json
             else {},
         }
@@ -1127,10 +1142,11 @@ def _merge_reference_id(metadata_json: str | None, reference_id: object) -> str 
 def _trace_input(stage: str, state: AgentState) -> dict:
     if stage == "requirement_understanding":
         return {"user_requirement": state.get("user_requirement")}
+    req_dict = ensure_dict(state.get("requirement"))
     if stage == "focus_profile":
-        return {"domain": state.get("requirement", {}).get("domain")}
+        return {"domain": req_dict.get("domain")}
     if stage == "competitor_discovery":
-        return {"query": state.get("requirement", {}).get("query")}
+        return {"query": req_dict.get("query")}
     if stage == "human_confirm_competitors":
         return {"candidate_count": len(state.get("competitors", []))}
     if stage == "material_collection":

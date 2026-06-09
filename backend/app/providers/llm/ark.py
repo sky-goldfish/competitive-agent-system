@@ -1026,7 +1026,8 @@ JSON schema:
         sources: list[dict[str, Any]],
     ) -> dict[str, str]:
         fallback = self.fallback.generate_report(run, analyses, sources)
-        citation_bundle = json.dumps(run.get("citation_bundle", []), ensure_ascii=False)
+        citation_bundle_raw = run.get("citation_bundle", [])
+        citation_bundle = json.dumps(citation_bundle_raw, ensure_ascii=False)
         qa_guidance = run.get("qa_report_guidance")
         qa_guidance_section = ""
         if qa_guidance:
@@ -1073,7 +1074,7 @@ JSON schema:
             result.get("markdown_content", ""), sources
         )
         result["markdown_content"] = _validate_citation_whitelist(
-            result["markdown_content"], citation_bundle
+            result["markdown_content"], citation_bundle_raw
         )
         return result
 
@@ -1595,6 +1596,7 @@ JSON schema:
         old_markdown = current_report.get("markdown_content", "")
         fingerprints = _extract_citation_fingerprints(old_markdown)
 
+        citation_bundle_raw = citation_bundle
         citation_bundle_json = json.dumps(citation_bundle, ensure_ascii=False)
         if len(citation_bundle_json) > 8000:
             _CORE_CLAIM_TYPES = {"positioning", "core_features", "pricing"}
@@ -1682,7 +1684,7 @@ JSON schema:
 
         result["markdown_content"] = _ensure_reference_section(new_markdown, sources)
         result["markdown_content"] = _validate_citation_whitelist(
-            result["markdown_content"], citation_bundle
+            result["markdown_content"], citation_bundle_raw
         )
         return result
 

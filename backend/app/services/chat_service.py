@@ -6,6 +6,7 @@ import time
 from datetime import datetime
 from typing import Any
 
+from app.agents.state import ensure_dict
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, joinedload
@@ -68,6 +69,18 @@ def _get_run_context(db: Session, run_id: str) -> dict[str, Any]:
         .all()
     )
 
+    import json as _json
+
+    requirement = _json.loads(run.requirement_json) if run.requirement_json else {}
+
+    latest_qa = (
+        db.query(QAResult)
+        .filter(QAResult.run_id == run_id)
+        .order_by(QAResult.iteration.desc())
+        .first()
+    )
+    qa_feedback = latest_qa.retry_instructions if latest_qa else None
+
     return {
         "run": run,
         "report": latest_report,
@@ -76,6 +89,8 @@ def _get_run_context(db: Session, run_id: str) -> dict[str, Any]:
         "sources": sources,
         "competitors": competitors,
         "chat_messages": chat_messages,
+        "requirement": requirement,
+        "qa_feedback": qa_feedback,
     }
 
 
@@ -595,7 +610,7 @@ def _handle_revision_workflow(
     to_analyze = added_competitors + activated_competitors
     if to_analyze:
         run = ctx.get("run")
-        requirement = (
+        requirement = ensure_dict(
             json.loads(run.requirement_json) if run and run.requirement_json else {}
         )
         _latest_qa_feedback = _get_latest_qa_feedback(db, report.run_id)
