@@ -1,12 +1,15 @@
 import json
 import logging
 import re
+import traceback
 import difflib
+from datetime import datetime
 from typing import Any
 
 from openai import OpenAI
 from app.core.config import get_settings
 from app.providers.llm.mock import MockLLMProvider
+from app.services import call_tracer
 
 logger = logging.getLogger(__name__)
 
@@ -655,6 +658,18 @@ def _strip_code_fences(content: str) -> str:
     return content
 
 
+def _extract_token_count(response: Any) -> int | None:
+    try:
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            total = getattr(usage, "total_tokens", None)
+            if total is not None:
+                return total
+    except Exception:
+        pass
+    return None
+
+
 class ArkLLMProvider:
     name = "ark"
 
@@ -1279,6 +1294,11 @@ JSON schema:
         return result
 
     def _chat(self, prompt: str) -> str | None:
+        result = None
+        status = "completed"
+        error = None
+        output_data: dict = {}
+        started_at = datetime.utcnow()
         try:
             request: dict[str, Any] = {
                 "model": self.model,
@@ -1291,20 +1311,47 @@ JSON schema:
             response = self.client.chat.completions.create(**request)
             if not response.choices:
                 logger.warning("LLM returned empty choices")
+                status = "failed"
+                error = "Empty choices returned"
+                output_data = {"error": "empty_choices"}
                 return None
             content = response.choices[0].message.content
             if not content:
+                status = "failed"
+                error = "Empty content returned"
+                output_data = {"error": "empty_content"}
                 return None
-            return content.strip() or None
+            result = content.strip() or None
+            output_data = {"content": result}
+            return result
         except Exception as exc:
             logger.exception("LLM chat call failed")
+            status = "failed"
+            error = traceback.format_exc()
             status_code = getattr(getattr(exc, "response", None), "status_code", None)
             if status_code in (400, 401, 403, 404):
                 raise
             return None
+        finally:
+            call_tracer.record_llm_call(
+                provider=self.name,
+                model=self.model,
+                input_data={"messages": request["messages"], "temperature": request.get("temperature")},
+                output_data=output_data,
+                token_count=_extract_token_count(locals().get("response")),
+                duration_ms=int((datetime.utcnow() - started_at).total_seconds() * 1000),
+                started_at=started_at,
+                status=status,
+                error=error,
+            )
 
     def _json_chat(self, prompt: str, fallback: dict[str, Any]) -> dict[str, Any]:
         content = ""
+        result = fallback
+        status = "completed"
+        error = None
+        output_data: dict = {}
+        started_at = datetime.utcnow()
         try:
             request: dict[str, Any] = {
                 "model": self.model,
@@ -1321,11 +1368,17 @@ JSON schema:
             response = self.client.chat.completions.create(**request)
             if not response.choices:
                 logger.warning("LLM returned empty choices, using fallback")
+                status = "failed"
+                error = "Empty choices returned"
+                output_data = {"error": "empty_choices", "fallback_used": True}
                 return fallback
             content = (response.choices[0].message.content or "").strip()
             content = _strip_code_fences(content)
             if not content:
                 logger.warning("LLM returned empty content, using fallback")
+                status = "failed"
+                error = "Empty content returned"
+                output_data = {"error": "empty_content", "fallback_used": True}
                 return fallback
             try:
                 parsed = json.loads(content)
@@ -1337,16 +1390,38 @@ JSON schema:
                     raise
             if not isinstance(parsed, dict):
                 logger.warning("LLM returned non-dict JSON, using fallback")
+                status = "failed"
+                error = "Non-dict JSON returned"
+                output_data = {"error": "non_dict_json", "raw_content": content}
                 return fallback
+            output_data = {"parsed": parsed}
+            result = parsed
             return parsed
         except json.JSONDecodeError:
             logger.warning(
                 "LLM returned invalid JSON: %s", content[:200] if content else "empty"
             )
+            status = "failed"
+            error = f"JSON decode error: {content[:200] if content else 'empty'}"
+            output_data = {"error": "json_decode_error", "raw_content": content if content else "empty"}
             return fallback
         except Exception:
             logger.exception("LLM API call failed, using fallback")
+            status = "failed"
+            error = traceback.format_exc()
             return fallback
+        finally:
+            call_tracer.record_llm_call(
+                provider=self.name,
+                model=self.model,
+                input_data={"messages": request["messages"], "temperature": request.get("temperature")},
+                output_data=output_data,
+                token_count=_extract_token_count(locals().get("response")),
+                duration_ms=int((datetime.utcnow() - started_at).total_seconds() * 1000),
+                started_at=started_at,
+                status=status,
+                error=error,
+            )
 
     def classify_chat_intent(
         self,

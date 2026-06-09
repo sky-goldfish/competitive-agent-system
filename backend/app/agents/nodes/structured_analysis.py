@@ -5,6 +5,7 @@ import logging
 from app.agents.state import AgentState
 from app.db.models import new_id
 from app.providers.llm.base import LLMProvider
+from app.services import call_tracer
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,8 @@ def structured_analysis_node(state: AgentState, llm: LLMProvider) -> AgentState:
         keep = []
         retry_competitors = competitors
 
-    def analyze_one(competitor: dict) -> dict:
+    def analyze_one(competitor: dict, trace_ctx: dict | None) -> dict:
+        call_tracer.set_worker_trace_context(trace_ctx)
         competitor_evidence = [
             item
             for item in evidence
@@ -98,8 +100,9 @@ def structured_analysis_node(state: AgentState, llm: LLMProvider) -> AgentState:
     new_analyses = []
     if not retry_competitors:
         return {**state, "analyses": keep + new_analyses}
+    trace_ctx = call_tracer.get_trace_context()
     with ThreadPoolExecutor(max_workers=min(4, len(retry_competitors))) as executor:
-        futures = {executor.submit(analyze_one, c): c for c in retry_competitors}
+        futures = {executor.submit(analyze_one, c, trace_ctx): c for c in retry_competitors}
         try:
             for future in as_completed(futures, timeout=300):
                 new_analyses.append(future.result())

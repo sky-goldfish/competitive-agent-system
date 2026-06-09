@@ -6,6 +6,7 @@ from app.api.routes import (
     chat,
     competitors,
     health,
+    observability,
     qa,
     reports,
     revisions,
@@ -44,3 +45,4 @@ app.include_router(reports.router, prefix="/api")
 app.include_router(qa.router, prefix="/api")
 app.include_router(chat.router, prefix="/api")
 app.include_router(revisions.router, prefix="/api")
+app.include_router(observability.router, prefix="/api")

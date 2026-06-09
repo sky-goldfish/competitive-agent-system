@@ -1,9 +1,11 @@
 import json
+from datetime import datetime
 from urllib.request import Request, urlopen
 
 from app.core.config import get_settings
 from app.providers.search.base import SearchResult
 from app.providers.search.mock import MockSearchProvider
+from app.services import call_tracer
 
 
 class TavilySearchProvider:
@@ -23,6 +25,7 @@ class TavilySearchProvider:
     def search(
         self, query: str, *, limit: int = 5, include_raw_content: bool = True
     ) -> list[SearchResult]:
+        started_at = datetime.utcnow()
         try:
             if not self.api_key:
                 raise ValueError(
@@ -32,13 +35,59 @@ class TavilySearchProvider:
                 self._request(query, limit, include_raw_content=include_raw_content)
             )
             if results:
+                call_tracer.record_search_call(
+                    provider=self.name,
+                    input_data={"query": query, "limit": limit},
+                    output_data={
+                        "results": [
+                            {"title": r.title, "url": r.url, "snippet": r.snippet[:200]}
+                            for r in results
+                        ],
+                        "count": len(results),
+                    },
+                    duration_ms=int((datetime.utcnow() - started_at).total_seconds() * 1000),
+                    started_at=started_at,
+                )
                 return results[:limit]
             if not self.use_fallback:
+                call_tracer.record_search_call(
+                    provider=self.name,
+                    input_data={"query": query, "limit": limit},
+                    output_data={"error": "no_results"},
+                    duration_ms=int((datetime.utcnow() - started_at).total_seconds() * 1000),
+                    started_at=started_at,
+                    status="failed",
+                    error=f"No Tavily search results for query: {query}",
+                )
                 raise RuntimeError(f"No Tavily search results for query: {query}")
-        except Exception:
+        except Exception as exc:
             if not self.use_fallback:
+                call_tracer.record_search_call(
+                    provider=self.name,
+                    input_data={"query": query, "limit": limit},
+                    output_data={"error": str(exc)},
+                    duration_ms=int((datetime.utcnow() - started_at).total_seconds() * 1000),
+                    started_at=started_at,
+                    status="failed",
+                    error=str(exc),
+                )
                 raise
-        return self._fallback_results(query, limit)
+        results = self._fallback_results(query, limit)
+        call_tracer.record_search_call(
+            provider=self.name,
+            input_data={"query": query, "limit": limit},
+            output_data={
+                "results": [
+                    {"title": r.title, "url": r.url, "snippet": r.snippet[:200]}
+                    for r in results
+                ],
+                "count": len(results),
+                "fallback": True,
+            },
+            duration_ms=int((datetime.utcnow() - started_at).total_seconds() * 1000),
+            started_at=started_at,
+        )
+        return results
 
     def _request(
         self, query: str, limit: int, *, include_raw_content: bool = True

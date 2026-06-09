@@ -240,3 +240,42 @@ export type QAResult = {
   retry_queries: QARetryQuery[];
   created_at: string;
 };
+
+export type CallTrace = {
+  id: string;
+  run_id: string;
+  stage: string;
+  call_type: 'llm' | 'search';
+  provider: string;
+  model: string | null;
+  input_json: string | null;
+  output_json: string | null;
+  token_count: number | null;
+  duration_ms: number | null;
+  status: string;
+  error_message: string | null;
+  started_at: string;
+  ended_at: string | null;
+};
+
+export type ObservabilityStats = {
+  total_llm_calls: number;
+  total_search_calls: number;
+  total_tokens: number;
+  total_duration_ms: number;
+};
+
+export type ObservabilityStage = {
+  stage: string;
+  label: string;
+  status: string;
+  duration_ms: number;
+  total_tokens: number;
+  calls: CallTrace[];
+};
+
+export type ObservabilityData = {
+  run: Run;
+  stages: ObservabilityStage[];
+  stats: ObservabilityStats;
+};

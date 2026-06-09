@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 from app.agents.state import AgentState
 from app.db.models import new_id
 from app.providers.search.base import SearchProvider
+from app.services import call_tracer
 
 logger = logging.getLogger(__name__)
 
@@ -244,7 +245,8 @@ def material_collection_node(
         competitor = product_query["competitor"]
         product_source_count = 0
 
-        def _search_one_dimension(query_item: dict) -> list[dict]:
+        def _search_one_dimension(query_item: dict, trace_ctx: dict | None) -> list[dict]:
+            call_tracer.set_worker_trace_context(trace_ctx)
             try:
                 results = search.search(
                     query_item.get("query", ""), limit=query_item.get("limit", 4)
@@ -261,11 +263,12 @@ def material_collection_node(
                 {"product": competitor["name"], "source_count": 0},
             )
             continue
+        trace_ctx = call_tracer.get_trace_context()
         with ThreadPoolExecutor(
             max_workers=min(4, len(product_query["queries"]))
         ) as executor:
             futures = {
-                executor.submit(_search_one_dimension, qi): qi
+                executor.submit(_search_one_dimension, qi, trace_ctx): qi
                 for qi in product_query["queries"]
             }
             try:
