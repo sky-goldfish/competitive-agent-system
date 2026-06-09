@@ -11,9 +11,15 @@ type Props = {
 };
 
 const STANDALONE_CITATION_RE = /\[\[(\d+)\]\](?!\()/g;
+const COMPOUND_CITATION_RE = /\[\[([0-9]{1,2}(?:[,，、\s]+[0-9]{1,2})+)\]\]/g;
 
 function preprocessCitations(markdown: string): string {
-  return markdown.replace(STANDALONE_CITATION_RE, '[[$1]](#citation-$1)');
+  let result = markdown.replace(COMPOUND_CITATION_RE, (_match, inner: string) => {
+    const nums = inner.split(/[,，、\s]+/).filter((s: string) => /^\d+$/.test(s.trim()));
+    return nums.map((n: string) => `[[${n.trim()}]]`).join(' ');
+  });
+  result = result.replace(STANDALONE_CITATION_RE, '[[$1]](#citation-$1)');
+  return result;
 }
 
 export default function ReportMarkdown({ markdown, citations }: Props) {

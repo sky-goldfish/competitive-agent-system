@@ -497,11 +497,32 @@ def _format_reference_section(
     return "\n".join(lines)
 
 
+def _split_compound_citations(text: str) -> str:
+    def _expand(match: re.Match[str]) -> str:
+        inner = match.group(1)
+        nums = re.split(r"[,，、\s]+", inner)
+        parts = [f"[[{n.strip()}]]" for n in nums if n.strip().isdigit()]
+        return " ".join(parts) if parts else match.group(0)
+
+    text = re.sub(
+        r"\[\[([0-9]{1,2}[,，、\s]+[0-9]{1,2}(?:[,，、\s]+[0-9]{1,2})*)\]\]",
+        _expand,
+        text,
+    )
+    text = re.sub(
+        r"\[([0-9]{1,2}[,，、\s]+[0-9]{1,2}(?:[,，、\s]+[0-9]{1,2})*)\](?!\()",
+        _expand,
+        text,
+    )
+    return text
+
+
 def _normalize_inline_citations(
     markdown_content: str, max_reference_id: int | None = None
 ) -> str:
+    normalized = _split_compound_citations(markdown_content)
     normalized = re.sub(
-        r"(?<!\[)\[(\d{1,2})\]\((https?://[^)\s]+)\)", r"[[\1]](\2)", markdown_content
+        r"(?<!\[)\[(\d{1,2})\]\((https?://[^)\s]+)\)", r"[[\1]](\2)", normalized
     )
     normalized = re.sub(r"(?<!\[)\[(\d{1,2})\](?!\()(?!\])", r"[[\1]]", normalized)
     if max_reference_id is None:
@@ -1070,12 +1091,11 @@ JSON schema:
         result = self._json_chat(prompt, fallback)
         if result is fallback:
             return fallback
-        result["markdown_content"] = _ensure_reference_section(
-            result.get("markdown_content", ""), sources
-        )
-        result["markdown_content"] = _validate_citation_whitelist(
-            result["markdown_content"], citation_bundle_raw
-        )
+        md = result.get("markdown_content", "")
+        md = _normalize_inline_citations(md)
+        md = _validate_citation_whitelist(md, citation_bundle_raw)
+        md = _ensure_reference_section(md, sources)
+        result["markdown_content"] = md
         return result
 
     def qa_check_report(
@@ -1682,10 +1702,10 @@ JSON schema:
             excluded_citation_ids=excluded_citation_ids,
         )
 
-        result["markdown_content"] = _ensure_reference_section(new_markdown, sources)
-        result["markdown_content"] = _validate_citation_whitelist(
-            result["markdown_content"], citation_bundle_raw
-        )
+        md = _normalize_inline_citations(new_markdown)
+        md = _validate_citation_whitelist(md, citation_bundle_raw)
+        md = _ensure_reference_section(md, sources)
+        result["markdown_content"] = md
         return result
 
     def generate_revision_summary(

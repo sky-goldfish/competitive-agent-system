@@ -125,11 +125,24 @@ def get_report_citations(
 
     citation_items = []
     url_source_index: dict[str, int] = {}
+    source_by_ref_id: dict[int, Source] = {}
+    for s in sources:
+        ref_id = (
+            s.reference_id
+            if s.reference_id is not None
+            else _extract_ref_id(s.metadata_json)
+        )
+        if ref_id and ref_id not in source_by_ref_id:
+            source_by_ref_id[ref_id] = s
+
     for reference_id, url in reference_urls:
-        matching_sources = sources_by_url.get(url, [])
-        idx = url_source_index.get(url, 0)
-        source = matching_sources[idx] if idx < len(matching_sources) else None
-        url_source_index[url] = idx + 1
+        if url:
+            matching_sources = sources_by_url.get(url, [])
+            idx = url_source_index.get(url, 0)
+            source = matching_sources[idx] if idx < len(matching_sources) else None
+            url_source_index[url] = idx + 1
+        else:
+            source = source_by_ref_id.get(reference_id)
         if source is None:
             continue
         evidence_for_source = evidence_by_source_id.get(source.id, [])
@@ -172,13 +185,23 @@ def _extract_reference_urls(markdown_content: str) -> list[tuple[int, str]]:
         r"\n*##\s*(?:(?:\d+|[一二三四五六七八九十]+)[\.、]\s*)?(?:参考来源|参考文献|References)\s*\n(?P<section>[\s\S]*)$",
         markdown_content.strip(),
     )
-    if not reference_section_match:
-        return []
-    section = reference_section_match.group("section")
-    matches = re.findall(
-        r"^\s*\d+\.\s+\[\[(\d+)\]\]\((https?://[^)\s]+)\)", section, flags=re.MULTILINE
+    if reference_section_match:
+        section = reference_section_match.group("section")
+        matches = re.findall(
+            r"^\s*\d+\.\s+\[\[(\d+)\]\]\((https?://[^)\s]+)\)",
+            section,
+            flags=re.MULTILINE,
+        )
+        if matches:
+            return [(int(reference_id), url) for reference_id, url in matches]
+
+    body = markdown_content.strip()
+    if reference_section_match:
+        body = body[: reference_section_match.start()].strip()
+    body_ids = sorted(
+        {int(a or b) for a, b in re.findall(r"\[{2}(\d+)\]{2}|\[(\d+)\]", body)}
     )
-    return [(int(reference_id), url) for reference_id, url in matches]
+    return [(rid, "") for rid in body_ids]
 
 
 CLAIM_DEFINITIONS: list[tuple[str, str]] = [
