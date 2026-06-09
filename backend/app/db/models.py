@@ -2,7 +2,16 @@ from datetime import datetime
 import json
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -219,6 +228,7 @@ class AgentTrace(Base):
 
 class Report(Base):
     __tablename__ = "reports"
+    __table_args__ = (UniqueConstraint("run_id", "iteration"),)
 
     id: Mapped[str] = mapped_column(
         String, primary_key=True, default=lambda: new_id("rep")
@@ -229,6 +239,7 @@ class Report(Base):
     markdown_content: Mapped[str] = mapped_column(Text)
     summary: Mapped[str] = mapped_column(Text, default="")
     competitor_names_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_qa_intermediate: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow

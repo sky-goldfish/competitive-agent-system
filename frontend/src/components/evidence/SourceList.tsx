@@ -1,6 +1,7 @@
 import type { Source } from '../../lib/types';
 import { useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
+import SafeAnchor from '../SafeAnchor';
 
 type Props = {
   sources: Source[];
@@ -38,7 +39,7 @@ export default function SourceList({ sources, isCollecting = false, initialVisib
     <section className="panel">
       <div className="panel-header">
         <h2>来源资料</h2>
-        <span>{sources.length} sources</span>
+        <span>{sources.length} 条来源</span>
       </div>
       <div className="source-list source-list-grid">
         {sources.length === 0 ? (
@@ -103,7 +104,7 @@ export default function SourceList({ sources, isCollecting = false, initialVisib
               })()}
               <div>
                 <dt>URL</dt>
-                <dd><a href={detailSource.url} target="_blank" rel="noreferrer">{detailSource.url}</a></dd>
+                <dd><SafeAnchor href={detailSource.url}>{detailSource.url}</SafeAnchor></dd>
               </div>
               <div>
                 <dt>摘要</dt>

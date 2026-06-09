@@ -67,7 +67,7 @@ export default function NewAnalysisPage() {
             </button>
           </div>
         </form>
-        {mutation.isError ? <p className="error-text">创建失败：{String(mutation.error.message)}</p> : null}
+        {mutation.isError ? <p className="error-text">创建失败：{mutation.error instanceof Error ? mutation.error.message : String(mutation.error)}</p> : null}
       </div>
     </section>
   );

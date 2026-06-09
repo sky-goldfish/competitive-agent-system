@@ -16,13 +16,21 @@ class TavilySearchProvider:
         self.use_fallback = settings.enable_mock_search_fallback
         self.fallback = MockSearchProvider()
         if not self.api_key and not self.use_fallback:
-            raise ValueError("TAVILY_API_KEY is required when SEARCH_PROVIDER=tavily and mock fallback is disabled.")
+            raise ValueError(
+                "TAVILY_API_KEY is required when SEARCH_PROVIDER=tavily and mock fallback is disabled."
+            )
 
-    def search(self, query: str, *, limit: int = 5) -> list[SearchResult]:
+    def search(
+        self, query: str, *, limit: int = 5, include_raw_content: bool = True
+    ) -> list[SearchResult]:
         try:
             if not self.api_key:
-                raise ValueError("TAVILY_API_KEY is required when SEARCH_PROVIDER=tavily.")
-            results = self._to_search_results(self._request(query, limit))
+                raise ValueError(
+                    "TAVILY_API_KEY is required when SEARCH_PROVIDER=tavily."
+                )
+            results = self._to_search_results(
+                self._request(query, limit, include_raw_content=include_raw_content)
+            )
             if results:
                 return results[:limit]
             if not self.use_fallback:
@@ -32,12 +40,14 @@ class TavilySearchProvider:
                 raise
         return self._fallback_results(query, limit)
 
-    def _request(self, query: str, limit: int) -> list[dict]:
+    def _request(
+        self, query: str, limit: int, *, include_raw_content: bool = True
+    ) -> list[dict]:
         payload = {
             "api_key": self.api_key,
             "query": query,
             "max_results": limit,
-            "include_raw_content": True,
+            "include_raw_content": include_raw_content,
         }
         request = Request(
             self.endpoint,
@@ -71,4 +81,7 @@ class TavilySearchProvider:
         return results
 
     def _fallback_results(self, query: str, limit: int) -> list[SearchResult]:
-        return [SearchResult(**{**result.__dict__, "source_type": "fallback_mock"}) for result in self.fallback.search(query, limit=limit)]
+        return [
+            SearchResult(**{**result.__dict__, "source_type": "fallback_mock"})
+            for result in self.fallback.search(query, limit=limit)
+        ]

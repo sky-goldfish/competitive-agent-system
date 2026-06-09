@@ -6,5 +6,5 @@ def requirement_understanding_node(state: AgentState, llm: LLMProvider) -> Agent
     if state.get("requirement"):
         # Resuming — requirement already parsed and enriched
         return {**state}
-    requirement = llm.understand_requirement(state["user_requirement"])
+    requirement = llm.understand_requirement(state.get("user_requirement", ""))
     return {**state, "requirement": requirement}

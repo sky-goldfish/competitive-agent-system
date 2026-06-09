@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import type { CitationBundleClaim, CitationBundleCompetitor, CitationBundleEvidence } from '../../lib/types';
+import SafeAnchor from '../SafeAnchor';
 
 type Props = {
   bundle: CitationBundleCompetitor[];
@@ -76,7 +77,7 @@ export default function CitationBundleView({ bundle }: Props) {
                         <div className="citation-bundle-claims">
                           {analysis.claims.map((claim) => (
                             <ClaimRow
-                              key={claim.claim_type}
+                              key={`${claim.claim_type}-${index}`}
                               claim={claim}
                               onOpenEvidence={() => setActiveClaim({ competitor: `${group.competitorName} · ${formatAnalysisIteration(analysis.analysis_iteration)}`, claim })}
                             />
@@ -111,7 +112,7 @@ export default function CitationBundleView({ bundle }: Props) {
               ) : null}
               <div className="claim-modal-evidence-list">
                 {activeClaim.claim.evidence.map((ev, index) => (
-                  <SourceRef key={ev.source_url ?? index} evidence={ev} />
+                  <SourceRef key={`${ev.source_url ?? ''}-${index}`} evidence={ev} />
                 ))}
               </div>
             </div>
@@ -122,8 +123,8 @@ export default function CitationBundleView({ bundle }: Props) {
   );
 }
 
-function bundleCompetitorKey(competitor: CitationBundleCompetitor, index: number) {
-  return `${competitor.competitor_id}-${competitor.analysis_iteration}-${index}`;
+function bundleCompetitorKey(competitor: CitationBundleCompetitor, _index: number) {
+  return `${competitor.competitor_id}-${competitor.analysis_iteration}`;
 }
 
 function groupBundleByCompetitor(bundle: CitationBundleCompetitor[]) {
@@ -164,7 +165,14 @@ function mergeAnalysesByIteration(analyses: CitationBundleCompetitor[]) {
       const existingClaim = claimsByType.get(claim.claim_type);
       if (existingClaim) {
         existingClaim.text = existingClaim.text || claim.text;
-        existingClaim.evidence = [...existingClaim.evidence, ...claim.evidence];
+        const seenKeys = new Set(existingClaim.evidence.map((e) => `${e.source_url ?? ''}|${e.summary ?? ''}|${e.quote ?? ''}`));
+        for (const ev of claim.evidence) {
+          const key = `${ev.source_url ?? ''}|${ev.summary ?? ''}|${ev.quote ?? ''}`;
+          if (!seenKeys.has(key)) {
+            existingClaim.evidence.push(ev);
+            seenKeys.add(key);
+          }
+        }
       } else {
         existing.claims.push({ ...claim, evidence: [...claim.evidence] });
       }
@@ -182,18 +190,12 @@ function formatAnalysisIteration(iteration: number) {
   return `第${formatChineseOrdinal(iteration)}轮重分析`;
 }
 
-function formatChineseOrdinal(value: number) {
+function formatChineseOrdinal(value: number): string {
   const labels: Record<number, string> = {
-    1: '一',
-    2: '二',
-    3: '三',
-    4: '四',
-    5: '五',
-    6: '六',
-    7: '七',
-    8: '八',
-    9: '九',
-    10: '十',
+    1: '一', 2: '二', 3: '三', 4: '四', 5: '五',
+    6: '六', 7: '七', 8: '八', 9: '九', 10: '十',
+    11: '十一', 12: '十二', 13: '十三', 14: '十四', 15: '十五',
+    16: '十六', 17: '十七', 18: '十八', 19: '十九', 20: '二十',
   };
   return labels[value] ?? String(value);
 }
@@ -234,9 +236,9 @@ function SourceRef({ evidence }: { evidence: CitationBundleEvidence }) {
         ) : null}
       </div>
       {evidence.source_url ? (
-        <a className="citation-ev-link" href={evidence.source_url} target="_blank" rel="noreferrer">
+        <SafeAnchor className="citation-ev-link" href={evidence.source_url}>
           {evidence.source_title ?? evidence.source_url}
-        </a>
+        </SafeAnchor>
       ) : null}
       {evidence.summary ? (
         <p className="citation-ev-summary">{evidence.summary}</p>

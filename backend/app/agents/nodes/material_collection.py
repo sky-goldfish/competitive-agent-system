@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
@@ -6,6 +7,8 @@ from urllib.parse import urlparse
 from app.agents.state import AgentState
 from app.db.models import new_id
 from app.providers.search.base import SearchProvider
+
+logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[str, str, dict[str, Any]], None]
 
@@ -148,10 +151,14 @@ def material_collection_node(
     requirement = state.get("requirement", {})
     if state.get("target_understanding"):
         requirement = {
+            **{
+                k: v
+                for k, v in state["target_understanding"].items()
+                if v and k not in requirement
+            },
             **requirement,
-            **{k: v for k, v in state["target_understanding"].items() if v},
         }
-    competitors = state["selected_competitors"]
+    competitors = state.get("selected_competitors", [])
     qa_retry_queries = state.get("qa_retry_queries")
 
     if qa_retry_queries:
@@ -207,6 +214,14 @@ def material_collection_node(
 
     existing_sources = state.get("sources", [])
     existing_evidence = state.get("evidence", [])
+    is_retry = bool(qa_retry_queries)
+    if is_retry and len(existing_sources) > 120:
+        ranked = sorted(
+            existing_sources,
+            key=lambda s: float(s.get("credibility_score") or 0),
+            reverse=True,
+        )
+        existing_sources = ranked[:100]
     sources = list(existing_sources)
     evidence = list(existing_evidence)
     seen_urls = {
@@ -214,7 +229,17 @@ def material_collection_node(
         for s in existing_sources
         if s.get("url")
     }
+    seen_bare_urls = {s.get("url") for s in existing_sources if s.get("url")}
     collection_iteration = state.get("feedback_loop_count", 0)
+
+    def _safe_ref_id(s: dict) -> int:
+        v = s.get("reference_id", 0)
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return 0
+
+    _next_ref_id = max((_safe_ref_id(s) for s in existing_sources), default=0) + 1
     for product_query in product_queries:
         competitor = product_query["competitor"]
         product_source_count = 0
@@ -222,7 +247,7 @@ def material_collection_node(
         def _search_one_dimension(query_item: dict) -> list[dict]:
             try:
                 results = search.search(
-                    query_item["query"], limit=query_item.get("limit", 4)
+                    query_item.get("query", ""), limit=query_item.get("limit", 4)
                 )
             except Exception:
                 return []
@@ -243,76 +268,92 @@ def material_collection_node(
                 executor.submit(_search_one_dimension, qi): qi
                 for qi in product_query["queries"]
             }
-            for future in as_completed(futures, timeout=60):
-                query_item = futures[future]
-                try:
-                    classified_results = future.result()
-                except Exception:
-                    continue
-                for ranked_result in classified_results[:2]:
-                    result = ranked_result["result"]
-                    source_key = f"{competitor['id']}::{result.url}"
-                    source_type = ranked_result["source_type"]
-                    credibility_score = ranked_result["credibility_score"]
-                    if source_key not in seen_urls:
-                        seen_urls.add(source_key)
-                        ref_id = len(sources) + 1
-                        source_title = result.title
-                        source = {
-                            "competitor_id": competitor["id"],
-                            "title": source_title,
-                            "url": result.url,
-                            "snippet": result.snippet,
-                            "source_type": source_type,
-                            "provider": search.name,
-                            "raw_content": result.raw_content,
-                            "reference_id": ref_id,
-                            "metadata_json": _metadata_json(
-                                credibility_score,
-                                ranked_result["rank_score"],
-                                source_type,
-                                ranked_result["label"],
-                                ranked_result["reason"],
-                                query_item,
-                                collection_iteration,
-                            ),
-                        }
-                        sources.append(source)
-                        product_source_count += 1
-                    else:
-                        ref_id = next(
-                            (
-                                s["reference_id"]
-                                for s in sources
-                                if s.get("competitor_id") == competitor["id"]
-                                and s.get("url") == result.url
-                            ),
-                            None,
+            try:
+                for future in as_completed(futures, timeout=60):
+                    query_item = futures[future]
+                    try:
+                        classified_results = future.result()
+                    except Exception:
+                        continue
+                    for ranked_result in classified_results[:2]:
+                        result = ranked_result["result"]
+                        source_key = f"{competitor.get('id', '')}::{result.url}"
+                        source_type = ranked_result["source_type"]
+                        credibility_score = ranked_result["credibility_score"]
+                        if (
+                            source_key not in seen_urls
+                            and result.url not in seen_bare_urls
+                        ):
+                            seen_urls.add(source_key)
+                            seen_bare_urls.add(result.url)
+                            ref_id = _next_ref_id
+                            _next_ref_id += 1
+                            source_title = result.title
+                            source = {
+                                "competitor_id": competitor["id"],
+                                "title": source_title,
+                                "url": result.url,
+                                "snippet": result.snippet,
+                                "source_type": source_type,
+                                "provider": search.name,
+                                "raw_content": result.raw_content,
+                                "credibility_score": credibility_score,
+                                "reference_id": ref_id,
+                                "metadata_json": _metadata_json(
+                                    credibility_score,
+                                    ranked_result["rank_score"],
+                                    source_type,
+                                    ranked_result["label"],
+                                    ranked_result["reason"],
+                                    query_item,
+                                    collection_iteration,
+                                ),
+                            }
+                            sources.append(source)
+                            product_source_count += 1
+                        else:
+                            ref_id = next(
+                                (
+                                    s["reference_id"]
+                                    for s in sources
+                                    if s.get("competitor_id") == competitor["id"]
+                                    and s.get("url") == result.url
+                                ),
+                                None,
+                            )
+                            source_title = next(
+                                (
+                                    s["title"]
+                                    for s in sources
+                                    if s.get("competitor_id") == competitor["id"]
+                                    and s.get("url") == result.url
+                                ),
+                                result.title,
+                            )
+                        evidence.append(
+                            {
+                                "id": new_id("ev"),
+                                "competitor_id": competitor["id"],
+                                "related_product": competitor["name"],
+                                "related_dimension": query_item.get("dimension", ""),
+                                "quote": (result.raw_content or result.snippet)[:800],
+                                "summary": _evidence_summary(
+                                    query_item, result.snippet
+                                ),
+                                "confidence": min(
+                                    0.95, max(0.5, credibility_score - 0.04)
+                                ),
+                                "source_url": result.url,
+                                "source_title": source_title,
+                                "reference_id": ref_id,
+                                "source_type": source_type,
+                            }
                         )
-                        source_title = next(
-                            (
-                                s["title"]
-                                for s in sources
-                                if s.get("competitor_id") == competitor["id"]
-                                and s.get("url") == result.url
-                            ),
-                            result.title,
-                        )
-                    evidence.append(
-                        {
-                            "id": new_id("ev"),
-                            "competitor_id": competitor["id"],
-                            "related_product": competitor["name"],
-                            "related_dimension": query_item["dimension"],
-                            "quote": (result.raw_content or result.snippet)[:800],
-                            "summary": _evidence_summary(query_item, result.snippet),
-                            "confidence": min(0.95, max(0.5, credibility_score - 0.04)),
-                            "source_url": result.url,
-                            "source_title": source_title,
-                            "reference_id": ref_id,
-                            "source_type": source_type,
-                        }
-                    )
+            except TimeoutError:
+                logger.warning(
+                    "material_collection as_completed timed out for competitor %s",
+                    competitor.get("name", "?"),
+                )
         _emit(
             progress,
             "source_search",
@@ -515,7 +556,11 @@ def _priority_slots_for_competitor_type(competitor_type: str) -> list[str]:
 def _covered_schema_slots(
     competitor: dict, evidence: list[dict], sources: list[dict]
 ) -> set[str]:
-    source_by_id = {source.get("id"): source for source in sources if source.get("id")}
+    source_by_id = {
+        source.get("reference_id"): source
+        for source in sources
+        if source.get("reference_id")
+    }
     covered = set()
     for item in evidence:
         if item.get("competitor_id") and item.get("competitor_id") != competitor.get(
@@ -531,7 +576,7 @@ def _covered_schema_slots(
         dimension = item.get("related_dimension")
         slot = _slot_for_dimension(dimension)
         if slot == "pricing":
-            source = source_by_id.get(item.get("source_id"), {})
+            source = source_by_id.get(item.get("reference_id"), {})
             if source and source.get("source_type") not in {
                 "official_pricing_page",
                 "ecommerce_product_page",
@@ -897,36 +942,38 @@ def _preferred_source_types(
             "community_discussion",
             "news_article",
         ]
+    _commodity_slot_map = {
+        "positioning": ["brand_official_product_page", "ecommerce_product_page"],
+        "core_features": [
+            "brand_official_product_page",
+            "professional_review",
+            "ecommerce_product_page",
+        ],
+        "pricing": ["ecommerce_product_page", "marketplace_listing_unknown_seller"],
+        "user_feedback": [
+            "ecommerce_user_review",
+            "social_review_post",
+            "community_discussion",
+        ],
+        "market_signal": ["professional_review", "news_article"],
+        "risk_opportunity": [
+            "ecommerce_user_review",
+            "social_review_post",
+            "community_discussion",
+            "professional_review",
+        ],
+    }
     if product_type == "commodity":
-        return {
-            "positioning": ["brand_official_product_page", "ecommerce_product_page"],
-            "core_features": [
-                "brand_official_product_page",
-                "professional_review",
-                "ecommerce_product_page",
-            ],
-            "pricing": ["ecommerce_product_page", "marketplace_listing_unknown_seller"],
-            "user_feedback": [
-                "ecommerce_user_review",
-                "social_review_post",
-                "community_discussion",
-            ],
-            "market_signal": ["professional_review", "news_article"],
-            "risk_opportunity": [
-                "ecommerce_user_review",
-                "social_review_post",
-                "community_discussion",
-                "professional_review",
-            ],
-        }[slot]
-    return {
+        return _commodity_slot_map.get(slot, ["official_site", "professional_review"])
+    _software_slot_map = {
         "positioning": ["official_site", "news_article"],
         "core_features": ["official_docs", "official_site"],
         "pricing": ["official_pricing_page"],
         "user_feedback": ["review_site", "community_discussion", "social_review_post"],
         "market_signal": ["news_article", "official_site"],
         "risk_opportunity": ["review_site", "community_discussion", "news_article"],
-    }[slot]
+    }
+    return _software_slot_map.get(slot, ["official_site", "professional_review"])
 
 
 def _success_criteria(slot: str, relationship_model: dict) -> str:
@@ -959,11 +1006,12 @@ def _classify_and_rank_results(
             result.title,
             result.snippet,
             requirement,
-            query_item["dimension"],
+            query_item.get("dimension", ""),
         )
         dimension_bonus = (
             0.08
-            if source_type in DIMENSION_SOURCE_BONUS.get(query_item["dimension"], set())
+            if source_type
+            in DIMENSION_SOURCE_BONUS.get(query_item.get("dimension", ""), set())
             else 0
         )
         preferred_bonus = (
@@ -1195,8 +1243,8 @@ def _metadata_json(
             "rank_score": rank_score,
             "source_type_label": source_label,
             "collection_iteration": collection_iteration,
-            "query": query_item["query"],
-            "dimension": query_item["dimension"],
+            "query": query_item.get("query", ""),
+            "dimension": query_item.get("dimension", ""),
             "target_slot": query_item.get("target_slot"),
             "product_type": query_item.get("product_type"),
             "competitor_type": query_item.get("competitor_type"),

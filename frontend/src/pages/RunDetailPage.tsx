@@ -1,12 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { FormEvent, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useParams } from 'react-router-dom';
 import { AlertCircle, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Clipboard, Download, Loader2, MessageSquare, RefreshCw, RotateCcw, Send, XCircle } from 'lucide-react';
 import CompetitorConfirmPanel from '../components/competitors/CompetitorConfirmPanel';
 import EvidenceList from '../components/evidence/EvidenceList';
 import SourceList from '../components/evidence/SourceList';
 import QAResultsPanel from '../components/qa/QAResultsPanel';
-import QASummaryBanner from '../components/qa/QASummaryBanner';
+import QASubsteps from '../components/qa/QASubsteps';
 import CitationBundleView from '../components/report/CitationBundleView';
 import ReportMarkdown from '../components/report/ReportMarkdown';
 import {
@@ -14,7 +14,6 @@ import {
   getChatMessages,
   getCompetitors,
   getEvidence,
-  getQAResults,
   getReport,
   getReportCitationBundle,
   getReportCitations,
@@ -27,7 +26,7 @@ import {
   regenerateReport,
   sendChatMessage,
 } from '../lib/api';
-import type { ChatMessage, CitationBundleCompetitor, Competitor, Evidence, QAResult, Report as AppReport, Revision, RevisionTrace, Run, Source, Trace } from '../lib/types';
+import type { ChatMessage, CitationBundleCompetitor, Competitor, Evidence, Report as AppReport, Revision, RevisionTrace, Run, Source, Trace } from '../lib/types';
 
 const stageOrder = [
   'requirement_understanding',
@@ -104,33 +103,32 @@ function getStageStatus(stage: string, run: Run, traces: Trace[], reportVersions
   const currentIndex = stageOrder.indexOf(normalizeStage(run.current_stage));
   const isRunning = run.status === 'running';
 
-  // Check for retry state
   const isPastStage = currentIndex > stageIndex;
   const isCurrentStage = normalizeStage(run.current_stage) === stage;
-  
-  if (isRunning && (isCurrentStage || isPastStage)) {
-    // If it's a past stage but we are still running, check if it was completed before
-    // but now we might be in a feedback loop.
+
+  if (isRunning && isCurrentStage) {
     const stageTraces = traces.filter((trace) => normalizeStage(trace.stage) === stage);
     const wasCompleted = stageTraces.some(t => t.status === 'completed');
-    
-    if (isCurrentStage) {
-      if (stage === 'report_generation' && reportVersions.length > 0) {
-        const latestReport = reportVersions[reportVersions.length - 1];
-        const runningTraces = traces.filter((trace) => normalizeStage(trace.stage) === 'report_generation' && trace.status === 'running');
-        const runningTrace = runningTraces[runningTraces.length - 1];
-        if (!runningTrace) return 'completed';
-        if (new Date(latestReport.created_at).getTime() >= new Date(runningTrace.started_at).getTime()) return 'completed';
-      }
-      return wasCompleted ? 'completed-retry' : 'running';
+    if (stage === 'report_generation' && reportVersions.length > 0) {
+      const latestReport = reportVersions[reportVersions.length - 1];
+      const runningTraces = traces.filter((trace) => normalizeStage(trace.stage) === 'report_generation' && trace.status === 'running');
+      const runningTrace = runningTraces[runningTraces.length - 1];
+      if (!runningTrace) return 'completed';
+      if (new Date(latestReport.created_at).getTime() >= new Date(runningTrace.started_at).getTime()) return 'completed';
     }
-    
-    if (isPastStage) {
-      return 'completed';
-    }
+    return wasCompleted ? 'completed-retry' : 'running';
   }
 
-  if (isRunning && stageIndex > currentIndex) return 'pending';
+  if (isRunning && isPastStage) {
+    return 'completed';
+  }
+
+  if (isRunning && stageIndex > currentIndex) {
+    const stageTraces = traces.filter((trace) => normalizeStage(trace.stage) === stage);
+    const wasCompleted = stageTraces.some(t => t.status === 'completed');
+    if (wasCompleted) return 'completed';
+    return 'pending';
+  }
 
   const stageTraces = traces.filter((trace) => normalizeStage(trace.stage) === stage);
   const latestTrace = stageTraces[stageTraces.length - 1];
@@ -204,52 +202,13 @@ function formatReportVersion(iteration: number | null | undefined) {
   return `第 ${(iteration ?? 0) + 1} 版`;
 }
 
-function formatDateTime(value: string | null | undefined) {
-  if (!value) return '';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '';
-  return date.toLocaleString('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
-function getReportStatusLabel(run: Run | undefined, report: { iteration: number } | undefined, qaResults: QAResult[], traces: Trace[]) {
+function getReportStatusLabel(run: Run | undefined, report: { iteration: number } | undefined) {
   if (!report) return '';
-  const isQualityChecking = run?.status === 'running' && normalizeStage(run.current_stage) === 'quality_check';
-  const hasReportGenerationTrace = traces.some((trace) => normalizeStage(trace.stage) === 'report_generation' && trace.status === 'completed');
-  const latestQA = qaResults[qaResults.length - 1];
   if (run?.status === 'revising') return '修订中';
-  if (isQualityChecking || (run?.status === 'running' && hasReportGenerationTrace && !latestQA)) return '正在质检';
-  if (latestQA?.decision === 'pass') return '质检通过';
-  if (latestQA?.decision === 'retry_collection') return '质检要求补采资料';
-  if (latestQA?.decision === 'retry_analysis') return '质检要求重分析';
-  if (run?.status === 'running') return '报告已生成，等待质检';
-  if (run?.status === 'completed') return '报告已生成';
+  if (run?.status === 'running') return '报告已完成';
+  if (run?.status === 'completed') return '报告已完成';
   if (run?.status === 'failed') return '任务已中断';
   return '报告已生成';
-}
-
-function getReportStatusTone(statusLabel: string) {
-  if (statusLabel.includes('通过')) return 'pass';
-  if (statusLabel.includes('重') || statusLabel.includes('中断')) return 'retry';
-  if (statusLabel.includes('质检') || statusLabel.includes('等待')) return 'checking';
-  return 'ready';
-}
-
-function getQALabel(result: QAResult | undefined) {
-  if (!result) return '待质检';
-  if (result.decision === 'pass') return `质检通过 · ${Math.round(result.overall_score * 100)} 分`;
-  if (result.decision === 'retry_collection') return `需补采 · ${Math.round(result.overall_score * 100)} 分`;
-  if (result.decision === 'retry_analysis') return `需重分析 · ${Math.round(result.overall_score * 100)} 分`;
-  return `质检完成 · ${Math.round(result.overall_score * 100)} 分`;
-}
-
-function getQATone(result: QAResult | undefined) {
-  if (!result) return 'checking';
-  return result.decision === 'pass' ? 'pass' : 'retry';
 }
 
 function ReportDiffBanner({ current, previous }: { current: AppReport; previous?: AppReport }) {
@@ -281,6 +240,60 @@ function ReportDiffBanner({ current, previous }: { current: AppReport; previous?
   );
 }
 
+type UIState = {
+  reportCollapsed: boolean;
+  mobileTab: 'process' | 'report';
+  stagesCollapsed: boolean;
+  manualStageCollapse: boolean;
+  revealedStageCount: number;
+};
+
+type UIAction =
+  | { type: 'RESET_FOR_RUN' }
+  | { type: 'TOGGLE_REPORT_COLLAPSED' }
+  | { type: 'SET_MOBILE_TAB'; tab: 'process' | 'report' }
+  | { type: 'TOGGLE_STAGES_COLLAPSED' }
+  | { type: 'SET_STAGES_COLLAPSED'; collapsed: boolean }
+  | { type: 'SET_MANUAL_STAGE_COLLAPSE'; value: boolean }
+  | { type: 'ADVANCE_REVEALED_STAGE'; maxStages: number }
+  | { type: 'CLAMP_REVEALED_STAGE'; maxStages: number };
+
+const initialUIState: UIState = {
+  reportCollapsed: false,
+  mobileTab: 'process',
+  stagesCollapsed: true,
+  manualStageCollapse: false,
+  revealedStageCount: 0,
+};
+
+function uiReducer(state: UIState, action: UIAction): UIState {
+  switch (action.type) {
+    case 'RESET_FOR_RUN':
+      return initialUIState;
+    case 'TOGGLE_REPORT_COLLAPSED':
+      return { ...state, reportCollapsed: !state.reportCollapsed };
+    case 'SET_MOBILE_TAB':
+      return { ...state, mobileTab: action.tab };
+    case 'TOGGLE_STAGES_COLLAPSED':
+      return { ...state, stagesCollapsed: !state.stagesCollapsed, manualStageCollapse: true };
+    case 'SET_STAGES_COLLAPSED':
+      return { ...state, stagesCollapsed: action.collapsed };
+    case 'SET_MANUAL_STAGE_COLLAPSE':
+      return { ...state, manualStageCollapse: action.value };
+    case 'ADVANCE_REVEALED_STAGE':
+      return {
+        ...state,
+        revealedStageCount: Math.min(state.revealedStageCount + 1, action.maxStages),
+      };
+    case 'CLAMP_REVEALED_STAGE':
+      return state.revealedStageCount > action.maxStages
+        ? { ...state, revealedStageCount: action.maxStages }
+        : state;
+    default:
+      return state;
+  }
+}
+
 export default function RunDetailPage() {
   const { runId } = useParams<{ runId: string }>();
   const id = runId ?? '';
@@ -288,18 +301,16 @@ export default function RunDetailPage() {
   const [clarificationAnswer, setClarificationAnswer] = useState('');
   const [submittedAnswers, setSubmittedAnswers] = useState<string[]>([]);
   const [selectedIteration, setSelectedIteration] = useState<number | undefined>(undefined);
-  const [reportCollapsed, setReportCollapsed] = useState(false);
-  const [mobileTab, setMobileTab] = useState<'process' | 'report'>('process');
-  const [resultView, setResultView] = useState<'report' | 'evidence'>('report');
-  const [revealedStageCount, setRevealedStageCount] = useState(0);
+  const manualSelectionRef = useRef(false);
+  const [ui, uiDispatch] = useReducer(uiReducer, initialUIState);
   const [chatInput, setChatInput] = useState('');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const chatMessagesRef = useRef(chatMessages);
+  chatMessagesRef.current = chatMessages;
   const [processingStage, setProcessingStage] = useState<'idle' | 'classifying' | 'searching' | 'analyzing' | 'editing' | 'generating' | 'done'>('idle');
   const [completedSteps, setCompletedSteps] = useState<string[]>([]);
   const [activeWorkflowKind, setActiveWorkflowKind] = useState<'edit' | 'redo'>('edit');
   const chatListRef = useRef<HTMLDivElement>(null);
-  const reportPanelRef = useRef<HTMLElement>(null);
-  const reportDocumentRef = useRef<HTMLElement>(null);
   const currentRunIdRef = useRef(id);
 
   const runQuery = useQuery({
@@ -319,20 +330,35 @@ export default function RunDetailPage() {
     setCompletedSteps([]);
     setActiveWorkflowKind('edit');
     if (!id) return undefined;
-    let cancelled = false;
-    getChatMessages(id)
+    const controller = new AbortController();
+    getChatMessages(id, controller.signal)
       .then((messages) => {
-        if (!cancelled && currentRunIdRef.current === id) setChatMessages(messages);
+        if (!controller.signal.aborted && currentRunIdRef.current === id) setChatMessages(messages);
       })
-      .catch(() => {});
+      .catch((err) => {
+        if (err instanceof DOMException && err.name === 'AbortError') return;
+        console.error('Failed to load chat messages:', err);
+      });
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [id]);
 
+  const isNearBottomRef = useRef(true);
+
   useEffect(() => {
-    if (chatListRef.current) {
-      chatListRef.current.scrollTop = chatListRef.current.scrollHeight;
+    const el = chatListRef.current;
+    if (!el) return;
+    const handleScroll = () => {
+      isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    };
+    el.addEventListener('scroll', handleScroll, { passive: true });
+    return () => el.removeEventListener('scroll', handleScroll);
+  }, []);
+
+  useEffect(() => {
+    if (chatListRef.current && isNearBottomRef.current) {
+      chatListRef.current.scrollTo({ top: chatListRef.current.scrollHeight, behavior: 'instant' });
     }
   }, [chatMessages, processingStage, completedSteps.length]);
 
@@ -343,7 +369,22 @@ export default function RunDetailPage() {
     enabled: Boolean(id),
     refetchInterval: isActive ? 3000 : (query) => query.state.data?.some((revision) => revision.status === 'queued' || revision.status === 'running') ? 3000 : false,
   });
+  const revisionsRef = useRef(revisionsQuery.data);
+  revisionsRef.current = revisionsQuery.data;
   const isRevisionRunning = run?.status === 'revising' || (revisionsQuery.data ?? []).some((r) => r.status === 'queued' || r.status === 'running');
+
+  useEffect(() => {
+    if (!isRevisionRunning) {
+      if (processingStage !== 'idle') setProcessingStage('idle');
+      return;
+    }
+    const activeRevision = (revisionsQuery.data ?? []).find((r) => r.status === 'running');
+    if (!activeRevision) {
+      if (processingStage !== 'idle') setProcessingStage('idle');
+      return;
+    }
+  }, [isRevisionRunning, revisionsQuery.data, processingStage]);
+
   const competitorsQuery = useQuery({ queryKey: ['competitors', id], queryFn: () => getCompetitors(id), enabled: Boolean(id), refetchInterval: isActive ? 5000 : false });
   const sourcesQuery = useQuery({ queryKey: ['sources', id], queryFn: () => getSources(id), enabled: Boolean(id), refetchInterval: isActive ? 5000 : false });
   const evidenceQuery = useQuery({ queryKey: ['evidence', id], queryFn: () => getEvidence(id), enabled: Boolean(id), refetchInterval: isActive ? 5000 : false });
@@ -352,12 +393,6 @@ export default function RunDetailPage() {
   const shouldFetchReport = Boolean(reportGenerated);
   const reportQuery = useQuery({ queryKey: ['report', id, selectedIteration], queryFn: () => getReport(id, selectedIteration), enabled: Boolean(id) && Boolean(shouldFetchReport), refetchInterval: isActive ? 3000 : false });
   const reportVersionsQuery = useQuery({ queryKey: ['report-versions', id], queryFn: () => getReportVersions(id), enabled: Boolean(id) && Boolean(shouldFetchReport), refetchInterval: isActive ? 3000 : false });
-  const qaResultsQuery = useQuery({
-    queryKey: ['qa-results', id],
-    queryFn: () => getQAResults(id),
-    enabled: Boolean(id) && Boolean(shouldFetchReport),
-    refetchInterval: isActive ? 3000 : false,
-  });
   const displayedReportIteration = reportQuery.data?.iteration;
   const citationsQuery = useQuery({
     queryKey: ['report-citations', id, displayedReportIteration],
@@ -365,15 +400,16 @@ export default function RunDetailPage() {
     enabled: Boolean(id) && displayedReportIteration != null,
   });
   const citationBundleQuery = useQuery({
-    queryKey: ['citation-bundle', id],
-    queryFn: () => getReportCitationBundle(id),
-    enabled: Boolean(id) && Boolean(run),
+    queryKey: ['citation-bundle', id, displayedReportIteration],
+    queryFn: () => getReportCitationBundle(id, displayedReportIteration),
+    enabled: Boolean(id) && Boolean(run) && displayedReportIteration != null,
     refetchInterval: isActive ? 5000 : false,
   });
 
   const regenerateMutation = useMutation({
     mutationFn: () => regenerateReport(id),
     onSuccess: () => {
+      manualSelectionRef.current = false;
       setSelectedIteration(undefined);
       queryClient.invalidateQueries({ queryKey: ['run', id] });
       queryClient.invalidateQueries({ queryKey: ['report', id] });
@@ -430,17 +466,16 @@ export default function RunDetailPage() {
       setCompletedSteps([]);
       setActiveWorkflowKind(data.intent === 'report_redo' ? 'redo' : 'edit');
       setChatInput('');
-      getChatMessages(responseRunId).then((messages) => {
-        if (currentRunIdRef.current === responseRunId) setChatMessages(messages);
-      }).catch(() => {});
+      _mergeServerMessages(responseRunId);
       getRevisions(responseRunId).then((revs) => {
         if (currentRunIdRef.current === responseRunId) queryClient.setQueryData(['revisions', responseRunId], revs);
-      }).catch(() => {});
+      }).catch((err) => console.error('Failed to refresh revisions:', err));
     },
     onError: (error, variables) => {
       if (currentRunIdRef.current !== variables.runId) return;
       setProcessingStage('idle');
       setCompletedSteps([]);
+      setChatInput(variables.message);
       const message = error instanceof Error ? error.message : '发送失败，请稍后重试。';
       const errorMsg: ChatMessage = {
         id: `error-${Date.now()}`,
@@ -456,18 +491,53 @@ export default function RunDetailPage() {
       setChatMessages((prev) => [...prev, errorMsg]);
     },
   });
+  const chatPendingRef = useRef(chatSendMutation.isPending);
+  chatPendingRef.current = chatSendMutation.isPending;
+
+  function _mergeServerMessages(runId: string) {
+    getChatMessages(runId)
+      .then((serverMessages) => {
+        if (currentRunIdRef.current !== runId) return;
+        setChatMessages((prev) => {
+          const pendingLocal = prev.filter(
+            (m) => m.id.startsWith('temp-') || m.id.startsWith('error-'),
+          );
+          if (!pendingLocal.length) return serverMessages;
+          const serverContents = new Set(serverMessages.map((m) => m.content));
+          const unreconciled = pendingLocal.filter(
+            (m) => !serverContents.has(m.content),
+          );
+          return [...serverMessages, ...unreconciled];
+        });
+      })
+      .catch((err) => console.error('Failed to refresh chat messages:', err));
+  }
 
   useEffect(() => {
-    const shouldPollChat = isActive || chatMessages.some(isPendingChatMessage) || (revisionsQuery.data ?? []).some((revision) => revision.status === 'queued' || revision.status === 'running');
+    const shouldPollChat = isActive || chatMessagesRef.current.some(isPendingChatMessage) || (revisionsRef.current ?? []).some((revision) => revision.status === 'queued' || revision.status === 'running');
     if (!id || !shouldPollChat) return undefined;
-    const hadRunningRevision = (revisionsQuery.data ?? []).some((revision) => revision.status === 'queued' || revision.status === 'running');
+    const hadRunningRevision = (revisionsRef.current ?? []).some((revision) => revision.status === 'queued' || revision.status === 'running');
     const timer = window.setInterval(() => {
-      if (chatSendMutation.isPending) return;
+      if (chatPendingRef.current) return;
       getChatMessages(id)
         .then((messages) => {
-          if (currentRunIdRef.current === id) setChatMessages(messages);
+          if (currentRunIdRef.current !== id) return;
+          setChatMessages((prev) => {
+            const pendingLocal = prev.filter(
+              (m) => m.id.startsWith('temp-') || m.id.startsWith('error-'),
+            );
+            if (!pendingLocal.length) {
+              if (prev.length === messages.length && prev.every((m, i) => m.id === messages[i].id)) return prev;
+              return messages;
+            }
+            const serverContents = new Set(messages.map((m) => m.content));
+            const unreconciled = pendingLocal.filter(
+              (m) => !serverContents.has(m.content),
+            );
+            return [...messages, ...unreconciled];
+          });
         })
-        .catch(() => {});
+        .catch((err) => console.error('Polling chat messages failed:', err));
       getRevisions(id)
         .then((revs) => {
           if (currentRunIdRef.current !== id) return;
@@ -476,6 +546,7 @@ export default function RunDetailPage() {
           if (hadRunningRevision && !nowHasRunning) {
             const completedRevision = [...revs].reverse().find((r) => r.status === 'completed' && r.target_report_iteration != null);
             if (completedRevision && completedRevision.target_report_iteration != null) {
+              manualSelectionRef.current = false;
               setSelectedIteration(completedRevision.target_report_iteration);
             }
             queryClient.invalidateQueries({ queryKey: ['report-versions', id] });
@@ -488,77 +559,39 @@ export default function RunDetailPage() {
             queryClient.invalidateQueries({ queryKey: ['run', id] });
           }
         })
-        .catch(() => {});
+        .catch((err) => console.error('Polling revisions failed:', err));
     }, 3000);
     return () => window.clearInterval(timer);
-  }, [chatMessages, chatSendMutation.isPending, id, isActive, revisionsQuery.data, queryClient]);
+  }, [id, isActive, queryClient]);
 
   useEffect(() => {
-    if (!reportQuery.data) return;
-    setMobileTab('report');
-    setResultView('report');
-    setReportCollapsed(false);
-    window.requestAnimationFrame(() => {
-      reportPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      if (reportDocumentRef.current) {
-        reportDocumentRef.current.scrollTop = 0;
-      }
-    });
+    if (reportQuery.data) uiDispatch({ type: 'SET_MOBILE_TAB', tab: 'report' });
   }, [reportQuery.data]);
 
   useEffect(() => {
-    if (!reportQuery.isError || !reportVersionsQuery.data?.length) return;
+    if (!reportVersionsQuery.data?.length) return;
     const latestIteration = reportVersionsQuery.data[reportVersionsQuery.data.length - 1].iteration;
-    if (selectedIteration !== latestIteration && latestIteration != null) {
+    if (latestIteration == null) return;
+    if (selectedIteration !== undefined && selectedIteration >= latestIteration) return;
+    if (manualSelectionRef.current) return;
+    const isIdle = processingStage === 'idle' && !chatSendMutation.isPending && !isRevisionRunning;
+    if (reportQuery.isError || (Boolean(reportQuery.data) && isIdle)) {
+      manualSelectionRef.current = false;
       setSelectedIteration(latestIteration);
     }
-  }, [reportQuery.isError, reportVersionsQuery.data, selectedIteration]);
+  }, [reportQuery.isError, reportQuery.data, reportVersionsQuery.data, selectedIteration, processingStage, chatSendMutation.isPending, isRevisionRunning]);
 
   const competitors = competitorsQuery.data ?? [];
   const sources = sourcesQuery.data ?? [];
   const evidence = evidenceQuery.data ?? [];
   const report = reportQuery.data;
   const reportVersions = reportVersionsQuery.data ?? [];
-  const qaResults = qaResultsQuery.data ?? [];
-  const latestQAResult = qaResults[qaResults.length - 1];
-  const retryQAResults = qaResults.filter((result) => result.decision !== 'pass');
   const latestReportIteration = reportVersions.length ? reportVersions[reportVersions.length - 1].iteration : undefined;
   const completed = Boolean(report) && processingStage === 'idle' && !chatSendMutation.isPending && !isRevisionRunning;
   const shouldShowReportPanel = Boolean(report);
+  const isOptimizingReport = processingStage !== 'idle' && Boolean(report);
   const isFailedWithReport = Boolean(report) && run?.status === 'failed';
-  const reportStatusLabel = getReportStatusLabel(run, report, qaResults, traces);
-  const reportStatusTone = getReportStatusTone(reportStatusLabel);
-  const isOptimizingReport = reportStatusTone === 'checking';
-  const reportStatusDetail = report
-    ? [
-        retryQAResults.length > 0 ? `已根据质检重试 ${retryQAResults.length} 次` : null,
-      ].filter(Boolean).join(' · ')
-    : '报告生成后会显示在这里';
-  const currentVersion = selectedIteration ?? latestReportIteration;
-  const latestReportVersion = reportVersions.find((version) => version.iteration === latestReportIteration);
-  const selectedReportVersion = reportVersions.find((version) => version.iteration === currentVersion);
-  const versionQaByIteration = useMemo(() => {
-    const map = new Map<number, QAResult>();
-    qaResults.forEach((result) => {
-      const reportIteration = Math.max(0, result.iteration - 1);
-      map.set(reportIteration, result);
-    });
-    return map;
-  }, [qaResults]);
-
-  const viewReport = (iteration?: number) => {
-    setSelectedIteration(iteration);
-    setMobileTab('report');
-    setResultView('report');
-    setReportCollapsed(false);
-    window.requestAnimationFrame(() => {
-      reportPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      reportPanelRef.current?.focus({ preventScroll: true });
-      if (reportDocumentRef.current) {
-        reportDocumentRef.current.scrollTop = 0;
-      }
-    });
-  };
+  const reportStatusLabel = getReportStatusLabel(run, report);
   const canSendChat = Boolean(report) && !chatSendMutation.isPending && Boolean(chatInput.trim());
   const revisions = revisionsQuery.data ?? [];
   const activeRevision = revisions.find((r) => r.status === 'queued' || r.status === 'running');
@@ -581,34 +614,37 @@ export default function RunDetailPage() {
       .filter(({ status }) => isStageVisible(status));
     return visibleStages.length > 0 ? visibleStages : [{ stage: 'requirement_understanding', status: 'running' }];
   }, [completed, run, traces, reportVersions]);
-  const shouldAnimateStages = run?.status !== 'completed' && run?.status !== 'failed';
-  const visibleStageCount = shouldAnimateStages ? revealedStageCount : stages.length;
-  const revealedStages = stages.slice(0, visibleStageCount);
-  const nextStage = shouldAnimateStages ? stages[revealedStageCount] : undefined;
+  const revealedStages = stages.slice(0, ui.revealedStageCount);
+  const nextStage = stages[ui.revealedStageCount];
 
   useEffect(() => {
-    setRevealedStageCount(0);
+    manualSelectionRef.current = false;
+    uiDispatch({ type: 'RESET_FOR_RUN' });
     setSelectedIteration(undefined);
-    setReportCollapsed(false);
-    setResultView('report');
-    setMobileTab('process');
   }, [id]);
 
   useEffect(() => {
-    if (!run || !shouldAnimateStages) {
-      setRevealedStageCount(stages.length);
-      return undefined;
+    if (!run) return undefined;
+    if (ui.revealedStageCount > stages.length) {
+      uiDispatch({ type: 'CLAMP_REVEALED_STAGE', maxStages: stages.length });
     }
-    if (revealedStageCount >= stages.length) return undefined;
+    if (ui.revealedStageCount >= stages.length) return undefined;
     const timer = window.setTimeout(() => {
-      setRevealedStageCount((count) => Math.min(count + 1, stages.length));
+      uiDispatch({ type: 'ADVANCE_REVEALED_STAGE', maxStages: stages.length });
     }, 1000);
     return () => window.clearTimeout(timer);
-  }, [revealedStageCount, run, shouldAnimateStages, stages.length]);
+  }, [ui.revealedStageCount, run, stages.length]);
 
   useEffect(() => {
-    setRevealedStageCount((count) => Math.min(count, stages.length));
-  }, [stages.length]);
+    if (!run || ui.manualStageCollapse) return;
+    if (run.status === 'running' || run.status === 'waiting_for_human' || run.status === 'waiting_for_clarification') {
+      uiDispatch({ type: 'SET_STAGES_COLLAPSED', collapsed: false });
+      return;
+    }
+    if (run.status === 'completed' || run.status === 'failed') {
+      uiDispatch({ type: 'SET_STAGES_COLLAPSED', collapsed: true });
+    }
+  }, [ui.manualStageCollapse, run?.status]);
 
   if (runQuery.isLoading) return <p className="loading">加载任务中...</p>;
   if (runQuery.isError || !run) return <p className="error-text">任务加载失败。</p>;
@@ -640,22 +676,14 @@ export default function RunDetailPage() {
       <div className="conversation-header">
         <div>
           <h1>{run.title}</h1>
-          <p>{isRevisionRunning ? '正在修订报告...' : report ? reportStatusDetail : (statusLabels[run.status] ?? run.status)}</p>
+          <p>{isRevisionRunning ? '正在修订报告...' : completed ? '报告已完成' : (statusLabels[run.status] ?? run.status)}</p>
         </div>
-        {completed ? (
-          <button type="button" className="icon-text-button" onClick={() => regenerateMutation.mutate()} disabled={regenerateMutation.isPending}>
-            <RotateCcw size={16} />
-            {regenerateMutation.isPending ? '生成中' : '重新生成'}
-          </button>
-        ) : null}
+        {completed ? null : null}
       </div>
 
       <div className="message-stream" ref={chatListRef}>
         <article className="message-row user">
-          <div className="message-bubble">
-            <span className="message-speaker">你的需求</span>
-            <span>{run.user_requirement}</span>
-          </div>
+          <div className="message-bubble">{run.user_requirement}</div>
         </article>
         <article className="message-row assistant">
           <div className="assistant-card">
@@ -668,53 +696,62 @@ export default function RunDetailPage() {
         </article>
 {submittedAnswers.map((answer, index) => (
           <article className="message-row user" key={`${answer}-${index}`}>
-            <div className="message-bubble">
-              <span className="message-speaker">你的补充</span>
-              <span>{answer}</span>
-            </div>
+            <div className="message-bubble">{answer}</div>
           </article>
         ))}
         {stages.length > 0 ? (
           <article className="message-row assistant">
             <div className="stage-collapse-card">
-              <div className="stage-collapse-toggle stage-collapse-static">
+              <button
+                type="button"
+                className="stage-collapse-toggle"
+                onClick={() => {
+                  uiDispatch({ type: 'TOGGLE_STAGES_COLLAPSED' });
+                }}
+              >
                 <div className="stage-collapse-title">
                   <CheckCircle2 size={16} />
                   <strong>分析过程</strong>
+                  <span className="stage-collapse-summary">
+                    {revealedStages.map(({ stage, status }) => status === 'completed' ? `${stageLabels[stage] ?? stage} ✓` : `...`).join(' → ')}
+                  </span>
                 </div>
-              </div>
-              <div className="dialogue-stage-list">
-                {revealedStages.map(({ stage, status }) => (
-                  <StageDialogueCard
-                    key={stage}
-                    stage={stage}
-                    status={status}
-                    run={run}
-                    counts={stageCounts}
-                    competitors={competitors}
-                    sources={sources}
-                    evidence={evidence}
-                    hasReport={Boolean(report)}
-                    citationBundle={citationBundleQuery.data ?? []}
-                    traces={traces}
-                    runId={id}
-                    selectedIteration={selectedIteration ?? latestReportIteration}
-                    clarification={{
-                      value: clarificationAnswer,
-                      onChange: setClarificationAnswer,
-                      onSubmit: submitClarification,
-                      isPending: clarificationMutation.isPending,
-                      error: clarificationMutation.error,
-                    }}
-                  />
-                ))}
-                {nextStage ? (
-                  <article className="thinking-card">
-                    <Loader2 size={17} />
-                    <span>Agent 正在思考：{stageLabels[nextStage.stage] ?? nextStage.stage}</span>
-                  </article>
-                ) : null}
-              </div>
+                {ui.stagesCollapsed ? <ChevronDown size={18} /> : <ChevronUp size={18} />}
+              </button>
+              {!ui.stagesCollapsed ? (
+                <div className="dialogue-stage-list">
+                  {revealedStages.map(({ stage, status }) => (
+                    <StageDialogueCard
+                      key={stage}
+                      stage={stage}
+                      status={status}
+                      run={run}
+                      counts={stageCounts}
+                      competitors={competitors}
+                      sources={sources}
+                      evidence={evidence}
+                      hasReport={Boolean(report)}
+                      citationBundle={citationBundleQuery.data ?? []}
+                      traces={traces}
+                      runId={id}
+                      selectedIteration={selectedIteration ?? latestReportIteration}
+                      clarification={{
+                        value: clarificationAnswer,
+                        onChange: setClarificationAnswer,
+                        onSubmit: submitClarification,
+                        isPending: clarificationMutation.isPending,
+                        error: clarificationMutation.error,
+                      }}
+                    />
+                  ))}
+                  {nextStage ? (
+                    <article className="thinking-card">
+                      <Loader2 size={17} />
+                      <span>Agent 正在思考：{stageLabels[nextStage.stage] ?? nextStage.stage}</span>
+                    </article>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           </article>
         ) : null}
@@ -723,23 +760,22 @@ export default function RunDetailPage() {
             <div className="assistant-card report-done-card">
               <div className="assistant-card-title">
                 <CheckCircle2 size={17} />
-                <strong>{reportStatusLabel}</strong>
+                <strong>报告已生成</strong>
               </div>
               <p>
-                当前展示 {report ? formatReportVersion(report.iteration) : '最新报告'}。报告区已准备好，你可以查看完整报告，也可以继续对话修改。
+                第一轮分析已完成。右侧可查看完整报告，下方可以继续对话修改报告。
               </p>
-              <div className="chat-card-actions">
-                <button
-                  type="button"
-                  className="chat-view-report-btn"
-                  onClick={() => viewReport(latestReportIteration)}
-                >
-                  查看完整报告
-                </button>
-                <Link className="chat-view-report-btn secondary" to={`/runs/${id}/report`}>
-                  打开完整报告页
-                </Link>
-              </div>
+              <button
+                type="button"
+                className="chat-view-report-btn"
+                onClick={() => {
+                  setSelectedIteration(latestReportIteration ?? undefined);
+                  uiDispatch({ type: 'SET_MOBILE_TAB', tab: 'report' });
+                  uiDispatch({ type: 'SET_STAGES_COLLAPSED', collapsed: false });
+                }}
+              >
+                查看报告
+              </button>
             </div>
           </article>
         ) : null}
@@ -762,8 +798,7 @@ export default function RunDetailPage() {
               {msg.role === 'user' ? (
                 <article className="message-row user">
                   <div className="message-bubble">
-                    <span className="message-speaker">你</span>
-                    <span>{msg.content}</span>
+                    {msg.content}
                     {isQueuedChatMessage(msg) ? <span className="queued-message-tag">等待质检结束后处理</span> : null}
                   </div>
                 </article>
@@ -795,7 +830,11 @@ export default function RunDetailPage() {
                       <button
                         type="button"
                         className="chat-view-report-btn"
-                        onClick={() => viewReport(reportVersion)}
+                        onClick={() => {
+                          manualSelectionRef.current = true;
+                          setSelectedIteration(reportVersion);
+                          uiDispatch({ type: 'SET_MOBILE_TAB', tab: 'report' });
+                        }}
                       >
                         查看{formatReportVersion(reportVersion)}
                       </button>
@@ -835,7 +874,11 @@ export default function RunDetailPage() {
                       <button
                         type="button"
                         className="chat-view-report-btn"
-                        onClick={() => viewReport(revision.target_report_iteration!)}
+                        onClick={() => {
+                          manualSelectionRef.current = true;
+                          setSelectedIteration(revision.target_report_iteration!);
+                          uiDispatch({ type: 'SET_MOBILE_TAB', tab: 'report' });
+                        }}
                       >
                         查看{formatReportVersion(revision.target_report_iteration)}
                       </button>
@@ -876,24 +919,22 @@ export default function RunDetailPage() {
           chatSendMutation.mutate({ runId: id, message: msg });
         }}
       >
-        <div className="conversation-input-shell">
-          <textarea
-            className="conversation-input"
-            value={chatInput}
-            onChange={(e) => setChatInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                const msg = chatInput.trim();
-                if (!canSendChat) return;
-                chatSendMutation.mutate({ runId: id, message: msg });
-              }
-            }}
-            placeholder={report ? '继续对话：删除定价章节 / 增加用户评价对比 / 重新调研某个方向...' : '报告生成后可继续对话修改'}
-            rows={2}
-            disabled={chatSendMutation.isPending}
-          />
-        </div>
+        <textarea
+          className="conversation-input"
+          value={chatInput}
+          onChange={(e) => setChatInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              const msg = chatInput.trim();
+              if (!canSendChat) return;
+              chatSendMutation.mutate({ runId: id, message: msg });
+            }
+          }}
+          placeholder={report ? '继续对话：增加竞品XX的对比列 / 删除定价维度 / 补充隐私安全对比...' : '报告生成后可继续对话修改'}
+          rows={2}
+          disabled={chatSendMutation.isPending}
+        />
         <button type="submit" className="conversation-send-btn" disabled={!canSendChat}>
           <Send size={18} />
         </button>
@@ -902,18 +943,15 @@ export default function RunDetailPage() {
   );
 
   const reportColumn = (
-    <section className="report-panel" ref={reportPanelRef} tabIndex={-1}>
+    <section className="report-panel">
       <div className="report-toolbar">
         <div>
-          <h2>
-            {report?.title ?? '竞品分析报告'}
-            {report && retryQAResults.length > 0 ? (
-              <small>质检曾触发 {retryQAResults.length} 次重试，当前展示的是 {formatReportVersion(report.iteration)}。</small>
-            ) : null}
-          </h2>
+          <h2>{report?.title ?? '竞品分析报告'}</h2>
           <p className="report-status-line">
             {isRevisionRunning && <Loader2 size={12} className="animate-spin" />}
-            {report ? [reportStatusDetail, report.summary].filter(Boolean).join(' · ') : '报告生成后会显示在这里'}
+            {report
+              ? `${formatReportVersion(report.iteration)} · ${reportStatusLabel} · ${report.summary}`
+              : '报告生成后会显示在这里'}
           </p>
           {isOptimizingReport ? (
             <p className="report-intervention-hint">Agent 正在质检这份报告。你也可以通过左侧对话人工介入修改。</p>
@@ -929,99 +967,63 @@ export default function RunDetailPage() {
           <button type="button" className="icon-button" onClick={downloadMarkdown} disabled={!report} title="下载 Markdown">
             <Download size={17} />
           </button>
-          <button type="button" className="icon-button" onClick={() => setReportCollapsed((value) => !value)} title={reportCollapsed ? '展开报告区域' : '收起报告区域'}>
-            {reportCollapsed ? <ChevronLeft size={17} /> : <ChevronRight size={17} />}
+          <button type="button" className="icon-button" onClick={() => uiDispatch({ type: 'TOGGLE_REPORT_COLLAPSED' })} title={ui.reportCollapsed ? '展开报告区域' : '收起报告区域'}>
+            {ui.reportCollapsed ? <ChevronLeft size={17} /> : <ChevronRight size={17} />}
           </button>
         </div>
       </div>
-      <div className="result-view-body">
-        {resultView === 'report' ? (
-          <>
-            {reportVersions.length > 1 ? (
-              <div className="report-version-selector">
-                <span className="report-version-label">报告版本</span>
-                {reportVersions.map((version) => (
-                  <button
-                    key={version.id}
-                    type="button"
-                    className={`report-version-btn ${currentVersion === version.iteration ? 'active' : ''}`}
-                    onClick={() => setSelectedIteration(version.iteration)}
-                  >
-                    <span className="report-version-title">
-                      {formatReportVersion(version.iteration)}
-                      {version.iteration === latestReportIteration ? <em>最新</em> : <em>历史</em>}
-                    </span>
-                    <span className="report-version-meta">{formatDateTime(version.created_at)}</span>
-                    <span className={`report-version-qa ${getQATone(versionQaByIteration.get(version.iteration))}`}>
-                      {getQALabel(versionQaByIteration.get(version.iteration))}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            ) : null}
-            {selectedIteration !== undefined && latestReportIteration !== undefined && selectedIteration !== latestReportIteration ? (
-              <div className="historical-version-banner">
-                <div>
-                  <strong>正在查看历史版本</strong>
-                  <span>
-                    {formatReportVersion(selectedIteration)}
-                    {selectedReportVersion ? ` · ${formatDateTime(selectedReportVersion.created_at)}` : ''}
-                    。最新版本是 {formatReportVersion(latestReportIteration)}
-                    {latestReportVersion ? ` · ${formatDateTime(latestReportVersion.created_at)}` : ''}。
-                  </span>
-                </div>
-                <button type="button" onClick={() => setSelectedIteration(undefined)}>切换至最新版本</button>
-              </div>
-            ) : null}
-            {report && (
-              <ReportDiffBanner
-                current={report}
-                previous={reportVersions.find(v => v.iteration === report.iteration - 1)}
-              />
-            )}
-            <article className="report-document conversational-report" ref={reportDocumentRef}>
-              {reportQuery.isLoading ? <p className="loading">加载报告中...</p> : null}
-              {reportQuery.isError ? <p className="error-text">报告加载失败。</p> : null}
-              {report ? <ReportMarkdown markdown={report.markdown_content} citations={citationsQuery.data ?? []} /> : null}
-              {!reportQuery.isLoading && !reportQuery.isError && !report ? (
-                <div className="empty-state">
-                  <p className="empty-state-title">报告尚未生成</p>
-                  <p className="empty-state-desc">完成竞品确认后，Agent 会继续采集资料并生成报告。</p>
-                </div>
-              ) : null}
-            </article>
-          </>
-        ) : (
-          <div className="result-insights">
-            <QASummaryBanner runId={id} />
-            <CitationBundleView bundle={citationBundleQuery.data ?? []} />
-            <div className="result-insights-grid">
-              <SourceList sources={sources} />
-              <EvidenceList evidence={evidence} sources={sources} />
-            </div>
+      <div className="report-scroll-area">
+        {selectedIteration !== undefined && latestReportIteration !== undefined && selectedIteration !== latestReportIteration ? (
+          <div className="historical-version-banner">
+            <span>您正在查看历史版本（{formatReportVersion(selectedIteration)}）。当前任务已产生最新版本（{formatReportVersion(latestReportIteration)}）。</span>
+            <button type="button" onClick={() => { manualSelectionRef.current = false; setSelectedIteration(undefined); }}>切换至最新版本</button>
           </div>
+        ) : null}
+        {report && (
+          <ReportDiffBanner 
+            current={report} 
+            previous={reportVersions.find(v => v.iteration === report.iteration - 1)} 
+          />
         )}
-      </div>
-      <div className="result-view-tabs">
-        <button type="button" className={resultView === 'report' ? 'active' : ''} onClick={() => setResultView('report')}>
-          报告
-        </button>
-        <button type="button" className={resultView === 'evidence' ? 'active' : ''} onClick={() => setResultView('evidence')}>
-          证据与分析
-        </button>
+        {reportVersions.length > 1 ? (
+          <div className="report-version-selector">
+            <span className="report-version-label">报告版本</span>
+            {reportVersions.map((version) => (
+              <button
+                key={version.id}
+                type="button"
+                className={`report-version-btn ${(selectedIteration ?? latestReportIteration) === version.iteration ? 'active' : ''}`}
+                onClick={() => { manualSelectionRef.current = true; setSelectedIteration(version.iteration); }}
+              >
+                  {formatReportVersion(version.iteration)}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <article className="report-document conversational-report">
+          {reportQuery.isLoading ? <p className="loading">加载报告中...</p> : null}
+          {reportQuery.isError ? <p className="error-text">报告加载失败。</p> : null}
+          {report ? <ReportMarkdown markdown={report.markdown_content} citations={citationsQuery.data ?? []} /> : null}
+          {!reportQuery.isLoading && !reportQuery.isError && !report ? (
+            <div className="empty-state">
+              <p className="empty-state-title">报告尚未生成</p>
+              <p className="empty-state-desc">完成竞品确认后，Agent 会继续采集资料并生成报告。</p>
+            </div>
+          ) : null}
+        </article>
       </div>
     </section>
   );
 
   return (
-    <div className={`analysis-workspace ${completed ? 'completed' : ''} ${report ? 'has-report' : ''} ${reportCollapsed ? 'report-collapsed' : ''}`}>
+    <div className={`analysis-workspace ${completed ? 'completed' : ''} ${ui.reportCollapsed ? 'report-collapsed' : ''}`}>
       <div className="mobile-result-tabs">
-        <button type="button" className={mobileTab === 'process' ? 'active' : ''} onClick={() => setMobileTab('process')}>过程</button>
-        <button type="button" className={mobileTab === 'report' ? 'active' : ''} onClick={() => setMobileTab('report')}>报告</button>
+        <button type="button" className={ui.mobileTab === 'process' ? 'active' : ''} onClick={() => uiDispatch({ type: 'SET_MOBILE_TAB', tab: 'process' })}>过程</button>
+        <button type="button" className={ui.mobileTab === 'report' ? 'active' : ''} onClick={() => uiDispatch({ type: 'SET_MOBILE_TAB', tab: 'report' })}>报告</button>
       </div>
       <div className="analysis-split">
-        <div className={`process-slot ${mobileTab === 'process' ? 'mobile-active' : ''}`}>{processColumn}</div>
-        {shouldShowReportPanel ? <div className={`report-slot ${mobileTab === 'report' ? 'mobile-active' : ''}`}>{reportColumn}</div> : null}
+        <div className={`process-slot ${ui.mobileTab === 'process' ? 'mobile-active' : ''}`}>{processColumn}</div>
+        {shouldShowReportPanel ? <div className={`report-slot ${ui.mobileTab === 'report' ? 'mobile-active' : ''}`}>{reportColumn}</div> : null}
       </div>
     </div>
   );
@@ -1086,12 +1088,12 @@ function RevisionWorkflowCard({ revision }: { revision: Revision }) {
   const [collapsed, setCollapsed] = useState(false);
 
   useEffect(() => {
-    getRevisionTimeline(revision.id).then(setTimeline).catch(() => {});
+    getRevisionTimeline(revision.id).then(setTimeline).catch((err) => console.error('Failed to load revision timeline:', err));
     if (revision.status === 'queued' || revision.status === 'running') {
       const timer = window.setInterval(() => {
         getRevisionTimeline(revision.id).then((data) => {
           setTimeline(data);
-        }).catch(() => {});
+        }).catch((err) => console.error('Polling revision timeline failed:', err));
       }, 3000);
       return () => window.clearInterval(timer);
     }
@@ -1160,7 +1162,7 @@ function RevisionWorkflowCard({ revision }: { revision: Revision }) {
                 {trace.status === 'completed' ? <CheckCircle2 size={16} /> : trace.status === 'failed' ? <XCircle size={16} /> : <Loader2 size={16} />}
                 <div>
                   <span>{revisionStageLabels[trace.stage] ?? trace.stage}</span>
-                  {trace.summary ? <p>{trace.summary}</p> : traceSummary(timeline.find((t) => t.id === trace.id) ?? ({} as RevisionTrace)) ? <p>{traceSummary(timeline.find((t) => t.id === trace.id) ?? ({} as RevisionTrace))}</p> : null}
+                  {trace.summary ? <p>{trace.summary}</p> : (() => { const t = timeline.find((t) => t.id === trace.id); const summary = t ? traceSummary(t) : null; return summary ? <p>{summary}</p> : null; })()}
                   {trace.status === 'failed' && trace.error_message ? <p className="agent-workflow-error">{trace.error_message}</p> : null}
                 </div>
               </div>
@@ -1173,9 +1175,9 @@ function RevisionWorkflowCard({ revision }: { revision: Revision }) {
             ) : null}
           </div>
           {isFailed && revision.error_message ? (
-            <div className="revision-summary-box failed">
-              <strong>错误原因</strong>
-              <p>{revision.error_message}</p>
+            <div className="revision-summary-box" style={{ background: '#fef2f2', borderColor: '#fecaca' }}>
+              <strong style={{ color: '#991b1b' }}>错误原因</strong>
+              <p style={{ color: '#7f1d1d' }}>{revision.error_message}</p>
             </div>
           ) : null}
         </>
@@ -1203,7 +1205,7 @@ function AgentWorkflowBlock({ message }: { message: ChatMessage }) {
       </div>
       <div className="agent-workflow-list">
         {steps.map((step, index) => (
-          <div key={`${step.title}-${index}`} className="agent-workflow-step done">
+          <div key={`wf-step-${index}-${step.title}`} className="agent-workflow-step done">
             <CheckCircle2 size={16} />
             <div>
               <span>{step.title}</span>
@@ -1215,7 +1217,7 @@ function AgentWorkflowBlock({ message }: { message: ChatMessage }) {
       {metadata.new_queries?.length ? (
         <div className="agent-query-list">
           {metadata.new_queries.slice(0, 3).map((item, index) => (
-            <span key={`${item.query}-${index}`}>{item.competitor_name ? `${item.competitor_name}: ` : ''}{item.query}</span>
+            <span key={`nq-${index}-${item.competitor_name}`}>{item.competitor_name ? `${item.competitor_name}: ` : ''}{item.query}</span>
           ))}
         </div>
       ) : null}
@@ -1337,6 +1339,7 @@ function FocusProfileBlock({ output, question }: { output: Record<string, unknow
           {focuses.map((focus) => <span key={focus}>{focus}</span>)}
         </div>
       ) : null}
+      {assumptions.length ? <p className="requirement-compact-line">假设：{assumptions.join('；')}</p> : null}
     </div>
   );
 }
@@ -1392,7 +1395,21 @@ function StageDialogueCard({
     error: unknown;
   };
 }) {
-  const [qaExpanded, setQaExpanded] = useState(false);
+  const isAutoExpanded = status === 'running' || status === 'waiting' || status === 'completed-retry';
+  const [manuallyExpanded, setManuallyExpanded] = useState(false);
+  const showEmbedded = isAutoExpanded || manuallyExpanded;
+  const competitorConfirmRef = useRef<HTMLDivElement>(null);
+  const clarificationRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (run.status === 'waiting_for_human' && stage === 'human_confirm_competitors' && competitorConfirmRef.current) {
+      competitorConfirmRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    if (run.status === 'waiting_for_clarification' && stage === 'focus_profile' && clarificationRef.current) {
+      clarificationRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [run.status, stage]);
+
   const showClarification = stage === 'focus_profile' && run.status === 'waiting_for_clarification';
   const showCompetitorConfirm = stage === 'human_confirm_competitors' && (run.status === 'waiting_for_human' || competitors.length > 0);
   const showSources = stage === 'material_collection' && (sources.length > 0 || evidence.length > 0);
@@ -1407,72 +1424,77 @@ function StageDialogueCard({
                        run.feedback_loop_count !== undefined &&
                        (selectedIteration === run.feedback_loop_count - 1 || (run.status === 'running' && stage === 'report_generation' && selectedIteration === run.feedback_loop_count));
 
+  const hasEmbeddedContent = showClarification || showCompetitorConfirm || showSources || showCitations || showQA || stage === 'requirement_understanding' || stage === 'focus_profile';
+  const canCollapse = !isAutoExpanded && hasEmbeddedContent && (status === 'completed' || status === 'failed');
+
   return (
     <article className={`message-row assistant stage-message-row ${isHighlighted ? 'highlight-version' : ''}`}>
       <div className={`stage-message-card ${status}`}>
-        <div className="stage-message-head">
+        <div className="stage-message-head" style={canCollapse ? { cursor: 'pointer' } : undefined} onClick={() => canCollapse && setManuallyExpanded((v) => !v)}>
           <div className="stage-status-icon">{statusIcon(status)}</div>
-          <div>
+          <div style={{ flex: 1, minWidth: 0 }}>
             <h3>{stageLabels[stage] ?? stage}</h3>
             <span>{statusText(status)}</span>
           </div>
+          {canCollapse ? (
+            <button type="button" className="stage-card-collapse-btn" onClick={(e) => { e.stopPropagation(); setManuallyExpanded((v) => !v); }}>
+              {manuallyExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+            </button>
+          ) : null}
         </div>
         <p>{getStageDetail(stage, run, counts)}</p>
 
-        {stage === 'requirement_understanding' ? (
-          <RequirementUnderstandingBlock output={requirementOutput} running={status === 'running'} />
-        ) : null}
-        {stage === 'focus_profile' ? (
-          <FocusProfileBlock output={focusOutput} question={run.clarification_question} />
-        ) : null}
+        {showEmbedded ? (
+          <>
+            {stage === 'requirement_understanding' ? (
+              <RequirementUnderstandingBlock output={requirementOutput} running={status === 'running'} />
+            ) : null}
+            {stage === 'focus_profile' ? (
+              <FocusProfileBlock output={focusOutput} question={run.clarification_question} />
+            ) : null}
 
-        {showClarification ? (
-          <ClarificationCard
-            question={run.clarification_question ?? '请补充这份报告最需要关注的判断维度。'}
-            value={clarification.value}
-            onChange={clarification.onChange}
-            onSubmit={clarification.onSubmit}
-            isPending={clarification.isPending}
-            error={clarification.error}
-          />
-        ) : null}
+            {showClarification ? (
+              <div ref={clarificationRef}>
+                <ClarificationCard
+                  question={run.clarification_question ?? '请补充这份报告最需要关注的判断维度。'}
+                  value={clarification.value}
+                  onChange={clarification.onChange}
+                  onSubmit={clarification.onSubmit}
+                  isPending={clarification.isPending}
+                  error={clarification.error}
+                />
+              </div>
+            ) : null}
 
-        {showCompetitorConfirm ? (
-          <div className="stage-embedded-block">
-            <div className="embedded-block-title">
-              <strong>候选竞品选择</strong>
-              {run.status === 'waiting_for_human' ? <span>需要确认</span> : <span>已确认</span>}
-            </div>
-            <CompetitorConfirmPanel run={run} competitors={competitors} />
-          </div>
-        ) : null}
+            {showCompetitorConfirm ? (
+              <div className="stage-embedded-block" ref={competitorConfirmRef}>
+                <div className="embedded-block-title">
+                  <strong>候选竞品选择</strong>
+                  {run.status === 'waiting_for_human' ? <span>需要确认</span> : <span>已确认</span>}
+                </div>
+                <CompetitorConfirmPanel run={run} competitors={competitors} />
+              </div>
+            ) : null}
 
-        {showSources ? (
-          <div className="stage-embedded-block resource-grid">
-            <SourceList sources={sources} isCollecting={run.status === 'running'} initialVisibleCount={3} />
-            <EvidenceList evidence={evidence} sources={sources} initialVisibleCount={3} />
-          </div>
-        ) : null}
+            {showSources ? (
+              <div className="stage-embedded-block resource-grid">
+                <SourceList sources={sources} isCollecting={run.status === 'running'} />
+                <EvidenceList evidence={evidence} sources={sources} />
+              </div>
+            ) : null}
 
-        {showCitations ? (
-          <div className="stage-embedded-block">
-            <CitationBundleView bundle={citationBundle} />
-          </div>
-        ) : null}
+            {showCitations ? (
+              <div className="stage-embedded-block">
+                <CitationBundleView bundle={citationBundle} />
+              </div>
+            ) : null}
 
-        {showQA ? (
-          <div className="stage-embedded-block">
-            <QASummaryBanner runId={runId} />
-            <button
-              type="button"
-              className="qa-expand-toggle"
-              onClick={() => setQaExpanded(!qaExpanded)}
-            >
-              <span>{qaExpanded ? '收起质检详情' : '查看详细质检报告'}</span>
-              {qaExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-            </button>
-            {qaExpanded && <QAResultsPanel runId={runId} />}
-          </div>
+            {showQA ? (
+              <div className="stage-embedded-block">
+                <QASubsteps runId={runId} traces={traces} stageStatus={status} />
+              </div>
+            ) : null}
+          </>
         ) : null}
       </div>
     </article>
@@ -1481,12 +1503,7 @@ function StageDialogueCard({
 
 function statusIcon(status: string) {
   if (status === 'completed') return <CheckCircle2 size={18} />;
-  if (status === 'completed-retry') return (
-    <div className="status-icon-stack">
-      <CheckCircle2 size={18} className="base-icon" />
-      <RefreshCw size={10} className="overlay-icon" />
-    </div>
-  );
+  if (status === 'completed-retry') return <Loader2 size={18} className="spinning" />;
   if (status === 'failed') return <XCircle size={18} />;
   if (status === 'running' || status === 'revising') return <Loader2 size={18} className="spinning" />;
   if (status === 'waiting') return <AlertCircle size={18} className="waiting-icon" />;
@@ -1496,7 +1513,7 @@ function statusIcon(status: string) {
 function statusText(status: string) {
   const map: Record<string, string> = {
     completed: '已完成',
-    'completed-retry': '已完成 (正在修正)',
+    'completed-retry': '质检修正中',
     running: '进行中',
     waiting: '待你处理',
     failed: '失败',

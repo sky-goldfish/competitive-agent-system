@@ -1,14 +1,17 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
+import logging
 
 from app.agents.state import AgentState
 from app.db.models import new_id
 from app.providers.llm.base import LLMProvider
 
+logger = logging.getLogger(__name__)
+
 
 def structured_analysis_node(state: AgentState, llm: LLMProvider) -> AgentState:
-    competitors = state["selected_competitors"]
-    evidence = state["evidence"]
+    competitors = state.get("selected_competitors", [])
+    evidence = state.get("evidence", [])
     focus_items = _active_focus_items(state.get("requirement", {}))
     existing_analyses = state.get("analyses", [])
     retry_ids = state.get("qa_retry_analysis_ids")
@@ -17,24 +20,47 @@ def structured_analysis_node(state: AgentState, llm: LLMProvider) -> AgentState:
 
     affected_ids = set(retry_ids or [])
     if not affected_ids and retry_queries:
-        affected_ids = {
-            rq["competitor_name"] for rq in retry_queries if rq.get("competitor_name")
+        query_names = {
+            rq.get("competitor_name")
+            for rq in retry_queries
+            if rq.get("competitor_name")
         }
-        name_to_id = {c["name"]: c["id"] for c in competitors}
-        affected_ids = {name_to_id[n] for n in affected_ids if n in name_to_id}
+        name_to_id: dict[str, str] = {}
+        for c in competitors:
+            name_to_id.setdefault(c["name"], c["id"])
+        matched_ids = {name_to_id[n] for n in query_names if n in name_to_id}
+        if not matched_ids and query_names:
+            from difflib import get_close_matches
+
+            for qn in query_names:
+                matches = get_close_matches(qn, name_to_id.keys(), n=1, cutoff=0.6)
+                if matches:
+                    matched_ids.add(name_to_id[matches[0]])
+        affected_ids = matched_ids
 
     if affected_ids and existing_analyses:
         keep = [
             a for a in existing_analyses if a.get("competitor_id") not in affected_ids
         ]
         retry_competitors = [c for c in competitors if c["id"] in affected_ids]
+    elif existing_analyses and (retry_ids or retry_queries):
+        logger.warning(
+            "QA retry requested but no competitors matched; skipping re-analysis. "
+            "retry_names=%s available_names=%s",
+            {rq.get("competitor_name") for rq in (retry_queries or [])},
+            [c["name"] for c in competitors],
+        )
+        return {**state, "analyses": existing_analyses}
     else:
         keep = []
         retry_competitors = competitors
 
     def analyze_one(competitor: dict) -> dict:
         competitor_evidence = [
-            item for item in evidence if item["competitor_id"] == competitor["id"]
+            item
+            for item in evidence
+            if item.get("competitor_id") == competitor["id"]
+            or item.get("related_product") == competitor.get("name")
         ]
         comp = competitor
         feedback = (qa_retry_guidance_map or {}).get(competitor["name"])
@@ -70,13 +96,25 @@ def structured_analysis_node(state: AgentState, llm: LLMProvider) -> AgentState:
         }
 
     new_analyses = []
+    if not retry_competitors:
+        return {**state, "analyses": keep + new_analyses}
     with ThreadPoolExecutor(max_workers=min(4, len(retry_competitors))) as executor:
         futures = {executor.submit(analyze_one, c): c for c in retry_competitors}
         try:
             for future in as_completed(futures, timeout=300):
                 new_analyses.append(future.result())
         except TimeoutError:
-            pass
+            for f in futures:
+                if f.done():
+                    try:
+                        new_analyses.append(f.result())
+                    except Exception:
+                        pass
+            timed_out = [futures[f]["name"] for f in futures if not f.done()]
+            logger.error(
+                "Structured analysis timed out for competitors: %s",
+                ", ".join(timed_out),
+            )
 
     analyses = keep + new_analyses
     analyses.sort(

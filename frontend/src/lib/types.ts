@@ -232,6 +232,8 @@ export type QAResult = {
   dimension_scores: Record<string, number>;
   decision: string;
   check_phase: string;
+  forced_pass: boolean;
+  quality_warning: boolean;
   issues: QAIssue[];
   issue_checklist: QAIssue[];
   retry_instructions: string | null;

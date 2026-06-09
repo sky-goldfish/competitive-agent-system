@@ -1196,6 +1196,8 @@ class MockLLMProvider(LLMProvider):
         revision_plan: dict[str, Any],
         citation_bundle: list[dict[str, Any]],
         sources: list[dict[str, Any]],
+        removed_competitor_names: list[str] | None = None,
+        excluded_citation_ids: set[int] | None = None,
     ) -> dict[str, str]:
         content = current_report.get("markdown_content", "")
         content += f"\n\n## 修订说明\n\n{revision_plan.get('final_edit_instruction', '已根据反馈更新报告。')}\n"

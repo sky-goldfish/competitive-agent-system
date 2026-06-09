@@ -1,12 +1,13 @@
 import json
 import logging
+import random
 import re
 import time
 from datetime import datetime
 from typing import Any
 
 from sqlalchemy import func
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, joinedload
 
 from app.db.models import (
@@ -237,7 +238,7 @@ def enqueue_chat_message(run_id: str, user_message: str) -> dict[str, Any]:
         db.close()
 
 
-def _commit_with_retry(db: Session, *, attempts: int = 4) -> None:
+def _commit_with_retry(db: Session, *, attempts: int = 5) -> None:
     for index in range(attempts):
         try:
             db.commit()
@@ -247,7 +248,13 @@ def _commit_with_retry(db: Session, *, attempts: int = 4) -> None:
                 db.rollback()
                 raise ChatError("Agent 当前正在写入数据，请稍后重试。") from exc
             db.rollback()
-            time.sleep(0.35 * (index + 1))
+            delay = (2**index) * 0.1 + random.uniform(0.0, 0.1)
+            time.sleep(delay)
+        except IntegrityError as exc:
+            db.rollback()
+            if "unique" in str(exc).lower() or "constraint" in str(exc).lower():
+                raise ChatError("报告版本冲突，请重试。") from exc
+            raise
 
 
 def _queued_metadata(
@@ -281,6 +288,13 @@ def process_queued_revisions(run_id: str) -> None:
         ctx = _get_run_context(db, run_id)
         run: Run = ctx["run"]
         if run.status not in {"completed", "failed"}:
+            return
+        if run.active_revision_id:
+            logger.info(
+                "Skipping queued revisions for run %s: revision %s is active",
+                run_id,
+                run.active_revision_id,
+            )
             return
 
         queued_messages = []
@@ -387,8 +401,8 @@ def _handle_report_edit(
             analysis.competitor.name if analysis.competitor else analysis.competitor_id
         )
         context_parts.append(
-            f"竞品 {comp_name}: 定位={analysis.positioning[:100]}, "
-            f"价格={analysis.pricing_summary[:100]}"
+            f"竞品 {comp_name}: 定位={(analysis.positioning or '')[:100]}, "
+            f"价格={(analysis.pricing_summary or '')[:100]}"
         )
     context = "\n".join(context_parts[:10])
 
@@ -403,17 +417,44 @@ def _handle_report_edit(
         db.query(func.max(Report.iteration))
         .filter(Report.run_id == report.run_id)
         .scalar()
-        or 0
     )
+    if max_iteration is None:
+        max_iteration = -1
+    selected_names = [
+        c.name
+        for c in db.query(Competitor.name)
+        .filter(Competitor.run_id == report.run_id, Competitor.selected.is_(True))
+        .all()
+    ]
     new_report = Report(
         run_id=report.run_id,
         iteration=max_iteration + 1,
         title=report.title,
         markdown_content=new_markdown,
         summary=report.summary,
+        competitor_names_json=json.dumps(selected_names, ensure_ascii=False),
     )
     db.add(new_report)
-    db.commit()
+    try:
+        _commit_with_retry(db)
+    except IntegrityError:
+        db.rollback()
+        max_iteration = (
+            db.query(func.max(Report.iteration))
+            .filter(Report.run_id == report.run_id)
+            .scalar()
+            or -1
+        )
+        new_report = Report(
+            run_id=report.run_id,
+            iteration=max_iteration + 1,
+            title=report.title,
+            markdown_content=new_markdown,
+            summary=report.summary,
+            competitor_names_json=json.dumps(selected_names, ensure_ascii=False),
+        )
+        db.add(new_report)
+        _commit_with_retry(db)
     db.refresh(new_report)
 
     return {
@@ -458,7 +499,8 @@ def _handle_revision_workflow(
         "iteration": report.iteration,
     }
     competitor_list = [_competitor_to_dict(item) for item in competitors]
-    source_list = _source_list(db, report.run_id)
+    selected_comp_ids = {c.id for c in competitors if c.selected}
+    source_list = _source_list(db, report.run_id, selected_comp_ids)
     analysis_list = _analysis_list(db, report.run_id)
     evidence_list = _evidence_list(db, report.run_id, competitors)
 
@@ -470,6 +512,9 @@ def _handle_revision_workflow(
     need_search = (
         bool(intent_result.get("need_search"))
         or intent_result.get("intent") == "research_required"
+        or bool(intent_result.get("new_competitors"))
+        or bool(intent_result.get("removed_competitors"))
+        or _looks_like_research_feedback(user_message)
     )
     workflow_steps = [
         {
@@ -546,10 +591,22 @@ def _handle_revision_workflow(
             }
         )
 
-    # --- 新增/激活竞品的结构化分析 ---
+    # --- 新增/激活竞品的结构化分析（必须在搜索之后，确保证据可用） ---
     to_analyze = added_competitors + activated_competitors
     if to_analyze:
-        _analyze_revision_competitors(db, report.run_id, to_analyze, llm)
+        run = ctx.get("run")
+        requirement = (
+            json.loads(run.requirement_json) if run and run.requirement_json else {}
+        )
+        _latest_qa_feedback = _get_latest_qa_feedback(db, report.run_id)
+        _analyze_revision_competitors(
+            db,
+            report.run_id,
+            to_analyze,
+            llm,
+            focus_items=_active_focus_items(requirement),
+            qa_feedback=_latest_qa_feedback,
+        )
         workflow_steps.append(
             {
                 "title": "分析新增竞品",
@@ -557,7 +614,8 @@ def _handle_revision_workflow(
             }
         )
 
-    source_list = _source_list(db, report.run_id)
+    selected_comp_ids = {c.id for c in competitors if c.selected}
+    source_list = _source_list(db, report.run_id, selected_comp_ids)
     evidence_list = _evidence_list(db, report.run_id, competitors)
 
     _ensure_analyses_for_all_selected(db, report.run_id, competitors)
@@ -593,33 +651,47 @@ def _handle_revision_workflow(
             selected_competitor_names,
             bundle_competitor_names,
         )
+    removed_citation_ids: set[str] = set()
+    if removed_competitors:
+        removed_comp_ids = {c.id for c in removed_competitors}
+        for src in db.query(Source).filter(Source.run_id == report.run_id).all():
+            if src.competitor_id in removed_comp_ids:
+                ref_id = _extract_ref_id(src.metadata_json)
+                if ref_id:
+                    removed_citation_ids.add(str(ref_id))
     new_report = llm.revise_report_with_plan(
         current_report,
         revision_plan,
         citation_bundle,
         source_list,
+        removed_competitor_names=[c.name for c in removed_competitors],
+        excluded_citation_ids=removed_citation_ids,
     )
     markdown_content = _protect_inline_citations(
-        report.markdown_content, new_report.get("markdown_content", "")
+        report.markdown_content,
+        new_report.get("markdown_content", ""),
+        excluded_ids=removed_citation_ids,
     )
-    markdown_content = _append_new_source_citations(markdown_content, new_sources)
     new_report["markdown_content"] = markdown_content
 
     max_iteration = (
         db.query(func.max(Report.iteration))
         .filter(Report.run_id == report.run_id)
         .scalar()
-        or 0
     )
+    if max_iteration is None:
+        max_iteration = -1
+    selected_names = [c.name for c in competitors if c.selected]
     new_report_record = Report(
         run_id=report.run_id,
         iteration=max_iteration + 1,
         title=new_report.get("title", report.title),
         markdown_content=markdown_content,
         summary=new_report.get("summary", report.summary),
+        competitor_names_json=json.dumps(selected_names, ensure_ascii=False),
     )
     db.add(new_report_record)
-    db.commit()
+    _commit_with_retry(db)
     db.refresh(new_report_record)
 
     revision_summary = llm.generate_revision_summary(
@@ -702,6 +774,9 @@ def _handle_report_redo(
             if result.url in seen_urls:
                 continue
             seen_urls.add(result.url)
+            competitor = _fuzzy_find_competitor(
+                comp_name, {c.name: c for c in competitors}
+            )
             source = Source(
                 run_id=report.run_id,
                 title=result.title,
@@ -709,30 +784,40 @@ def _handle_report_redo(
                 snippet=result.snippet,
                 source_type="unknown",
                 provider=search.name,
+                competitor_id=competitor.id if competitor else None,
                 metadata_json=json.dumps(
                     {"reference_id": next_reference_id}, ensure_ascii=False
                 ),
             )
             next_reference_id += 1
             db.add(source)
-            db.flush()
+            try:
+                db.flush()
+            except Exception:
+                db.rollback()
+                continue
             new_sources.append(source)
 
-            competitor = next((c for c in competitors if c.name == comp_name), None)
             evidence = Evidence(
                 run_id=report.run_id,
                 source_id=source.id,
-                related_product=comp_name,
-                related_dimension=rq.get("slot", "core_features"),
+                related_product=competitor.name if competitor else comp_name,
+                related_dimension=_map_to_standard_dimension(
+                    rq.get("slot", "core_features")
+                ),
                 quote=(result.snippet or "")[:800],
                 summary=result.snippet or "",
                 confidence=0.65,
             )
             db.add(evidence)
-            db.flush()
+            try:
+                db.flush()
+            except Exception:
+                db.rollback()
+                continue
             new_evidence.append(evidence)
 
-    db.commit()
+    _commit_with_retry(db)
 
     analyses = ctx["analyses"]
     evidence_items = db.query(Evidence).filter(Evidence.run_id == report.run_id).all()
@@ -784,15 +869,15 @@ def _handle_report_redo(
             Analysis(
                 run_id=report.run_id,
                 competitor_id=competitor.id,
-                positioning=analysis.get("positioning", ""),
-                target_users=analysis.get("target_users", "[]"),
-                core_features_json=analysis.get("core_features_json", "[]"),
-                pricing_summary=analysis.get("pricing_summary", ""),
-                strengths_json=analysis.get("strengths_json", "[]"),
-                weaknesses_json=analysis.get("weaknesses_json", "[]"),
-                opportunities_json=analysis.get("opportunities_json", "[]"),
-                custom_focus_analysis_json=analysis.get(
-                    "custom_focus_analysis_json", "[]"
+                positioning=_str(analysis.get("positioning"), ""),
+                target_users=_str(analysis.get("target_users"), "[]"),
+                core_features_json=_str(analysis.get("core_features_json"), "[]"),
+                pricing_summary=_str(analysis.get("pricing_summary"), ""),
+                strengths_json=_str(analysis.get("strengths_json"), "[]"),
+                weaknesses_json=_str(analysis.get("weaknesses_json"), "[]"),
+                opportunities_json=_str(analysis.get("opportunities_json"), "[]"),
+                custom_focus_analysis_json=_str(
+                    analysis.get("custom_focus_analysis_json"), "[]"
                 ),
                 evidence_ids_json=json.dumps(
                     [e["id"] for e in comp_evidence if e.get("id")],
@@ -801,10 +886,19 @@ def _handle_report_redo(
                 analysis_iteration=report.iteration + 1,
             )
         )
-    db.commit()
+    _commit_with_retry(db)
 
     analyses = db.query(Analysis).filter(Analysis.run_id == report.run_id).all()
-    sources = db.query(Source).filter(Source.run_id == report.run_id).all()
+    selected_comp_ids = {c.id for c in competitors if c.selected}
+    sources = (
+        db.query(Source)
+        .filter(
+            Source.run_id == report.run_id,
+            (Source.competitor_id.in_(selected_comp_ids))
+            | (Source.competitor_id.is_(None)),
+        )
+        .all()
+    )
 
     analysis_list = [
         {
@@ -855,6 +949,9 @@ def _handle_report_redo(
             "source_type": e.source.source_type if e.source else "unknown",
         }
         for e in db.query(Evidence).filter(Evidence.run_id == report.run_id).all()
+        if (e.source and e.source.competitor_id in selected_comp_ids)
+        or (e.source and e.source.competitor_id is None)
+        or not e.source
     ]
     citation_bundle = _build_citation_bundle(analysis_list, evidence_list)
 
@@ -874,21 +971,23 @@ def _handle_report_redo(
         db.query(func.max(Report.iteration))
         .filter(Report.run_id == report.run_id)
         .scalar()
-        or 0
     )
+    if max_iteration is None:
+        max_iteration = -1
     markdown_content = _protect_inline_citations(
         report.markdown_content, new_report.get("markdown_content", "")
     )
-    markdown_content = _append_new_source_citations(markdown_content, new_sources)
+    selected_names = [c.name for c in competitors if c.selected]
     new_report_record = Report(
         run_id=report.run_id,
         iteration=max_iteration + 1,
         title=new_report.get("title", report.title),
         markdown_content=markdown_content,
         summary=new_report.get("summary", report.summary),
+        competitor_names_json=json.dumps(selected_names, ensure_ascii=False),
     )
     db.add(new_report_record)
-    db.commit()
+    _commit_with_retry(db)
     db.refresh(new_report_record)
 
     return {
@@ -998,8 +1097,16 @@ def _ensure_revision_competitors(
             requested_names.append(name)
     for value in intent_result.get("affected_competitors") or []:
         name = str(value).strip()
-        if name:
-            requested_names.append(name)
+        if not name:
+            continue
+        matched = _fuzzy_find_competitor(name, {c.name: c for c in existing})
+        if not matched:
+            logger.warning(
+                "affected_competitor '%s' not found in existing competitors; skipping (not creating new)",
+                name,
+            )
+            continue
+        requested_names.append(name)
     for item in plan_items:
         if not isinstance(item, dict):
             continue
@@ -1017,6 +1124,8 @@ def _ensure_revision_competitors(
         if not key or key in {"目标产品", "竞品名或目标对象"}:
             continue
         matched = existing_by_name.get(key)
+        if not matched:
+            matched = _fuzzy_find_competitor(name, {c.name: c for c in existing})
         if matched:
             if not matched.selected:
                 matched.selected = True
@@ -1049,14 +1158,22 @@ def _ensure_revision_competitors(
             continue
         key = _normalize_comp_name(name)
         matched = existing_by_name.get(key)
+        if not matched:
+            matched = _fuzzy_find_competitor(name, {c.name: c for c in existing})
         if matched and matched.selected:
             matched.selected = False
             removed.append(matched)
-            # LOGICAL DELETE: We no longer delete analysis records to preserve history.
-            # db.query(Analysis).filter(
-            #     Analysis.run_id == run_id,
-            #     Analysis.competitor_id == matched.id,
-            # ).delete(synchronize_session=False)
+
+    total_selected_after = sum(1 for c in existing if c.selected) + len(added)
+    if total_selected_after <= 0 and removed:
+        for comp in removed:
+            comp.selected = True
+        logger.warning(
+            "Refused to remove all competitors; at least one must remain. "
+            "Attempted to remove: %s",
+            [c.name for c in removed],
+        )
+        removed.clear()
 
     if added or activated or removed:
         db.commit()
@@ -1077,7 +1194,7 @@ def _ensure_revision_competitors(
 
 
 def _normalize_comp_name(name: str) -> str:
-    return name.strip().lower().replace(" ", "")
+    return re.sub(r"[\s\-_]+", "", name).lower().strip()
 
 
 def _looks_like_new_competitor_request(
@@ -1089,11 +1206,18 @@ def _looks_like_new_competitor_request(
     )
 
 
-def _source_list(db: Session, run_id: str) -> list[dict[str, Any]]:
-    return [
-        _source_to_dict(item)
-        for item in db.query(Source).filter(Source.run_id == run_id).all()
-    ]
+def _source_list(
+    db: Session,
+    run_id: str,
+    selected_competitor_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    query = db.query(Source).filter(Source.run_id == run_id)
+    if selected_competitor_ids is not None:
+        query = query.filter(
+            (Source.competitor_id.in_(selected_competitor_ids))
+            | (Source.competitor_id.is_(None))
+        )
+    return [_source_to_dict(item) for item in query.all()]
 
 
 def _json_list(value: Any) -> list[str]:
@@ -1112,27 +1236,35 @@ def _evidence_list(
     db: Session, run_id: str, competitors: list[Competitor]
 ) -> list[dict[str, Any]]:
     by_name = {item.name: item.id for item in competitors}
+    selected_ids = {item.id for item in competitors if item.selected}
     items = db.query(Evidence).filter(Evidence.run_id == run_id).all()
-    return [
-        {
-            "id": item.id,
-            "competitor_id": item.source.competitor_id
+    result: list[dict[str, Any]] = []
+    for item in items:
+        comp_id = (
+            item.source.competitor_id
             if item.source and item.source.competitor_id
-            else by_name.get(item.related_product),
-            "related_product": item.related_product,
-            "related_dimension": item.related_dimension,
-            "quote": item.quote,
-            "summary": item.summary,
-            "confidence": item.confidence,
-            "source_url": item.source.url if item.source else None,
-            "source_title": item.source.title if item.source else None,
-            "reference_id": _extract_ref_id(
-                item.source.metadata_json if item.source else None
-            ),
-            "source_type": item.source.source_type if item.source else "unknown",
-        }
-        for item in items
-    ]
+            else by_name.get(item.related_product)
+        )
+        if comp_id and comp_id not in selected_ids:
+            continue
+        result.append(
+            {
+                "id": item.id,
+                "competitor_id": comp_id,
+                "related_product": item.related_product,
+                "related_dimension": item.related_dimension,
+                "quote": item.quote,
+                "summary": item.summary,
+                "confidence": item.confidence,
+                "source_url": item.source.url if item.source else None,
+                "source_title": item.source.title if item.source else None,
+                "reference_id": _extract_ref_id(
+                    item.source.metadata_json if item.source else None
+                ),
+                "source_type": item.source.source_type if item.source else "unknown",
+            }
+        )
+    return result
 
 
 def _analysis_list(
@@ -1153,8 +1285,11 @@ def _analysis_list(
     # Fetch only analyses for currently selected competitors
     analyses = (
         db.query(Analysis)
-        .join(Competitor, Analysis.competitor_id == Competitor.id)
-        .filter(Analysis.run_id == run_id, Competitor.selected.is_(True))
+        .outerjoin(Competitor, Analysis.competitor_id == Competitor.id)
+        .filter(
+            Analysis.run_id == run_id,
+            (Competitor.selected.is_(True)) | (Competitor.id.is_(None)),
+        )
         .options(joinedload(Analysis.competitor))
         .all()
     )
@@ -1162,9 +1297,10 @@ def _analysis_list(
     # If multiple iterations exist for the same competitor, pick the latest one
     latest_by_competitor: dict[str, Analysis] = {}
     for item in analyses:
-        existing = latest_by_competitor.get(item.competitor_id)
+        key = item.competitor_id or item.competitor_name or item.id
+        existing = latest_by_competitor.get(key)
         if not existing or item.analysis_iteration > existing.analysis_iteration:
-            latest_by_competitor[item.competitor_id] = item
+            latest_by_competitor[key] = item
 
     analyses = list(latest_by_competitor.values())
     competitor_by_id: dict[str, Competitor] = {}
@@ -1220,19 +1356,24 @@ def _analyze_revision_competitors(
     run_id: str,
     competitors: list[Competitor],
     llm,
+    focus_items: list[dict] | None = None,
+    qa_feedback: str | None = None,
 ) -> None:
     if not competitors:
         return
 
-    # Calculate next iteration based on existing reports
-    max_iteration = (
-        db.query(func.max(Report.iteration)).filter(Report.run_id == run_id).scalar()
-        or 0
+    max_analysis_iter = (
+        db.query(func.max(Analysis.analysis_iteration))
+        .filter(Analysis.run_id == run_id)
+        .scalar()
     )
-    next_analysis_iteration = max_iteration + 1
+    next_analysis_iteration = (
+        max_analysis_iter if max_analysis_iter is not None else 0
+    ) + 1
 
     evidence_items = db.query(Evidence).filter(Evidence.run_id == run_id).all()
     for competitor in competitors:
+        comp_name_norm = _normalize_comp_name(competitor.name)
         comp_evidence = [
             {
                 "id": item.id,
@@ -1252,23 +1393,34 @@ def _analyze_revision_competitors(
             for item in evidence_items
             if item.related_product == competitor.name
             or (item.source and item.source.competitor_id == competitor.id)
+            or _normalize_comp_name(item.related_product) == comp_name_norm
         ]
-        analysis = llm.analyze_competitor(
-            _competitor_to_dict(competitor), comp_evidence
-        )
+        comp_dict = _competitor_to_dict(competitor)
+        if qa_feedback:
+            comp_dict["_qa_feedback"] = qa_feedback
+        if focus_items:
+            comp_dict["_focus_schema"] = [
+                {
+                    "key": f["key"],
+                    "label": f["label"],
+                    "evidence_expectation": f.get("evidence_expectation", ""),
+                }
+                for f in focus_items
+            ]
+        analysis = llm.analyze_competitor(comp_dict, comp_evidence)
         db.add(
             Analysis(
                 run_id=run_id,
                 competitor_id=competitor.id,
-                positioning=analysis.get("positioning", ""),
-                target_users=analysis.get("target_users", "[]"),
-                core_features_json=analysis.get("core_features_json", "[]"),
-                pricing_summary=analysis.get("pricing_summary", ""),
-                strengths_json=analysis.get("strengths_json", "[]"),
-                weaknesses_json=analysis.get("weaknesses_json", "[]"),
-                opportunities_json=analysis.get("opportunities_json", "[]"),
-                custom_focus_analysis_json=analysis.get(
-                    "custom_focus_analysis_json", "[]"
+                positioning=_str(analysis.get("positioning"), ""),
+                target_users=_str(analysis.get("target_users"), "[]"),
+                core_features_json=_str(analysis.get("core_features_json"), "[]"),
+                pricing_summary=_str(analysis.get("pricing_summary"), ""),
+                strengths_json=_str(analysis.get("strengths_json"), "[]"),
+                weaknesses_json=_str(analysis.get("weaknesses_json"), "[]"),
+                opportunities_json=_str(analysis.get("opportunities_json"), "[]"),
+                custom_focus_analysis_json=_str(
+                    analysis.get("custom_focus_analysis_json"), "[]"
                 ),
                 evidence_ids_json=json.dumps(
                     [item["id"] for item in comp_evidence if item.get("id")],
@@ -1277,7 +1429,67 @@ def _analyze_revision_competitors(
                 analysis_iteration=next_analysis_iteration,
             )
         )
-    db.commit()
+    _commit_with_retry(db)
+
+
+def _fuzzy_find_competitor(
+    competitor_name: str,
+    competitors_by_name: dict[str, Competitor] | None,
+) -> Competitor | None:
+    if not competitors_by_name or not competitor_name:
+        return None
+    if competitor_name in competitors_by_name:
+        return competitors_by_name[competitor_name]
+    normalized = _normalize_comp_name(competitor_name)
+    for name, comp in competitors_by_name.items():
+        if _normalize_comp_name(name) == normalized:
+            return comp
+    from difflib import get_close_matches
+
+    matches = get_close_matches(
+        competitor_name, competitors_by_name.keys(), n=1, cutoff=0.6
+    )
+    if matches:
+        return competitors_by_name[matches[0]]
+    return None
+
+
+def _str(value: Any, default: str = "") -> str:
+    if value is None:
+        return default
+    return str(value)
+
+
+_STANDARD_DIMENSION_MAP = {
+    "positioning": "产品定位",
+    "core_features": "核心功能",
+    "pricing": "价格与商业模式",
+    "user_feedback": "用户评价与痛点",
+    "relationship_evidence": "竞争关系",
+    "market_signal": "市场信号",
+    "risk_opportunity": "风险与机会",
+}
+
+
+def _map_to_standard_dimension(slot: str) -> str:
+    return _STANDARD_DIMENSION_MAP.get(slot, slot)
+
+
+def _active_focus_items(requirement: dict) -> list[dict]:
+    profile = (
+        requirement.get("focus_profile")
+        if isinstance(requirement.get("focus_profile"), dict)
+        else {}
+    )
+    if not isinstance(profile, dict):
+        return []
+    items = []
+    for f in (profile.get("explicit_focuses") or []) + (
+        profile.get("inferred_focuses") or []
+    ):
+        if isinstance(f, dict) and f.get("label"):
+            items.append(f)
+    return items[:6]
 
 
 def _execute_revision_search_plan(
@@ -1296,7 +1508,7 @@ def _execute_revision_search_plan(
         if not isinstance(item, dict):
             continue
         competitor_name = str(item.get("competitor_name") or "").strip()
-        competitor = (competitors_by_name or {}).get(competitor_name)
+        competitor = _fuzzy_find_competitor(competitor_name, competitors_by_name)
         purpose = str(item.get("purpose") or "补充调研").strip()
         queries = item.get("queries") or []
         if isinstance(queries, str):
@@ -1309,6 +1521,8 @@ def _execute_revision_search_plan(
                 continue
             for result in results:
                 if result.url in seen_urls:
+                    continue
+                if _is_low_quality_search_result(result):
                     continue
                 seen_urls.add(result.url)
                 source = Source(
@@ -1332,13 +1546,22 @@ def _execute_revision_search_plan(
                 )
                 next_reference_id += 1
                 db.add(source)
-                db.flush()
+                try:
+                    db.flush()
+                except Exception:
+                    db.rollback()
+                    logger.exception("Failed to flush source: %s", result.url)
+                    continue
                 db.add(
                     Evidence(
                         run_id=run_id,
                         source_id=source.id,
-                        related_product=competitor_name,
-                        related_dimension=purpose,
+                        related_product=competitor.name
+                        if competitor
+                        else competitor_name,
+                        related_dimension=_map_to_standard_dimension(
+                            item.get("expected_evidence", purpose)
+                        ),
                         quote=(result.snippet or "")[:800],
                         summary=result.snippet or "",
                         confidence=0.68,
@@ -1347,6 +1570,68 @@ def _execute_revision_search_plan(
                 new_sources.append(source)
     db.commit()
     return new_sources
+
+
+def _get_latest_qa_feedback(db: Session, run_id: str) -> str | None:
+    qa = (
+        db.query(QAResult)
+        .filter(QAResult.run_id == run_id)
+        .order_by(QAResult.iteration.desc())
+        .first()
+    )
+    if not qa:
+        return None
+    retry_instructions = getattr(qa, "retry_instructions", None) or ""
+    if retry_instructions:
+        return retry_instructions[:500]
+    try:
+        issues = json.loads(qa.issues_json or "[]")
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(issues, list) or not issues:
+        return None
+    return "; ".join(
+        str(i.get("description", ""))[:120] for i in issues[:5] if isinstance(i, dict)
+    )[:500]
+
+
+_LOW_QUALITY_DOMAINS = {
+    "pinterest.com",
+    "www.pinterest.com",
+    "tiktok.com",
+    "www.tiktok.com",
+    "facebook.com",
+    "www.facebook.com",
+    "instagram.com",
+    "www.instagram.com",
+    "twitter.com",
+    "x.com",
+    "amazon.com",
+    "www.amazon.com",
+    "ebay.com",
+    "www.ebay.com",
+    "aliexpress.com",
+    "www.aliexpress.com",
+    "jd.com",
+    "www.jd.com",
+    "taobao.com",
+    "www.taobao.com",
+    "tmall.com",
+    "www.tmall.com",
+}
+
+
+def _is_low_quality_search_result(result) -> bool:
+    from urllib.parse import urlparse
+
+    url = getattr(result, "url", "") or ""
+    snippet = getattr(result, "snippet", "") or ""
+    domain = urlparse(url).netloc.lower()
+    if any(dq in domain for dq in _LOW_QUALITY_DOMAINS):
+        return True
+    if not snippet and not getattr(result, "raw_content", ""):
+        return True
+    return False
 
 
 def _flatten_search_queries(search_plan: dict[str, Any]) -> list[dict[str, str]]:
@@ -1389,51 +1674,45 @@ def _extract_ref_id(metadata_json: str | None) -> int | None:
     return int(value) if isinstance(value, (int, float)) else None
 
 
-def _protect_inline_citations(previous_markdown: str, next_markdown: str) -> str:
+def _protect_inline_citations(
+    previous_markdown: str,
+    next_markdown: str,
+    excluded_ids: set[str] | None = None,
+) -> str:
     """Avoid citation regression when a chat edit/regeneration drops inline refs."""
+    from app.providers.llm.ark import _extract_citation_fingerprints, _stitch_citations
+
     if not next_markdown.strip():
         return previous_markdown
-    previous_refs = re.findall(
-        r"\[\[(\d+)\]\]\((https?://[^)\s]+)\)", previous_markdown
-    )
-    next_refs = re.findall(r"\[\[(\d+)\]\]\((https?://[^)\s]+)\)", next_markdown)
-    if len(next_refs) >= len(previous_refs) or not previous_refs:
+    previous_ids = set(re.findall(r"\[\[(\d+)\]\]", previous_markdown))
+    next_ids = set(re.findall(r"\[\[(\d+)\]\]", next_markdown))
+    if previous_ids.issubset(next_ids) or not previous_ids:
         return next_markdown
 
-    missing = []
-    existing_ids = {ref_id for ref_id, _ in next_refs}
-    for ref_id, url in previous_refs:
-        if ref_id not in existing_ids:
-            missing.append(f"[[{ref_id}]]({url})")
-            existing_ids.add(ref_id)
+    missing = previous_ids - next_ids
+    if excluded_ids:
+        excluded_str = {str(x) for x in excluded_ids}
+        missing = missing - excluded_str
     if not missing:
         return next_markdown
 
-    marker = "\n\n> 引用保留：" + " ".join(missing[:12])
+    fingerprints = _extract_citation_fingerprints(previous_markdown)
+    missing_fingerprints = [f for f in fingerprints if str(f["id"]) in missing]
+    if missing_fingerprints:
+        stitched = _stitch_citations(next_markdown, missing_fingerprints)
+        stitched_ids = set(re.findall(r"\[\[(\d+)\]\]", stitched))
+        still_missing = missing - stitched_ids
+        if not still_missing:
+            return stitched
+        remaining_markers = [
+            f"[[{ref_id}]]" for ref_id in sorted(int(x) for x in still_missing)
+        ]
+        marker = "\n\n> 引用保留：" + " ".join(remaining_markers[:12])
+        return stitched.rstrip() + marker
+
+    markers = [f"[[{ref_id}]]" for ref_id in sorted(int(x) for x in missing)]
+    marker = "\n\n> 引用保留：" + " ".join(markers[:12])
     return next_markdown.rstrip() + marker
-
-
-def _append_new_source_citations(markdown: str, new_sources: list[Source]) -> str:
-    refs = []
-    existing = set(re.findall(r"\[\[(\d+)\]\]", markdown))
-    for source in new_sources:
-        ref_id = _extract_ref_id(source.metadata_json)
-        if not ref_id or str(ref_id) in existing or not source.url:
-            continue
-        refs.append(f"[[{ref_id}]]({source.url})")
-        existing.add(str(ref_id))
-    if not refs:
-        return markdown
-    block = (
-        "\n\n### 补充调研依据\n\n本轮补充调研新增了以下来源支撑："
-        + " ".join(refs[:10])
-        + "\n"
-    )
-    pattern = r"\n##\s*(?:(?:\d+|[一二三四五六七八九十]+)[\.、]\s*)?(?:参考来源|参考文献|References)\s*\n"
-    match = re.search(pattern, markdown)
-    if match:
-        return markdown[: match.start()] + block + markdown[match.start() :]
-    return markdown.rstrip() + block
 
 
 def _looks_like_research_feedback(message: str) -> bool:
@@ -1446,12 +1725,16 @@ def _looks_like_research_feedback(message: str) -> bool:
 
 
 def _next_reference_id(db: Session, run_id: str) -> int:
-    sources = db.query(Source).filter(Source.run_id == run_id).all()
     max_id = 0
-    for source in sources:
+    for source in db.query(Source).filter(Source.run_id == run_id).all():
         ref_id = _extract_ref_id(source.metadata_json)
         if ref_id:
             max_id = max(max_id, ref_id)
+    for source in db.new:
+        if isinstance(source, Source) and source.run_id == run_id:
+            ref_id = _extract_ref_id(source.metadata_json)
+            if ref_id:
+                max_id = max(max_id, ref_id)
     return max_id + 1
 
 
@@ -1480,6 +1763,13 @@ def _ensure_analyses_for_all_selected(
     missing = [c for c in selected if c.id not in existing_ids]
     if not missing:
         return
+    max_iteration = (
+        db.query(func.max(Analysis.analysis_iteration))
+        .filter(Analysis.run_id == run_id)
+        .scalar()
+    )
+    if max_iteration is None:
+        max_iteration = 0
     logger.warning(
         "Creating stub analyses for %d competitors missing from analyses table: %s",
         len(missing),
@@ -1499,7 +1789,7 @@ def _ensure_analyses_for_all_selected(
                 opportunities_json="[]",
                 custom_focus_analysis_json="[]",
                 evidence_ids_json="[]",
-                analysis_iteration=0,
+                analysis_iteration=-1,
             )
         )
     db.commit()

@@ -1,3 +1,4 @@
+import logging
 import re
 from collections import Counter
 from collections.abc import Callable
@@ -9,6 +10,8 @@ from urllib.parse import urlparse
 from app.agents.state import AgentState
 from app.providers.llm.base import LLMProvider
 from app.providers.search.base import SearchProvider
+
+logger = logging.getLogger(__name__)
 
 
 BLOCKED_SOURCE_DOMAINS = {
@@ -365,6 +368,13 @@ def competitor_discovery_node(
         min_candidates=MIN_CANDIDATES,
         max_candidates=MAX_CANDIDATES,
     )
+    filtered_candidates = [
+        c
+        for c in filtered_candidates
+        if _is_domain_relevant_candidate(
+            str(c.get("name", "")), target_understanding, requirement
+        )
+    ]
 
     t0 = datetime.utcnow()
     product_results: dict[str, dict | None] = {}
@@ -382,12 +392,13 @@ def competitor_discovery_node(
                 try:
                     product_results[futures[future]] = future.result()
                 except Exception:
-                    pass
+                    logger.exception("Product resolution failed")
         except TimeoutError:
             for f, name in futures.items():
                 if name not in product_results:
                     product_results[name] = None
         except Exception:
+            logger.exception("Product resolution batch failed")
             for f, name in futures.items():
                 if name not in product_results:
                     product_results[name] = None
@@ -429,6 +440,7 @@ def competitor_discovery_node(
                 "confidence": float(item.get("confidence") or 0.7),
                 "discovery_source": item.get("discovery_source")
                 or f"{llm.name}+{search.name}",
+                "selected": bool(item.get("selected_by_default", True)),
             }
         )
     if not normalized:
@@ -474,6 +486,7 @@ def competitor_discovery_node(
                     "confidence": float(item.get("confidence") or 0.62),
                     "discovery_source": item.get("discovery_source")
                     or f"fallback+{search.name}",
+                    "selected": bool(item.get("selected_by_default", True)),
                 }
             )
             if len(normalized) >= MAX_CANDIDATES:
@@ -671,9 +684,11 @@ def _run_queries(
             batch.append(serialized)
         return batch
 
+    if not queries:
+        return []
     collected = []
     seen_urls: set[str] = set()
-    with ThreadPoolExecutor(max_workers=min(4, len(queries))) as executor:
+    with ThreadPoolExecutor(max_workers=min(4, max(1, len(queries)))) as executor:
         futures = {executor.submit(_search_one, q): q for q in queries}
         try:
             for future in as_completed(futures, timeout=60):
@@ -701,9 +716,13 @@ def _serialize_result(result, provider: str) -> dict:
 def _resolve_product_result(
     name: str, requirement: dict, search: SearchProvider
 ) -> dict | None:
-    query = f"{name} official site product"
+    has_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in name)
+    if has_cjk:
+        query = f"{name} 官网 产品"
+    else:
+        query = f"{name} official site product"
     try:
-        results = search.search(query, limit=5)
+        results = search.search(query, limit=5, include_raw_content=False)
     except Exception:
         return None
     serialized = [_serialize_result(result, search.name) for result in results]
@@ -822,8 +841,11 @@ def _extract_candidate_names_from_text(text: str) -> list[str]:
             if len(name) >= 2 and not _looks_generic_name(name):
                 candidates.append(name)
     patterns = [
-        r"\b[A-Z][A-Za-z0-9]*(?:[-\.][A-Za-z0-9]+)*\b",
-        r"[\u4e00-\u9fa5]{2,6}(?:AI|会议|听见|纪要|助手|通|浏览器)?",
+        r"\b[A-Z][A-Za-z0-9]+(?:[-\.][A-Za-z0-9]+)+\b",
+        r"\b[A-Z][a-z]+(?:[A-Z][A-Za-z0-9]*)+\b",
+        r"\b[A-Z][A-Za-z0-9]{2,}\b",
+        r"(?:[\u4e00-\u9fa5]{2,4})(?:AI助手|AI会议|智能会议|AI纪要|智能纪要|AI浏览器|AI笔记|AI文档|AI翻译|AI写作|AI编程|AI设计|AI管理|AI协作|即时通|云笔记|协作文档)",
+        r"(?:AI|智能|智慧)(?:[\u4e00-\u9fa5]{2,4})",
     ]
     for pattern in patterns:
         for match in re.findall(pattern, text):
@@ -848,7 +870,7 @@ def _looks_generic_name(name: str) -> bool:
         return True
     if len(name) <= 1:
         return True
-    cn_chars = [ch for ch in name if "一" <= ch <= "鿿"]
+    cn_chars = [ch for ch in name if "\u4e00" <= ch <= "\u9fff"]
     en_chars = [ch for ch in name if ch.isascii() and ch.isalpha()]
     if cn_chars and len(cn_chars) > 10:
         return True
@@ -969,6 +991,84 @@ def _normalize_region(value: object) -> str | None:
 def _is_domain_relevant_candidate(
     name: str, target_understanding: dict, requirement: dict
 ) -> bool:
+    if not name or len(name.strip()) < 2:
+        return False
+    stripped = name.strip()
+    if stripped.isascii() and stripped.isupper() and len(stripped) <= 3:
+        return False
+    _GENERIC_EN = {
+        "the",
+        "and",
+        "for",
+        "not",
+        "you",
+        "all",
+        "can",
+        "had",
+        "her",
+        "was",
+        "one",
+        "our",
+        "out",
+        "are",
+        "has",
+        "his",
+        "how",
+        "its",
+        "may",
+        "new",
+        "now",
+        "old",
+        "see",
+        "way",
+        "who",
+        "did",
+        "get",
+        "got",
+        "let",
+        "say",
+        "she",
+        "too",
+        "use",
+        "smart",
+        "best",
+        "top",
+        "free",
+        "open",
+        "data",
+        "tech",
+        "app",
+        "pro",
+        "max",
+        "plus",
+        "next",
+        "fast",
+    }
+    _GENERIC_CN = {
+        "产品功能",
+        "用户体验",
+        "数据分析",
+        "技术方案",
+        "市场策略",
+        "运营模式",
+        "商业模式",
+        "核心能力",
+        "竞争优势",
+        "解决方案",
+        "功能对比",
+        "价格策略",
+        "客户服务",
+        "技术架构",
+    }
+    lower = stripped.lower()
+    if lower in _GENERIC_EN:
+        return False
+    if stripped in _GENERIC_CN:
+        return False
+    if stripped.isascii() and len(stripped) <= 4 and stripped[0].isupper():
+        tokens = stripped.split()
+        if len(tokens) == 1 and lower in _GENERIC_EN:
+            return False
     return True
 
 
@@ -1035,13 +1135,18 @@ def _build_description(
     reason = (
         item.get("reason")
         or item.get("description")
-        or f"{name} 是从真实搜索结果中识别出的候选竞品，和“{domain}”相关。"
+        or f'{name} 是从真实搜索结果中识别出的候选竞品，和"{domain}"相关。'
     )
     matched = item.get("matched_dimensions") or []
     matched_text = f"匹配维度：{', '.join(matched)}。" if matched else ""
     source_ids = item.get("source_ids") or []
-    source_text = f"推荐来源：{source_ids[0]}。" if source_ids else ""
+    source_url_short = (
+        source_ids[0][:80] + "…"
+        if source_ids and len(source_ids[0]) > 80
+        else (source_ids[0] if source_ids else "")
+    )
+    source_text = f"来源：{source_url_short}。" if source_url_short else ""
     base = f"{reason} {matched_text}{source_text}".strip()
     if evidence_snippet and evidence_snippet not in base:
-        return f"{base} 二次搜索证据：{evidence_snippet[:180]}"[:500]
+        return f"{base} 证据：{evidence_snippet[:200]}"[:500]
     return str(base)[:500]

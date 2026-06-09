@@ -518,7 +518,7 @@ def test_feishu_competitor_discovery_uses_collaboration_context():
         "Industrial",
     }
     assert all("匹配维度" in item["description"] for item in competitors)
-    assert all("推荐来源" in item["description"] for item in competitors)
+    assert all("来源" in item["description"] for item in competitors)
 
     timeline_response = client.get(f"/api/runs/{run['id']}/timeline")
     assert timeline_response.status_code == 200

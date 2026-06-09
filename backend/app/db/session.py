@@ -101,18 +101,29 @@ def _ensure_compatible_schema() -> None:
     if "reports" in inspector.get_table_names():
         report_columns = {column["name"] for column in inspector.get_columns("reports")}
         with engine.begin() as connection:
+            needs_recreate = False
             if "iteration" not in report_columns:
-                _recreate_reports_table_without_unique(connection)
-            else:
-                _drop_reports_unique_if_exists(connection)
+                needs_recreate = True
+            elif not _has_reports_unique(connection):
+                needs_recreate = True
 
-            # Refresh columns after potential recreation
+            if needs_recreate:
+                _recreate_reports_table_with_unique(connection)
+            else:
+                pass
+
             report_columns = {
                 column["name"] for column in inspector.get_columns("reports")
             }
             if "competitor_names_json" not in report_columns:
                 connection.execute(
                     text("ALTER TABLE reports ADD COLUMN competitor_names_json TEXT")
+                )
+            if "is_qa_intermediate" not in report_columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE reports ADD COLUMN is_qa_intermediate BOOLEAN NOT NULL DEFAULT 0"
+                    )
                 )
     if "qa_results" in inspector.get_table_names():
         qa_columns = {column["name"] for column in inspector.get_columns("qa_results")}
@@ -152,13 +163,7 @@ def _has_reports_unique(connection) -> bool:
     return "UNIQUE" in row[0].upper() and "RUN_ID" in row[0].upper()
 
 
-def _drop_reports_unique_if_exists(connection) -> None:
-    if not _has_reports_unique(connection):
-        return
-    _recreate_reports_table_without_unique(connection)
-
-
-def _recreate_reports_table_without_unique(connection) -> None:
+def _recreate_reports_table_with_unique(connection) -> None:
     connection.execute(
         text(
             "CREATE TABLE IF NOT EXISTS reports_new ("
@@ -169,15 +174,50 @@ def _recreate_reports_table_without_unique(connection) -> None:
             "markdown_content TEXT NOT NULL, "
             "summary TEXT NOT NULL DEFAULT '', "
             "competitor_names_json TEXT, "
+            "is_qa_intermediate BOOLEAN NOT NULL DEFAULT 0, "
             "created_at DATETIME, "
-            "updated_at DATETIME"
+            "updated_at DATETIME, "
+            "UNIQUE(run_id, iteration)"
             ")"
         )
     )
+    existing_cols = [
+        row[1]
+        for row in connection.execute(text("PRAGMA table_info(reports)")).fetchall()
+    ]
+    target_cols = [
+        "id",
+        "run_id",
+        "iteration",
+        "title",
+        "markdown_content",
+        "summary",
+        "competitor_names_json",
+        "is_qa_intermediate",
+        "created_at",
+        "updated_at",
+    ]
+    select_exprs = []
+    insert_cols = []
+    for col in target_cols:
+        if col in existing_cols:
+            select_exprs.append(f"r.{col}")
+            insert_cols.append(col)
+        elif col == "is_qa_intermediate":
+            select_exprs.append("0")
+            insert_cols.append("is_qa_intermediate")
+        elif col == "competitor_names_json":
+            select_exprs.append("NULL")
+            insert_cols.append("competitor_names_json")
+    insert_col_str = ", ".join(insert_cols)
+    select_expr_str = ", ".join(select_exprs)
     connection.execute(
         text(
-            "INSERT INTO reports_new (id, run_id, iteration, title, markdown_content, summary, competitor_names_json, created_at, updated_at) "
-            "SELECT id, run_id, COALESCE(iteration, 0), title, markdown_content, summary, NULL, created_at, updated_at FROM reports"
+            f"INSERT INTO reports_new ({insert_col_str}) "
+            f"SELECT {select_expr_str} FROM reports r "
+            f"WHERE r.rowid IN ("
+            f"  SELECT MAX(r2.rowid) FROM reports r2 GROUP BY r2.run_id, r2.iteration"
+            f")"
         )
     )
     connection.execute(text("DROP TABLE reports"))

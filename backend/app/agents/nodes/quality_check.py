@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 MAX_FEEDBACK_LOOPS = 3
 QA_PASS_THRESHOLD = 0.7
+QA_MIN_FORCED_PASS_SCORE = 0.5
 VALID_RETRY_SLOTS = {
     "relationship_evidence",
     "positioning",
@@ -29,6 +30,9 @@ DIMENSION_SCORE_WEIGHTS = {
     "factual_plausibility": 0.1,
 }
 
+_EVIDENCE_CAP = 30
+_ANALYSES_CAP = 15
+
 
 def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
     raw_count = state.get("feedback_loop_count", 0)
@@ -42,26 +46,29 @@ def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
     phase = "full_check"
     retry_queries = None
     retry_instructions = None
-    feedback_count = raw_count
+    feedback_count = raw_count + 1
     forced_pass = False
     dimension_scores: dict[str, float] = {d: 0.0 for d in DIMENSION_SCORE_WEIGHTS}
     overall_score: float = 0.0
     decision = "pass"
     issues: list[dict[str, Any]] = []
 
-    if open_issues:
+    # --- Fix #2: feedback_count always increments (unified counter) ---
+    # feedback_count = raw_count + 1 is now set unconditionally above
+
+    if open_issues and not forced_pass:
         phase = "issue_verification"
         verification_raw = llm.qa_verify_issues(
             state.get("report", {}),
-            state.get("analyses", []),
-            state.get("evidence", []),
+            _cap_analyses(state.get("analyses", [])),
+            _cap_evidence(state.get("evidence", [])),
             open_issues,
         )
         resolutions = _normalize_issue_resolutions(verification_raw.get("resolutions"))
-        checklist = _apply_issue_resolutions(checklist, resolutions, raw_count + 1)
+        checklist = _apply_issue_resolutions(checklist, resolutions, feedback_count)
         open_issues = [issue for issue in checklist if issue.get("status") == "open"]
         if open_issues:
-            if raw_count + 1 >= MAX_FEEDBACK_LOOPS:
+            if feedback_count >= MAX_FEEDBACK_LOOPS:
                 forced_pass = True
                 decision = "pass"
                 issues = open_issues
@@ -71,10 +78,17 @@ def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
                     if previous_score is not None
                     else _calculate_overall_score(dimension_scores)
                 )
-                logger.info(
-                    "QA: forcing pass — max feedback loops (%d) reached (issue_verification)",
-                    MAX_FEEDBACK_LOOPS,
-                )
+                if overall_score < QA_MIN_FORCED_PASS_SCORE:
+                    logger.warning(
+                        "QA: max loops reached but score %.2f < %.2f — still forcing pass with quality_warning",
+                        overall_score,
+                        QA_MIN_FORCED_PASS_SCORE,
+                    )
+                else:
+                    logger.info(
+                        "QA: forcing pass — max feedback loops (%d) reached (issue_verification)",
+                        MAX_FEEDBACK_LOOPS,
+                    )
             elif issue_verification_count >= 2:
                 logger.info(
                     "QA: issue_verification retry limit reached (%d consecutive rounds) — falling through to full_check",
@@ -84,66 +98,80 @@ def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
                 phase = "full_check"
             else:
                 issue_verification_count += 1
-                dimension_scores = _previous_dimension_scores(prev_qa)
-                overall_score = (
-                    previous_score
-                    if previous_score is not None
-                    else _calculate_overall_score(dimension_scores)
-                )
-                decision = _derive_retry_decision(open_issues)
-                issues = open_issues
                 retry_queries = _retry_queries_from_resolutions(
                     resolutions
                 ) or _fallback_retry_queries(open_issues)
                 retry_instructions = verification_raw.get(
                     "retry_instructions"
                 ) or _retry_instructions_from_issues(open_issues)
+                decision = _derive_retry_decision(
+                    open_issues, has_new_evidence=bool(state.get("qa_retry_queries"))
+                )
+                issues = open_issues
+                dimension_scores = _previous_dimension_scores(prev_qa)
+                overall_score = (
+                    previous_score
+                    if previous_score is not None
+                    else _calculate_overall_score(dimension_scores)
+                )
         else:
             phase = "full_check"
 
-    if not open_issues or forced_pass:
-        feedback_count = raw_count + 1
+    if not open_issues and not forced_pass:
         issue_verification_count = 0
-        if not forced_pass:
-            qa_raw = llm.qa_check_report(
-                state.get("report", {}),
-                state.get("analyses", []),
-                state.get("evidence", []),
-            )
-            dimension_scores = _normalize_dimension_scores(
-                qa_raw.get("dimension_scores")
-            )
-            overall_score = _calculate_overall_score(dimension_scores)
-            issues = _normalize_new_issues(qa_raw.get("issues"), feedback_count)
-            decision = _derive_decision(overall_score, dimension_scores, issues)
-            checklist = _close_open_issues(checklist, feedback_count)
-            if decision != "pass":
-                checklist += issues
-            retry_queries = (
-                qa_raw.get("retry_queries") if decision == "retry_collection" else None
-            )
-            retry_instructions = (
-                qa_raw.get("retry_instructions") if decision != "pass" else None
-            )
-            if feedback_count >= MAX_FEEDBACK_LOOPS:
-                forced_pass = True
-                decision = "pass"
+        qa_raw = llm.qa_check_report(
+            state.get("report", {}),
+            _cap_analyses(state.get("analyses", [])),
+            _cap_evidence(state.get("evidence", [])),
+        )
+        dimension_scores = _normalize_dimension_scores(qa_raw.get("dimension_scores"))
+        overall_score = _calculate_overall_score(dimension_scores)
+        issues = _normalize_new_issues(qa_raw.get("issues"), feedback_count)
+        # --- Fix #4: mixed decision — handle both collection and analysis issues ---
+        decision = _derive_decision(overall_score, dimension_scores, issues)
+        checklist = _close_open_issues(checklist, feedback_count)
+        if decision != "pass":
+            checklist += issues
+        retry_queries = qa_raw.get("retry_queries") if decision != "pass" else None
+        retry_instructions = (
+            qa_raw.get("retry_instructions") if decision != "pass" else None
+        )
+        if feedback_count >= MAX_FEEDBACK_LOOPS:
+            forced_pass = True
+            decision = "pass"
+            if overall_score < QA_MIN_FORCED_PASS_SCORE:
+                logger.warning(
+                    "QA: max loops reached but score %.2f < %.2f — still forcing pass with quality_warning",
+                    overall_score,
+                    QA_MIN_FORCED_PASS_SCORE,
+                )
+            else:
                 logger.info(
                     "QA: forcing pass — max feedback loops (%d) reached (full_check)",
                     MAX_FEEDBACK_LOOPS,
                 )
-            elif (
-                decision != "pass"
-                and previous_score is not None
-                and overall_score <= previous_score
-            ):
+        elif (
+            decision != "pass"
+            and previous_score is not None
+            and overall_score <= previous_score
+        ):
+            if overall_score < QA_MIN_FORCED_PASS_SCORE:
+                logger.warning(
+                    "QA: score did not improve (%.2f <= %.2f) and below threshold %.2f — continuing retry",
+                    overall_score,
+                    previous_score,
+                    QA_MIN_FORCED_PASS_SCORE,
+                )
+            else:
                 forced_pass = True
                 decision = "pass"
                 logger.info(
-                    "QA: forcing pass — score did not improve (%.2f <= %.2f)",
+                    "QA: forcing pass — score did not improve (%.2f <= %.2f) but above min threshold",
                     overall_score,
                     previous_score,
                 )
+    elif forced_pass:
+        pass
 
     retry_guidance_map = None
     retry_analysis_ids = None
@@ -156,8 +184,36 @@ def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
         retry_report_guidance = retry_instructions
     elif decision == "retry_analysis":
         retry_guidance_map = _build_retry_guidance_map(issues)
+        # --- Fix #6: avoid full reanalysis when no flagged_names ---
         retry_analysis_ids = _identify_retry_analyses(issues, state.get("analyses", []))
+        # --- Fix #7: pass retry_instructions as global guidance ---
         retry_report_guidance = retry_instructions
+    elif decision == "retry_collection_and_analysis":
+        retry_queries = _normalize_retry_queries(
+            retry_queries
+        ) or _fallback_retry_queries(issues)
+        retry_guidance_map = _build_retry_guidance_map(issues)
+        retry_analysis_ids = _identify_retry_analyses(
+            [i for i in issues if i.get("dimension") not in COLLECTION_DIMENSIONS],
+            state.get("analyses", []),
+        )
+        retry_report_guidance = retry_instructions
+
+    # --- Fix #10: append report-level issues to guidance ---
+    report_issues = [
+        i
+        for i in issues
+        if i.get("competitor_name") in {"report", "system"} and i.get("fix_suggestion")
+    ]
+    if report_issues and retry_report_guidance is not None:
+        report_guidance = "; ".join(
+            f"[报告级] {i.get('fix_suggestion')}" for i in report_issues
+        )
+        retry_report_guidance = f"{retry_report_guidance}\n{report_guidance}"
+    elif report_issues and retry_report_guidance is None:
+        retry_report_guidance = "; ".join(
+            f"[报告级] {i.get('fix_suggestion')}" for i in report_issues
+        )
 
     qa_result: dict[str, Any] = {
         "overall_score": overall_score,
@@ -169,6 +225,7 @@ def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
         "check_phase": phase,
         "iteration": feedback_count,
         "forced_pass": forced_pass,
+        "quality_warning": forced_pass and overall_score < QA_MIN_FORCED_PASS_SCORE,
         "previous_score": previous_score,
     }
 
@@ -215,27 +272,65 @@ def qa_route(state: AgentState) -> str:
         return "retry_collection"
     if decision == "retry_analysis":
         return "retry_analysis"
+    if decision == "retry_collection_and_analysis":
+        return "retry_collection_and_analysis"
+    if decision != "pass":
+        logger.warning("Unknown QA decision '%s', treating as end", decision)
     return "end"
 
 
 def _derive_decision(
-    _overall_score: float,
+    overall_score: float,
     dimension_scores: dict[str, float],
     issues: list[dict[str, Any]],
 ) -> str:
-    for issue in issues:
-        if issue.get("dimension") in COLLECTION_DIMENSIONS:
-            return "retry_collection"
-    if all(score >= QA_PASS_THRESHOLD for score in dimension_scores.values()):
+    has_collection_issue = any(
+        issue.get("dimension") in COLLECTION_DIMENSIONS for issue in issues
+    )
+    has_analysis_issue = any(
+        issue.get("dimension") not in COLLECTION_DIMENSIONS
+        and issue.get("competitor_name") not in {"report", "system", None}
+        for issue in issues
+    )
+    has_report_issue = any(
+        issue.get("competitor_name") in {"report", "system"} for issue in issues
+    )
+    if has_collection_issue and has_analysis_issue:
+        return "retry_collection_and_analysis"
+    if has_collection_issue:
+        return "retry_collection"
+    all_dimensions_pass = all(
+        score >= QA_PASS_THRESHOLD for score in dimension_scores.values()
+    )
+    if all_dimensions_pass and overall_score >= QA_MIN_FORCED_PASS_SCORE:
         return "pass"
-    return "retry_analysis"
+    if has_analysis_issue:
+        return "retry_analysis"
+    if has_report_issue:
+        return "retry_analysis"
+    if all_dimensions_pass and overall_score < QA_MIN_FORCED_PASS_SCORE:
+        return "retry_collection"
+    return "retry_collection"
 
 
-def _derive_retry_decision(issues: list[dict[str, Any]]) -> str:
-    for issue in issues:
-        if issue.get("dimension") in COLLECTION_DIMENSIONS:
-            return "retry_collection"
-    return "retry_analysis"
+def _derive_retry_decision(
+    issues: list[dict[str, Any]], *, has_new_evidence: bool = False
+) -> str:
+    has_collection_issue = any(
+        issue.get("dimension") in COLLECTION_DIMENSIONS for issue in issues
+    )
+    has_analysis_issue = any(
+        issue.get("dimension") not in COLLECTION_DIMENSIONS
+        and issue.get("competitor_name") not in {"report", "system", None}
+        for issue in issues
+    )
+    if has_collection_issue and has_analysis_issue:
+        return "retry_collection_and_analysis"
+    if has_collection_issue:
+        return "retry_collection"
+    if has_analysis_issue:
+        return "retry_analysis"
+    return "retry_collection"
 
 
 def _normalize_new_issues(raw_issues: Any, iteration: int) -> list[dict[str, Any]]:
@@ -443,29 +538,55 @@ def _fallback_retry_queries(issues: list[dict[str, Any]]) -> list[dict[str, str]
         if not competitor_name or competitor_name in {"report", "system"}:
             continue
         dimension = issue.get("dimension")
+        is_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in competitor_name)
         if dimension in {"coverage_gaps", "evidence_grounding"}:
-            queries.append(
-                {
-                    "competitor_name": competitor_name,
-                    "slot": "core_features",
-                    "query": f"{competitor_name} core features evidence",
-                }
-            )
-            queries.append(
-                {
-                    "competitor_name": competitor_name,
-                    "slot": "pricing",
-                    "query": f"{competitor_name} pricing plans evidence",
-                }
-            )
+            if is_cjk:
+                queries.append(
+                    {
+                        "competitor_name": competitor_name,
+                        "slot": "core_features",
+                        "query": f"{competitor_name} 核心功能 特点",
+                    }
+                )
+                queries.append(
+                    {
+                        "competitor_name": competitor_name,
+                        "slot": "pricing",
+                        "query": f"{competitor_name} 价格 套餐 收费",
+                    }
+                )
+            else:
+                queries.append(
+                    {
+                        "competitor_name": competitor_name,
+                        "slot": "core_features",
+                        "query": f"{competitor_name} core features evidence",
+                    }
+                )
+                queries.append(
+                    {
+                        "competitor_name": competitor_name,
+                        "slot": "pricing",
+                        "query": f"{competitor_name} pricing plans evidence",
+                    }
+                )
         elif dimension == "schema_completeness":
-            queries.append(
-                {
-                    "competitor_name": competitor_name,
-                    "slot": "pricing",
-                    "query": f"{competitor_name} pricing plans",
-                }
-            )
+            if is_cjk:
+                queries.append(
+                    {
+                        "competitor_name": competitor_name,
+                        "slot": "pricing",
+                        "query": f"{competitor_name} 价格 定价方案",
+                    }
+                )
+            else:
+                queries.append(
+                    {
+                        "competitor_name": competitor_name,
+                        "slot": "pricing",
+                        "query": f"{competitor_name} pricing plans",
+                    }
+                )
     return queries
 
 
@@ -487,7 +608,11 @@ def _build_retry_guidance_map(issues: list[dict[str, Any]]) -> dict[str, str]:
         name = issue.get("competitor_name", "")
         description = issue.get("description", "")
         suggestion = issue.get("fix_suggestion", "")
-        if name and name not in {"report", "system"} and (description or suggestion):
+        if not (description or suggestion):
+            continue
+        if name in {"report", "system"}:
+            name = "__report__"
+        if name:
             result.setdefault(name, "")
             dimension = issue.get("dimension", "unknown")
             severity = issue.get("severity", "unknown")
@@ -504,11 +629,13 @@ def _identify_retry_analyses(
     flagged_names = {
         issue.get("competitor_name")
         for issue in issues
-        if issue.get("dimension") not in COLLECTION_DIMENSIONS
-        and issue.get("competitor_name") not in {"report", "system", None}
+        if issue.get("competitor_name") not in {"report", "system", None}
     }
     if not flagged_names:
-        return [a.get("competitor_id", "") for a in analyses if a.get("competitor_id")]
+        all_ids = [
+            a.get("competitor_id", "") for a in analyses if a.get("competitor_id")
+        ]
+        return all_ids
     retry_ids = []
     for analysis in analyses:
         name = analysis.get("competitor_name", "")
@@ -518,7 +645,9 @@ def _identify_retry_analyses(
     return (
         retry_ids
         if retry_ids
-        else [a.get("competitor_id", "") for a in analyses if a.get("competitor_id")]
+        else [a.get("competitor_id", "") for a in analyses if a.get("competitor_id")][
+            :1
+        ]
     )
 
 
@@ -552,6 +681,24 @@ def _calculate_overall_score(dimension_scores: dict[str, float]) -> float:
         for dimension, weight in DIMENSION_SCORE_WEIGHTS.items()
     )
     return round(min(1.0, max(0.0, total)), 2)
+
+
+def _cap_evidence(
+    evidence: list[dict[str, Any]], cap: int = _EVIDENCE_CAP
+) -> list[dict[str, Any]]:
+    if len(evidence) <= cap:
+        return evidence
+    return sorted(evidence, key=lambda e: float(e.get("confidence", 0)), reverse=True)[
+        :cap
+    ]
+
+
+def _cap_analyses(
+    analyses: list[dict[str, Any]], cap: int = _ANALYSES_CAP
+) -> list[dict[str, Any]]:
+    if len(analyses) <= cap:
+        return analyses
+    return analyses[:cap]
 
 
 def _coerce_score(value: Any) -> float | None:

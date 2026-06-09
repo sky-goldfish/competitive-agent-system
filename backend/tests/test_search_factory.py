@@ -56,7 +56,7 @@ def test_tavily_maps_response_rows_to_search_results(monkeypatch):
     monkeypatch.setattr(
         provider,
         "_request",
-        lambda query, limit: [
+        lambda query, limit, include_raw_content=True: [
             {
                 "title": "Example Product",
                 "url": "https://example.com/product",
@@ -89,7 +89,7 @@ def test_tavily_raw_content_falls_back_to_content(monkeypatch):
     monkeypatch.setattr(
         provider,
         "_request",
-        lambda query, limit: [
+        lambda query, limit, include_raw_content=True: [
             {
                 "title": "Example Article",
                 "url": "https://example.com/article",
@@ -147,7 +147,7 @@ def test_bocha_maps_response_rows_to_search_results(monkeypatch):
     monkeypatch.setattr(
         provider,
         "_request",
-        lambda query, limit: [
+        lambda query, limit, include_raw_content=True: [
             {
                 "name": "Example Product",
                 "url": "https://example.com/product",

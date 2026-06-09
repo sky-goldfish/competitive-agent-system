@@ -19,7 +19,7 @@ export default function ReportPage() {
   });
   const sourcesQuery = useQuery({ queryKey: ['sources', id], queryFn: () => getSources(id), enabled: Boolean(id) });
   const evidenceQuery = useQuery({ queryKey: ['evidence', id], queryFn: () => getEvidence(id), enabled: Boolean(id) });
-  const citationBundleQuery = useQuery({ queryKey: ['citation-bundle', id], queryFn: () => getReportCitationBundle(id), enabled: Boolean(id) });
+  const citationBundleQuery = useQuery({ queryKey: ['citation-bundle', id, displayedReportIteration], queryFn: () => getReportCitationBundle(id, displayedReportIteration), enabled: Boolean(id) && displayedReportIteration != null });
 
   const regenerateMutation = useMutation({
     mutationFn: () => regenerateReport(id),
@@ -32,7 +32,14 @@ export default function ReportPage() {
   });
 
   if (reportQuery.isLoading) return <p className="loading">加载报告中...</p>;
-  if (reportQuery.isError || !reportQuery.data) return <p className="error-text">报告尚未生成或加载失败。</p>;
+  if (reportQuery.isError || !reportQuery.data) return (
+    <div style={{ padding: 24 }}>
+      <p className="error-text">报告尚未生成或加载失败。</p>
+      <button type="button" className="workspace-regenerate" onClick={() => reportQuery.refetch()} style={{ marginTop: 12 }}>
+        重试
+      </button>
+    </div>
+  );
 
   return (
     <div className="report-layout">
@@ -43,18 +50,6 @@ export default function ReportPage() {
             <h1>分析报告</h1>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button
-              type="button"
-              className="workspace-regenerate"
-              onClick={() => {
-                if (window.confirm('确定要重新生成报告吗？将使用现有的搜索和分析结果重新生成。')) {
-                  regenerateMutation.mutate();
-                }
-              }}
-              disabled={regenerateMutation.isPending}
-            >
-              {regenerateMutation.isPending ? '生成中...' : '重新生成'}
-            </button>
             <Link className="primary-link" to={`/runs/${id}`}>返回任务</Link>
           </div>
         </div>

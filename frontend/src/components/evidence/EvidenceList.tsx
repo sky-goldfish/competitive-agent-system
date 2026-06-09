@@ -1,6 +1,7 @@
 import type { Evidence, Source } from '../../lib/types';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
+import SafeAnchor from '../SafeAnchor';
 
 type Props = {
   evidence: Evidence[];
@@ -12,7 +13,7 @@ export default function EvidenceList({ evidence, sources, initialVisibleCount = 
   const [detailEvidence, setDetailEvidence] = useState<Evidence | null>(null);
   const [expandedIds, setExpandedIds] = useState<string[]>([]);
   const [listExpanded, setListExpanded] = useState(false);
-  const sourceById = new Map(sources.map((source) => [source.id, source]));
+  const sourceById = useMemo(() => new Map(sources.map((source) => [source.id, source])), [sources]);
   const visibleEvidence = listExpanded ? evidence : evidence.slice(0, initialVisibleCount);
   const hiddenCount = Math.max(0, evidence.length - visibleEvidence.length);
 
@@ -26,7 +27,7 @@ export default function EvidenceList({ evidence, sources, initialVisibleCount = 
     <section className="panel">
       <div className="panel-header">
         <h2>证据片段</h2>
-        <span>{evidence.length} evidence</span>
+        <span>{evidence.length} 条证据</span>
       </div>
       <div className="evidence-list">
         {evidence.length === 0 ? (
@@ -42,7 +43,7 @@ export default function EvidenceList({ evidence, sources, initialVisibleCount = 
             <article key={item.id} className={`evidence-item collapsible-evidence ${expanded ? 'expanded' : ''}`}>
               <div className="source-meta-row">
                 <span>{item.related_product} · {item.related_dimension}</span>
-                <strong>置信度 {(item.confidence * 100).toFixed(0)}%</strong>
+                <strong>置信度 {item.confidence != null ? `${(item.confidence * 100).toFixed(0)}%` : '-'}</strong>
               </div>
               <div className="evidence-collapse-head">
                 <button type="button" className="summary-title-button" onClick={() => setDetailEvidence(item)}>
@@ -81,7 +82,7 @@ export default function EvidenceList({ evidence, sources, initialVisibleCount = 
             <div className="modal-header">
               <div>
                 <h3 id="evidence-detail-title">{detailEvidence.related_product} · {detailEvidence.related_dimension}</h3>
-                <p>置信度 {(detailEvidence.confidence * 100).toFixed(0)}%</p>
+                <p>置信度 {detailEvidence.confidence != null ? `${(detailEvidence.confidence * 100).toFixed(0)}%` : '-'}</p>
               </div>
               <button type="button" className="modal-close" onClick={() => setDetailEvidence(null)}>关闭</button>
             </div>
@@ -97,11 +98,11 @@ export default function EvidenceList({ evidence, sources, initialVisibleCount = 
               <div>
                 <dt>来源</dt>
                 <dd>
-                  {sourceById.get(detailEvidence.source_id) ? (
-                    <a href={sourceById.get(detailEvidence.source_id)!.url} target="_blank" rel="noreferrer">
-                      {sourceById.get(detailEvidence.source_id)!.title}
-                    </a>
-                  ) : '暂无'}
+                  {(() => { const src = sourceById.get(detailEvidence.source_id); return src ? (
+                    <SafeAnchor href={src.url}>
+                      {src.title}
+                    </SafeAnchor>
+                  ) : '暂无'; })()}
                 </dd>
               </div>
             </dl>

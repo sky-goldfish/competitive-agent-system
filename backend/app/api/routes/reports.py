@@ -3,7 +3,7 @@ import logging
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.schemas.analysis import parse_focus_analysis_json
 from app.db.models import Analysis, Evidence, Report, Run, Source
@@ -54,12 +54,15 @@ def get_report_versions(run_id: str, db: Session = Depends(get_db)):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Run not found."
         )
-    return (
+    versions = (
         db.query(Report)
-        .filter(Report.run_id == run_id)
-        .order_by(Report.iteration.asc())
+        .filter(Report.run_id == run_id, Report.is_qa_intermediate.is_(False))
+        .order_by(Report.iteration.desc())
+        .limit(20)
         .all()
     )
+    versions.reverse()
+    return versions
 
 
 @router.get("/citations", response_model=list[CitationMapItem])
@@ -112,13 +115,21 @@ def get_report_citations(
     for item in evidence_items:
         evidence_by_source_id.setdefault(item.source_id, []).append(item)
 
-    analyses = db.query(Analysis).filter(Analysis.run_id == run_id).all()
+    analyses = (
+        db.query(Analysis)
+        .filter(Analysis.run_id == run_id)
+        .options(joinedload(Analysis.competitor))
+        .all()
+    )
     analysis_refs_by_evidence_id = _analysis_refs_by_evidence_id(analyses)
 
     citation_items = []
+    url_source_index: dict[str, int] = {}
     for reference_id, url in reference_urls:
         matching_sources = sources_by_url.get(url, [])
-        source = matching_sources.pop(0) if matching_sources else None
+        idx = url_source_index.get(url, 0)
+        source = matching_sources[idx] if idx < len(matching_sources) else None
+        url_source_index[url] = idx + 1
         if source is None:
             continue
         evidence_for_source = evidence_by_source_id.get(source.id, [])
@@ -149,7 +160,11 @@ def _get_report_version(
     query = db.query(Report).filter(Report.run_id == run_id)
     if iteration is not None:
         return query.filter(Report.iteration == iteration).first()
-    return query.order_by(Report.iteration.desc()).first()
+    return (
+        query.filter(Report.is_qa_intermediate.is_(False))
+        .order_by(Report.iteration.desc())
+        .first()
+    )
 
 
 def _extract_reference_urls(markdown_content: str) -> list[tuple[int, str]]:
@@ -198,11 +213,22 @@ ANALYSIS_FIELD_MAP: dict[str, str] = {
 
 
 @router.get("/citation-bundle", response_model=list[CitationBundleCompetitor])
-def get_report_citation_bundle(run_id: str, db: Session = Depends(get_db)):
+def get_report_citation_bundle(
+    run_id: str, iteration: int | None = None, db: Session = Depends(get_db)
+):
     if db.get(Run, run_id) is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Run not found."
         )
+
+    competitor_names_filter: set[str] | None = None
+    if iteration is not None:
+        report = _get_report_version(db, run_id, iteration)
+        if report is not None and report.competitor_names_json:
+            try:
+                competitor_names_filter = set(json.loads(report.competitor_names_json))
+            except (json.JSONDecodeError, TypeError):
+                pass
 
     sources = db.query(Source).filter(Source.run_id == run_id).all()
     source_ref_by_id = {s.id: _extract_ref_id(s.metadata_json) for s in sources}
@@ -216,9 +242,17 @@ def get_report_citation_bundle(run_id: str, db: Session = Depends(get_db)):
     analyses = (
         db.query(Analysis)
         .filter(Analysis.run_id == run_id)
+        .options(joinedload(Analysis.competitor))
         .order_by(Analysis.created_at.asc())
         .all()
     )
+    if competitor_names_filter is not None:
+        analyses = [
+            a
+            for a in analyses
+            if (a.competitor.name if a.competitor else a.competitor_id)
+            in competitor_names_filter
+        ]
 
     result: list[CitationBundleCompetitor] = []
     for analysis in analyses:

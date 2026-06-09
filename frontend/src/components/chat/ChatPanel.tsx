@@ -35,6 +35,10 @@ export default function ChatPanel({ runId, onReportVersionChange }: Props) {
       }
       setInput('');
     },
+    onError: (error) => {
+      queryClient.invalidateQueries({ queryKey: ['chat-messages', runId] });
+      console.error('Chat send failed:', error);
+    },
   });
 
   useEffect(() => {
@@ -77,10 +81,11 @@ export default function ChatPanel({ runId, onReportVersionChange }: Props) {
       <div className="chat-message-list" ref={listRef}>
         {messages.length === 0 && (
           <p className="chat-placeholder">
-            报告生成完成后，你可以在这里通过对话方式对报告进行修改。例如：
-            <br />· "把这个竞品的定价信息删掉"
-            <br />· "增加用户评价对比分析"
-            <br />· "重新调研，我觉得关于XX维度信息不够"
+            报告生成完成后，你可以通过对话修改动态对比表格。例如：
+            <br />· "增加一个竞品 XXX 的对比列"
+            <br />· "把定价策略这个维度删掉"
+            <br />· "补充隐私安全维度的对比分析"
+            <br />· "移除竞品 YYY，重点对比其余产品"
           </p>
         )}
         {messages.map((msg) => (
@@ -105,7 +110,7 @@ export default function ChatPanel({ runId, onReportVersionChange }: Props) {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="输入修改意见，例如：删除定价章节、增加用户评价对比、重新调研XX方向..."
+          placeholder="输入修改意见，例如：增加竞品XX的对比列 / 删除定价维度 / 补充隐私安全对比..."
           rows={2}
           disabled={sendMutation.isPending}
         />

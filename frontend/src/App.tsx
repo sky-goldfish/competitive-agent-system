@@ -121,7 +121,7 @@ function AppSidebar() {
               <nav className="sidebar-history" aria-label="历史竞品检索记录">
                 {visibleRuns.length === 0 && !runsQuery.isLoading ? <span className="sidebar-empty">暂无历史记录</span> : null}
                 {visibleRuns.map((run) => {
-                  const active = location.pathname.includes(`/runs/${run.id}`);
+                  const active = location.pathname === `/runs/${run.id}` || location.pathname.startsWith(`/runs/${run.id}/`);
                   const pinned = pinnedRunIds.includes(run.id);
                   return (
                     <div
@@ -189,7 +189,8 @@ function readStoredList(key: string) {
   try {
     const value = JSON.parse(localStorage.getItem(key) ?? '[]');
     return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
-  } catch {
+  } catch (e) {
+    console.warn(`Failed to parse localStorage key "${key}":`, e);
     return [];
   }
 }

@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { deleteRun, listRuns } from '../lib/api';
+import { useState } from 'react';
 
 const statusLabels: Record<string, string> = {
   running: '执行中',
@@ -20,27 +21,38 @@ const stageLabels: Record<string, string> = {
 };
 
 function formatTime(value: string) {
-  return new Date(value.endsWith('Z') ? value : `${value}Z`).toLocaleString();
+  try {
+    const hasTz = /[Zz+\-]\d{0,4}$/.test(value.trim());
+    return new Date(hasTz ? value : `${value}Z`).toLocaleString();
+  } catch {
+    return value;
+  }
 }
 
 export default function HistoryPage() {
   const queryClient = useQueryClient();
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const runsQuery = useQuery({ queryKey: ['runs'], queryFn: listRuns, refetchInterval: 5000 });
   const runs = runsQuery.data ?? [];
 
   const deleteMutation = useMutation({
     mutationFn: deleteRun,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['runs'] }),
+    onError: (error) => {
+      setDeleteError(error instanceof Error ? error.message : '未知错误');
+    },
   });
 
   function handleDelete(runId: string, title: string) {
     if (window.confirm(`确定要删除「${title}」吗？此操作不可恢复。`)) {
+      setDeleteError(null);
       deleteMutation.mutate(runId);
     }
   }
 
   return (
     <section className="history-page">
+      {deleteError ? <p className="error-text">删除失败：{deleteError}</p> : null}
       <div className="section-heading">
         <div>
           <p className="eyebrow">Analysis History</p>

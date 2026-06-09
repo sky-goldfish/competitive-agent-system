@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { Analysis, Competitor, Evidence, Source } from '../../lib/types';
+import SafeAnchor from '../SafeAnchor';
 
 type Props = {
   analyses: Analysis[];
@@ -166,9 +167,9 @@ export default function AnalysisList({ analyses, competitors, evidence, sources 
                       const source = sourceById.get(item.source_id);
                       return (
                         <div key={item.id} className="linked-evidence-item">
-                          <strong>{item.related_dimension} · {(item.confidence * 100).toFixed(0)}%</strong>
+                          <strong>{item.related_dimension} · {item.confidence != null ? `${Math.round(item.confidence * 100)}%` : '-'}</strong>
                           <p>{item.summary}</p>
-                          {source ? <a href={source.url} target="_blank" rel="noreferrer">{source.title}</a> : null}
+                          {source ? <SafeAnchor href={source.url}>{source.title}</SafeAnchor> : null}
                         </div>
                       );
                     })}

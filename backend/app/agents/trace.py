@@ -129,8 +129,10 @@ def _summarize_output(stage: str, output: dict[str, Any]) -> dict[str, Any]:
             "target": target.get("name"),
             "target_category": target.get("category"),
             "target_confidence": target.get("confidence"),
-            "competitor_count": len(output.get("competitors", [])),
-            "target_search_result_count": len(output.get("target_search_results", [])),
+            "competitor_count": len(output.get("competitors") or []),
+            "target_search_result_count": len(
+                output.get("target_search_results") or []
+            ),
             "competitor_search_result_count": len(
                 output.get("competitor_search_results", [])
             ),
@@ -139,15 +141,15 @@ def _summarize_output(stage: str, output: dict[str, Any]) -> dict[str, Any]:
     if stage == "human_confirm_competitors":
         return {
             "status": output.get("status"),
-            "candidate_count": len(output.get("competitors", [])),
+            "candidate_count": len(output.get("competitors") or []),
         }
     if stage == "material_collection":
         return {
-            "source_count": len(output.get("sources", [])),
-            "evidence_count": len(output.get("evidence", [])),
+            "source_count": len(output.get("sources") or []),
+            "evidence_count": len(output.get("evidence") or []),
         }
     if stage == "structured_analysis":
-        return {"analysis_count": len(output.get("analyses", []))}
+        return {"analysis_count": len(output.get("analyses") or [])}
     if stage == "report_generation":
         report = output.get("report", {})
         return {"title": report.get("title"), "summary": report.get("summary")}

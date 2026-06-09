@@ -15,20 +15,18 @@ def _extract_citation_fingerprints(markdown: str) -> list[dict[str, Any]]:
     """Extract context fingerprints for each citation in the markdown."""
     fingerprints = []
     # Match [[n]] or [n]
-    matches = list(re.finditer(r"\[\[?(\d+)\]?\]", markdown))
+    matches = list(re.finditer(r"\[{2}(\d+)\]{2}|\[(\d+)\]", markdown))
 
     for match in matches:
-        ref_id = int(match.group(1))
+        ref_id = int(match.group(1) or match.group(2))
         start = match.start()
         end = match.end()
 
-        # Get context: 30-40 chars before and 30-40 chars after
         prefix = markdown[max(0, start - 40) : start].strip()
         suffix = markdown[end : min(len(markdown), end + 40)].strip()
 
-        # Clean context (remove other citations and excess whitespace)
-        prefix = re.sub(r"\[\[?\d+\]?\]", "", prefix)
-        suffix = re.sub(r"\[\[?\d+\]?\]", "", suffix)
+        prefix = re.sub(r"\[{2}\d+\]{2}|\[\d+\]", "", prefix)
+        suffix = re.sub(r"\[{2}\d+\]{2}|\[\d+\]", "", suffix)
 
         # Take the last/first few words as they are more likely to be preserved
         prefix_words = prefix.split()
@@ -56,27 +54,24 @@ def _stitch_citations(new_markdown: str, fingerprints: list[dict[str, Any]]) -> 
         return new_markdown
 
     result_markdown = new_markdown
-    # Get current citations to avoid duplicates
-    existing_ids = {int(m) for m in re.findall(r"\[\[?(\d+)\]?\]", result_markdown)}
+    existing_ids = {
+        int(a or b)
+        for a, b in re.findall(r"\[{2}(\d+)\]{2}|\[(\d+)\]", result_markdown)
+    }
 
-    # We only care about citations that were lost
     missing_fingerprints = [f for f in fingerprints if f["id"] not in existing_ids]
     if not missing_fingerprints:
         return result_markdown
 
-    # Process each missing fingerprint
     for f in missing_fingerprints:
         best_pos = -1
 
-        # 1. Exact Match: Long prefix + Long suffix
         if len(f["prefix"]) >= 10 and len(f["suffix"]) >= 10:
             pattern = re.escape(f["prefix"]) + r".{0,150}?" + re.escape(f["suffix"])
             match = re.search(pattern, result_markdown, re.DOTALL)
             if match:
                 best_pos = match.start() + len(f["prefix"])
 
-        # 2. Match: Last word of prefix + First word of suffix
-        # (Very common anchor point)
         if best_pos == -1:
             prefix_words = [w for w in re.findall(r"\w+", f["prefix"]) if len(w) > 1]
             suffix_words = [w for w in re.findall(r"\w+", f["suffix"]) if len(w) > 1]
@@ -84,14 +79,11 @@ def _stitch_citations(new_markdown: str, fingerprints: list[dict[str, Any]]) -> 
             if prefix_words and suffix_words:
                 last_p = prefix_words[-1]
                 first_s = suffix_words[0]
-                # Look for these two words near each other
                 pattern = re.escape(last_p) + r".{0,50}?" + re.escape(first_s)
                 match = re.search(pattern, result_markdown, re.DOTALL | re.IGNORECASE)
                 if match:
-                    # Insert after the last_p
                     best_pos = match.start() + len(last_p)
 
-        # 3. Match: Short prefix + Short suffix (word based)
         if best_pos == -1 and f["prefix_short"] and f["suffix_short"]:
             pattern = (
                 re.escape(f["prefix_short"])
@@ -102,18 +94,14 @@ def _stitch_citations(new_markdown: str, fingerprints: list[dict[str, Any]]) -> 
             if match:
                 best_pos = match.start() + len(f["prefix_short"])
 
-        # 4. Fallback: Prefix only (at least 2 words)
         if best_pos == -1:
             prefix_words = [w for w in re.findall(r"\w+", f["prefix"]) if len(w) > 1]
             if len(prefix_words) >= 2:
                 anchor = " ".join(prefix_words[-2:])
-                pos = result_markdown.rfind(
-                    anchor
-                )  # Use rfind to get the one closer to end of sentence
+                pos = result_markdown.rfind(anchor)
                 if pos != -1:
                     best_pos = pos + len(anchor)
 
-        # 5. Fallback: Suffix only (at least 2 words)
         if best_pos == -1:
             suffix_words = [w for w in re.findall(r"\w+", f["suffix"]) if len(w) > 1]
             if len(suffix_words) >= 2:
@@ -124,21 +112,280 @@ def _stitch_citations(new_markdown: str, fingerprints: list[dict[str, Any]]) -> 
 
         if best_pos != -1:
             citation = f" [[{f['id']}]]"
-            # Avoid duplicate insertion at exact same point
             context_area = result_markdown[
                 max(0, best_pos - 15) : min(len(result_markdown), best_pos + 15)
             ]
             if f"[{f['id']}]" in context_area or f"[[{f['id']}]]" in context_area:
                 continue
 
-            result_markdown = (
-                result_markdown[:best_pos].rstrip()
-                + citation
-                + " "
-                + result_markdown[best_pos:].lstrip()
-            )
+            before = result_markdown[:best_pos].rstrip()
+            after = result_markdown[best_pos:].lstrip()
+            in_table_cell = before.endswith("|") or after.startswith("|")
+            if in_table_cell:
+                if after.startswith("|"):
+                    result_markdown = before + citation + " " + after
+                else:
+                    result_markdown = before + citation + after
+            else:
+                result_markdown = before + citation + " " + after
 
     return result_markdown
+
+
+def _normalize_table_name(name: str) -> str:
+    cleaned = re.sub(r"\*+", "", name).strip()
+    cleaned = re.sub(r"（重点关注）|\(重点关注\)", "", cleaned).strip()
+    cleaned = cleaned.lower()
+    cleaned = re.sub(r"[\s\-_]+", "", cleaned)
+    return cleaned
+
+
+def _parse_table_grid(markdown: str) -> list[list[str]]:
+    """Parse a markdown table into a 2D grid of cell contents, preserving empty cells."""
+    rows: list[list[str]] = []
+    for line in markdown.split("\n"):
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        if stripped.endswith("|"):
+            inner = stripped[1:-1]
+        else:
+            inner = stripped[1:]
+        cells = [c.strip() for c in inner.split("|")]
+        if not cells:
+            continue
+        if all(set(c) <= {"-", ":", " "} for c in cells):
+            continue
+        rows.append(cells)
+    return rows
+
+
+def _build_semantic_citation_map(
+    markdown: str,
+) -> dict[tuple[str, str], list[int]]:
+    """Build a mapping from (normalized_dimension, normalized_competitor) -> citation IDs."""
+    grid = _parse_table_grid(markdown)
+    if len(grid) < 2:
+        return {}
+    header = grid[0]
+    competitor_names = [_normalize_table_name(c) for c in header[1:]]
+    citation_map: dict[tuple[str, str], list[int]] = {}
+    for row in grid[1:]:
+        if not row:
+            continue
+        dimension_name = _normalize_table_name(row[0])
+        for col_idx, cell in enumerate(row[1:]):
+            if col_idx >= len(competitor_names):
+                break
+            ids = [
+                int(a or b) for a, b in re.findall(r"\[{2}(\d+)\]{2}|\[(\d+)\]", cell)
+            ]
+            if ids:
+                citation_map[(dimension_name, competitor_names[col_idx])] = ids
+    return citation_map
+
+
+def _fuzzy_match_cell(old_cell: str, new_cell: str) -> bool:
+    """Check if two cells are talking about the same thing despite rephrasing."""
+    old_clean = re.sub(r"\[{2}\d+\]{2}|\[\d+\]", "", old_cell).strip()
+    new_clean = re.sub(r"\[{2}\d+\]{2}|\[\d+\]", "", new_cell).strip()
+    if not old_clean or not new_clean:
+        return False
+    old_keywords = set(re.findall(r"[\w]{2,}", old_clean.lower()))
+    new_keywords = set(re.findall(r"[\w]{2,}", new_clean.lower()))
+    if not old_keywords or not new_keywords:
+        return False
+    overlap = old_keywords & new_keywords
+    return len(overlap) / min(len(old_keywords), len(new_keywords)) >= 0.4
+
+
+def _fuzzy_match_dimension(norm_dim: str, known_dims: list[str]) -> str | None:
+    if not norm_dim or not known_dims:
+        return None
+    if norm_dim in known_dims:
+        return norm_dim
+    best_match: str | None = None
+    best_ratio: float = 0.0
+    for d in known_dims:
+        shorter = min(len(norm_dim), len(d))
+        if shorter == 0:
+            continue
+        seq = difflib.SequenceMatcher(None, norm_dim, d)
+        ratio = seq.ratio()
+        if ratio > best_ratio and ratio >= 0.55:
+            best_ratio = ratio
+            best_match = d
+    return best_match
+
+
+def _fuzzy_match_competitor(norm_comp: str, known_comps: list[str]) -> str | None:
+    if not norm_comp or not known_comps:
+        return None
+    if norm_comp in known_comps:
+        return norm_comp
+    scores: list[tuple[float, str]] = []
+    for c in known_comps:
+        seq = difflib.SequenceMatcher(None, norm_comp, c)
+        scores.append((seq.ratio(), c))
+    scores.sort(key=lambda x: x[0], reverse=True)
+    if not scores:
+        return None
+    best_ratio, best_comp = scores[0]
+    if best_ratio < 0.85:
+        return None
+    if len(scores) > 1 and scores[1][0] >= best_ratio - 0.15:
+        return None
+    return best_comp
+
+
+def _table_aware_stitch(
+    old_markdown: str,
+    new_markdown: str,
+    fingerprints: list[dict[str, Any]],
+    excluded_citation_ids: set[int] | None = None,
+) -> str:
+    """Table-aware citation recovery using semantic coordinate alignment."""
+    if not fingerprints:
+        return new_markdown
+
+    new_ids = {
+        int(a or b) for a, b in re.findall(r"\[{2}(\d+)\]{2}|\[(\d+)\]", new_markdown)
+    }
+    missing_ids = {f["id"] for f in fingerprints if f["id"] not in new_ids}
+    if excluded_citation_ids:
+        missing_ids -= excluded_citation_ids
+    if not missing_ids:
+        return new_markdown
+
+    old_citation_map = _build_semantic_citation_map(old_markdown)
+    if not old_citation_map:
+        return _stitch_citations(new_markdown, fingerprints)
+
+    new_grid = _parse_table_grid(new_markdown)
+    if len(new_grid) < 2:
+        return _stitch_citations(new_markdown, fingerprints)
+
+    new_header = new_grid[0]
+    new_competitor_names = [_normalize_table_name(c) for c in new_header[1:]]
+
+    known_dims = list({k[0] for k in old_citation_map})
+    known_comps = list({k[1] for k in old_citation_map})
+
+    dim_alias_map: dict[str, str] = {}
+    comp_alias_map: dict[str, str] = {}
+
+    for nd in set(new_competitor_names) - set(known_comps):
+        matched = _fuzzy_match_competitor(nd, known_comps)
+        if matched:
+            comp_alias_map[nd] = matched
+
+    for row in new_grid[1:]:
+        if not row:
+            continue
+        nd = _normalize_table_name(row[0])
+        if nd and nd not in known_dims and nd not in dim_alias_map:
+            matched = _fuzzy_match_dimension(nd, known_dims)
+            if matched:
+                dim_alias_map[nd] = matched
+
+    row_dimension_names: list[str] = []
+    for row in new_grid[1:]:
+        if row:
+            row_dimension_names.append(_normalize_table_name(row[0]))
+        else:
+            row_dimension_names.append("")
+
+    new_lines = new_markdown.split("\n")
+    data_row_counter = 0
+    result_lines: list[str] = []
+
+    for line in new_lines:
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            result_lines.append(line)
+            continue
+
+        if stripped.endswith("|"):
+            inner = stripped[1:-1]
+        else:
+            inner = stripped[1:]
+        cells = [c.strip() for c in inner.split("|")]
+
+        if not cells:
+            result_lines.append(line)
+            continue
+
+        if all(set(c) <= {"-", ":", " "} for c in cells):
+            result_lines.append(line)
+            continue
+
+        is_header = data_row_counter == 0
+        if is_header:
+            result_lines.append(line)
+            data_row_counter += 1
+            continue
+
+        if data_row_counter - 1 < len(row_dimension_names):
+            norm_dim = row_dimension_names[data_row_counter - 1]
+        else:
+            norm_dim = ""
+
+        resolved_dim = dim_alias_map.get(norm_dim, norm_dim)
+
+        restored_line = line
+        for col_idx in range(1, len(cells)):
+            if col_idx - 1 >= len(new_competitor_names):
+                break
+            norm_comp = new_competitor_names[col_idx - 1]
+            resolved_comp = comp_alias_map.get(norm_comp, norm_comp)
+
+            cell = cells[col_idx]
+            cell_citation_ids: list[int] = []
+
+            lookup_key = (resolved_dim, resolved_comp)
+            if lookup_key in old_citation_map:
+                cell_citation_ids = old_citation_map[lookup_key]
+
+            if resolved_dim != norm_dim:
+                alt_key = (norm_dim, resolved_comp)
+                if alt_key in old_citation_map:
+                    for cid in old_citation_map[alt_key]:
+                        if cid not in cell_citation_ids:
+                            cell_citation_ids.append(cid)
+
+            if resolved_comp != norm_comp:
+                alt_key = (resolved_dim, norm_comp)
+                if alt_key in old_citation_map:
+                    for cid in old_citation_map[alt_key]:
+                        if cid not in cell_citation_ids:
+                            cell_citation_ids.append(cid)
+
+            to_restore = [
+                cid
+                for cid in cell_citation_ids
+                if cid in missing_ids and f"[[{cid}]]" not in cell
+            ]
+
+            if to_restore:
+                citation_str = "".join(f" [[{cid}]]" for cid in to_restore)
+                cells[col_idx] = cell + citation_str
+                restored_line = "| " + " | ".join(cells) + " |"
+                for cid in to_restore:
+                    missing_ids.discard(cid)
+
+        result_lines.append(restored_line)
+        data_row_counter += 1
+
+    result = "\n".join(result_lines)
+
+    remaining = [f for f in fingerprints if f["id"] in missing_ids]
+    if remaining:
+        full_fingerprints = _extract_citation_fingerprints(old_markdown)
+        remaining_full = [f for f in full_fingerprints if f["id"] in missing_ids]
+        if remaining_full:
+            result = _stitch_citations(result, remaining_full)
+
+    return result
 
 
 def _safe_confidence(value: Any) -> float:
@@ -149,6 +396,25 @@ def _safe_confidence(value: Any) -> float:
     if confidence > 1:
         confidence = confidence / 100
     return min(max(confidence, 0.0), 1.0)
+
+
+def _cap_search_results(
+    results: list[dict[str, Any]], *, max_items: int = 10, max_chars: int = 6000
+) -> list[dict[str, Any]]:
+    trimmed = []
+    total = 0
+    for item in results[:max_items]:
+        slim = {
+            k: v[:300] if isinstance(v, str) and len(v) > 300 else v
+            for k, v in item.items()
+            if k != "raw_content"
+        }
+        dumped = json.dumps(slim, ensure_ascii=False)
+        if total + len(dumped) > max_chars and trimmed:
+            break
+        trimmed.append(slim)
+        total += len(dumped)
+    return trimmed
 
 
 def _parse_source_metadata(source: dict[str, Any]) -> dict[str, Any]:
@@ -193,8 +459,12 @@ def _format_reference_section(
 ) -> str:
     if not sources:
         return ""
+    sorted_sources = sorted(
+        [s for s in sources if isinstance(s.get("reference_id"), int)],
+        key=lambda s: s.get("reference_id", 0),
+    )
     lines = ["## 参考来源", ""]
-    for source in sources:
+    for source in sorted_sources:
         reference_id = source.get("reference_id")
         if not isinstance(reference_id, int):
             continue
@@ -250,10 +520,17 @@ def _normalize_inline_citations(
 def _ensure_reference_section(
     markdown_content: str, sources: list[dict[str, Any]]
 ) -> str:
-    # Ensure all sources have a reference_id for filtering and display
-    for i, s in enumerate(sources, 1):
-        if s.get("reference_id") is None:
-            s["reference_id"] = i
+    existing_ids = {
+        s.get("reference_id") for s in sources if isinstance(s.get("reference_id"), int)
+    }
+    next_id = max(existing_ids, default=0) + 1
+    working_sources: list[dict[str, Any]] = []
+    for s in sources:
+        ws = {**s}
+        if ws.get("reference_id") is None:
+            ws["reference_id"] = next_id
+            next_id += 1
+        working_sources.append(ws)
 
     stripped = markdown_content.strip()
     body_only = re.sub(
@@ -261,14 +538,16 @@ def _ensure_reference_section(
         "",
         stripped,
     ).strip()
-    cited_ids = {int(m) for m in re.findall(r"\[\[?(\d+)\]?\]", body_only)}
+    cited_ids = {
+        int(a or b) for a, b in re.findall(r"\[{2}(\d+)\]{2}|\[(\d+)\]", body_only)
+    }
     reference_section = _format_reference_section(
-        sources, cited_ids if cited_ids else None
+        working_sources, cited_ids if cited_ids else None
     )
     max_reference_id = max(
         (
             s.get("reference_id", 0)
-            for s in sources
+            for s in working_sources
             if isinstance(s.get("reference_id"), int)
         ),
         default=0,
@@ -284,6 +563,22 @@ def _ensure_reference_section(
     return f"{normalized}\n\n{reference_section}".strip()
 
 
+def _strip_code_fences(content: str) -> str:
+    content = content.strip()
+    if content.startswith("```"):
+        first_newline = content.find("\n")
+        if first_newline != -1:
+            content = content[first_newline + 1 :]
+        else:
+            content = content[3:]
+            if content.startswith("json") or content.startswith("JSON"):
+                content = content[4:]
+        content = content.strip()
+    if content.endswith("```"):
+        content = content[:-3].strip()
+    return content
+
+
 class ArkLLMProvider:
     name = "ark"
 
@@ -292,6 +587,10 @@ class ArkLLMProvider:
         if not settings.ark_api_key:
             raise ValueError("ARK_API_KEY is required when LLM_PROVIDER=ark.")
         self.model = settings.ark_endpoint_id or settings.ark_model
+        if not self.model:
+            raise ValueError(
+                "ARK_ENDPOINT_ID or ARK_MODEL is required when LLM_PROVIDER=ark."
+            )
         self.client = OpenAI(
             api_key=settings.ark_api_key,
             base_url=settings.ark_base_url,
@@ -387,9 +686,27 @@ JSON schema:
       "query_terms": ["关键词"]
     }}
   ],
+  "clarification_needed": <boolean>,
+  "clarifying_question": <string | null>,
+  "assumptions": ["继续分析时采用的假设"]
+}}
+
+示例1（需要反问）：
+{{
+  "explicit_focuses": [],
+  "inferred_focuses": [{{"key": "ai_capability", "label": "AI 能力", "priority": "medium", "evidence_expectation": "AI 功能对比", "query_terms": ["AI writing", "AI 编辑"]}}],
+  "clarification_needed": true,
+  "clarifying_question": "你最关注笔记软件的哪些方面？可选：本地存储与隐私、AI 能力、团队协作、价格、迁移成本、开放 API",
+  "assumptions": ["用户可能关注 AI 能力"]
+}}
+
+示例2（不需反问）：
+{{
+  "explicit_focuses": [{{"key": "local_storage_privacy", "label": "本地存储与隐私安全", "priority": "high", "evidence_expectation": "本地存储方案和数据加密政策", "query_terms": ["local-first notes", "本地存储 笔记"]}}],
+  "inferred_focuses": [],
   "clarification_needed": false,
   "clarifying_question": null,
-  "assumptions": ["继续分析时采用的假设"]
+  "assumptions": []
 }}
 """
         return self._json_chat(prompt, fallback)
@@ -398,11 +715,14 @@ JSON schema:
         self, requirement: dict[str, Any], target_search_results: list[dict[str, Any]]
     ) -> dict[str, Any]:
         fallback = self.fallback.understand_target(requirement, target_search_results)
+        truncated_results = _cap_search_results(
+            target_search_results, max_items=10, max_chars=6000
+        )
         prompt = f"""
 你是竞品分析系统中的目标理解 Agent。请基于需求理解和目标搜索结果，先形成目标对象画像，不要直接推荐竞品。
 
 需求理解：{json.dumps(requirement, ensure_ascii=False)}
-目标搜索结果：{json.dumps(target_search_results, ensure_ascii=False)}
+目标搜索结果：{json.dumps(truncated_results, ensure_ascii=False)}
 
 要求：
 - category 必须是具体赛道，例如"即时通讯与社交平台""移动支付与生活服务""企业协作办公平台"，不要输出"某某所在产品赛道"这类占位。
@@ -446,12 +766,15 @@ JSON schema:
         fallback = self.fallback.extract_competitors(
             requirement, target_understanding, search_results
         )
+        truncated_search = _cap_search_results(
+            search_results, max_items=12, max_chars=8000
+        )
         prompt = f"""
 你是竞品发现 Agent。请从真实搜索结果中提取与目标对象同赛道的具体产品/品牌/服务名称。
 
 需求理解：{json.dumps(requirement, ensure_ascii=False)}
 目标对象理解：{json.dumps(target_understanding, ensure_ascii=False)}
-竞品发现搜索结果：{json.dumps(search_results, ensure_ascii=False)}
+竞品发现搜索结果：{json.dumps(truncated_search, ensure_ascii=False)}
 
 严格要求：
 1. name 字段必须是一个具体的产品名、品牌名、App名或服务名。例如："Litter-Robot"、"CATLINK"、"小佩"、"Stripe"、"PayPal"。
@@ -504,8 +827,6 @@ JSON schema:
             if region not in {"global", "china"}:
                 region = "global"
             confidence = _safe_confidence(item.get("confidence"))
-            if confidence < 0.85:
-                continue
             cleaned.append(
                 {
                     "name": str(item.get("name", ""))[:80],
@@ -549,7 +870,7 @@ JSON schema:
                 china_count += 1
             if len(cleaned) >= 12:
                 break
-        return cleaned or fallback
+        return cleaned if cleaned else fallback
 
     def analyze_competitor(
         self, competitor: dict[str, Any], evidence: list[dict[str, Any]]
@@ -621,12 +942,15 @@ JSON schema:
   "overlap_dimensions": [
     {{
       "dimension": "产品定位|目标用户|核心功能|使用场景|商业模式 之一",
-      "detail": "具体说明在该维度上如何与目标产品重叠，需要引用证据中的具体内容。例如：'都专注于团队知识管理场景'或'目标用户都是 25-45 岁的专业知识工作者'"
+      "detail": "具体说明在该维度上如何与目标产品重叠"
     }}
-  ]，必须包含 2-4 个维度的具体重叠点，每个维度必须有具体说明，不能笼统"
+  ]
 }}
+注意：overlap_dimensions 必须包含 2-4 个维度的具体重叠点，每个维度必须有具体说明。
 """
         result = self._json_chat(prompt, fallback)
+        if result is fallback:
+            return fallback
         for key in [
             "target_users",
             "core_features_json",
@@ -638,8 +962,6 @@ JSON schema:
         ]:
             if isinstance(result.get(key), list):
                 result[key] = json.dumps(result[key], ensure_ascii=False)
-        if result is fallback:
-            return fallback
         return result
 
     def generate_report(
@@ -668,21 +990,25 @@ citation_bundle：{citation_bundle}{qa_guidance_section}
 
 报告要求：
 1. 标题应该准确反映分析对象和领域，不要用"通用产品"这种泛泛标题
-2. 每个竞品的分析必须覆盖 citation_bundle 中提供的全部 claims。claims 来自结构化分析结果，可能包含默认字段和用户关注点动态字段；不得自行新增 citation_bundle 之外的分析维度
-3. 不要使用"MVP Mock 数据显示"这类字样
-4. 禁止使用 Markdown 表格；不要输出任何 `| 来源标题 |` 这类表格
-5. 每个 claim 的关键结论必须引用该 claim 下 evidence 中提供的 source_reference_id。Markdown 原文写成 `[[1]](URL)`；禁止写成 `[1](URL)`
-6. 【重要】不同 claim 有各自不同的 evidence 和 source_reference_id。你必须为每个 claim 使用该 claim 自己的 evidence 中的 source_reference_id，严禁把同一个 source_reference_id 用于所有 claim。示例：产品定位 claim 的 evidence 包含 source_reference_id 3 和 4，定价策略 claim 的 evidence 包含 source_reference_id 7 和 8，则产品定位的结论应引用 [[3]] 或 [[4]]，定价策略的结论应引用 [[7]] 或 [[8]]，不得混用
-7. 每个关键结论应就近引用其支撑来源，不要在段落末尾集中引用
-8. 不要自行生成 `## 参考来源` 部分，系统会自动补充
-9. 如果某些信息不确定或缺失，如实写"证据中未涉及"，不要编造
+2. 开头必须有一段 2-3 句话的「市场综述」摘要，概括整体竞争格局和核心发现
+3. 报告的核心必须是一个 Markdown 对比表格，结构如下：
+   - 第一行为表头：`| 分析维度 | 竞品A | 竞品B | ... |`
+   - 每个分析维度占一行，第一列为维度名称（加粗），后续列为各竞品在该维度的核心结论
+   - 维度顺序：先排列基础维度（产品定位、核心功能、定价策略、优势、劣势或痛点、机会点），再排列用户特别关注的自定义维度（来自 citation_bundle 中 claim_type 以 focus: 开头的条目）
+   - 用户自定义维度的维度名应使用其 label 字段，并在后面标注"（重点关注）"
+4. 每个单元格的关键结论必须引用该 claim 下 evidence 中提供的 source_reference_id，格式为 `[[1]]`；禁止写成 `[1]` 或 `[1](URL)`
+5. 【重要】不同 claim 有各自不同的 evidence 和 source_reference_id。你必须为每个 claim 使用该 claim 自己的 evidence 中的 source_reference_id，严禁把同一个 source_reference_id 用于所有 claim
+6. 如果某些信息不确定或缺失，如实填入"证据中未涉及"，不要编造
+7. 单元格内容控制在 20-60 字，力求简练但信息完整；不要在单元格内写长段落；单元格内禁止使用换行符，如需分行请用「；」或「——」连接
+8. 在表格之后，可以为特别重要的维度或需要深入解释的结论补充简短的「深度解读」段落，每个段落不超过 3-4 句话
+9. 不要自行生成 `## 参考来源` 部分，系统会自动补充
 
 输出严格 JSON，不要输出 Markdown 代码块。
 JSON schema:
 {{
   "title": "报告标题（应包含具体产品或领域名称）",
   "summary": "报告摘要（2-3句话概括核心发现）",
-  "markdown_content": "完整 Markdown 报告"
+  "markdown_content": "完整 Markdown 报告（含摘要段落 + 对比表格 + 深度解读）"
 }}
 """
         result = self._json_chat(prompt, fallback)
@@ -700,15 +1026,25 @@ JSON schema:
         evidence: list[dict[str, Any]],
     ) -> dict[str, Any]:
         fallback = self.fallback.qa_check_report(report, analyses, evidence)
+        capped_analyses = analyses[:15]
+        capped_evidence = sorted(
+            evidence,
+            key=lambda e: float(
+                e.get("confidence", 0)
+                if isinstance(e.get("confidence"), (int, float))
+                else 0
+            ),
+            reverse=True,
+        )[:30]
         analyses_summary = "\n".join(
             f"- 竞品={a.get('competitor_name', '')}；定位={a.get('positioning', '')}；"
             f"定价={a.get('pricing_summary', '')}；证据数={len(_json_list(a.get('evidence_ids_json')))}"
-            for a in analyses
+            for a in capped_analyses
         )
         evidence_summary = "\n".join(
             f"- [{e.get('reference_id', '?')}] 竞品={e.get('related_product', '')}；维度={e.get('related_dimension', '')}；"
             f"来源类型={e.get('source_type', '')}；置信度={e.get('confidence', 0)}；摘要={e.get('summary', '')}"
-            for e in evidence
+            for e in capped_evidence
         )
         report_content = report.get("markdown_content", "")
         prompt = f"""
@@ -795,15 +1131,25 @@ JSON schema:
             report, analyses, evidence, open_issues
         )
         issues_json = json.dumps(open_issues, ensure_ascii=False)
+        capped_analyses = analyses[:15]
+        capped_evidence = sorted(
+            evidence,
+            key=lambda e: float(
+                e.get("confidence", 0)
+                if isinstance(e.get("confidence"), (int, float))
+                else 0
+            ),
+            reverse=True,
+        )[:30]
         analyses_summary = "\n".join(
             f"- 竞品={a.get('competitor_name', '')}；定位={a.get('positioning', '')}；"
             f"定价={a.get('pricing_summary', '')}；证据数={len(_json_list(a.get('evidence_ids_json')))}"
-            for a in analyses
+            for a in capped_analyses
         )
         evidence_summary = "\n".join(
             f"- [{e.get('reference_id', '?')}] 竞品={e.get('related_product', '')}；维度={e.get('related_dimension', '')}；"
             f"来源类型={e.get('source_type', '')}；置信度={e.get('confidence', 0)}；摘要={e.get('summary', '')}"
-            for e in evidence
+            for e in capped_evidence
         )
         prompt = f"""
 你是竞品分析系统的质检复核 Agent。请只检查以下历史未解决问题是否已经被本轮报告、分析和证据解决。
@@ -864,12 +1210,22 @@ JSON schema:
             if self.temperature is not None:
                 request["temperature"] = self.temperature
             response = self.client.chat.completions.create(**request)
-            return (response.choices[0].message.content or "").strip() or None
-        except Exception:
+            if not response.choices:
+                logger.warning("LLM returned empty choices")
+                return None
+            content = response.choices[0].message.content
+            if not content:
+                return None
+            return content.strip() or None
+        except Exception as exc:
             logger.exception("LLM chat call failed")
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            if status_code in (400, 401, 403, 404):
+                raise
             return None
 
     def _json_chat(self, prompt: str, fallback: dict[str, Any]) -> dict[str, Any]:
+        content = ""
         try:
             request: dict[str, Any] = {
                 "model": self.model,
@@ -884,15 +1240,22 @@ JSON schema:
             if self.temperature is not None:
                 request["temperature"] = self.temperature
             response = self.client.chat.completions.create(**request)
+            if not response.choices:
+                logger.warning("LLM returned empty choices, using fallback")
+                return fallback
             content = (response.choices[0].message.content or "").strip()
-            if content.startswith("```"):
-                content = content.split("\n", 1)[-1] if "\n" in content else content[3:]
-                if content.endswith("```"):
-                    content = content[:-3].strip()
+            content = _strip_code_fences(content)
             if not content:
                 logger.warning("LLM returned empty content, using fallback")
                 return fallback
-            parsed = json.loads(content)
+            try:
+                parsed = json.loads(content)
+            except json.JSONDecodeError:
+                json_match = re.search(r"\{[\s\S]*\}", content)
+                if json_match:
+                    parsed = json.loads(json_match.group(0))
+                else:
+                    raise
             if not isinstance(parsed, dict):
                 logger.warning("LLM returned non-dict JSON, using fallback")
                 return fallback
@@ -1032,10 +1395,10 @@ JSON schema:
         return self._json_chat(
             prompt,
             {
-                "intent": "report_edit",
-                "need_search": False,
-                "confidence": 0.5,
-                "reason": "默认按报告编辑处理",
+                "intent": "research_required",
+                "need_search": True,
+                "confidence": 0.3,
+                "reason": "LLM 未返回有效结果，默认按需搜索处理以避免降级",
                 "affected_sections": [],
                 "affected_competitors": [],
                 "new_competitors": [],
@@ -1156,7 +1519,14 @@ JSON schema:
         revision_plan: dict[str, Any],
         citation_bundle: list[dict[str, Any]],
         sources: list[dict[str, Any]],
+        removed_competitor_names: list[str] | None = None,
+        excluded_citation_ids: set[int] | None = None,
     ) -> dict[str, str]:
+        removed_clause = ""
+        if removed_competitor_names:
+            removed_names_text = "、".join(removed_competitor_names)
+            removed_clause = f"""
+12. 【硬性约束——删除竞品】以下竞品已被用户移除，你必须从表格中删除它们的整列及所有内容，正文中也不得再提及它们：{removed_names_text}。这些竞品列中的 [[N]] 引用也必须一并删除，不要保留任何指向已删除竞品的引用标记。"""
         fallback = {
             "title": current_report.get("title", "竞品分析报告"),
             "summary": current_report.get("summary", "已根据反馈更新报告。"),
@@ -1164,45 +1534,85 @@ JSON schema:
         }
 
         # Extract fingerprints from current report
-        fingerprints = _extract_citation_fingerprints(
-            current_report.get("markdown_content", "")
-        )
+        old_markdown = current_report.get("markdown_content", "")
+        fingerprints = _extract_citation_fingerprints(old_markdown)
+
+        citation_bundle_json = json.dumps(citation_bundle, ensure_ascii=False)
+        if len(citation_bundle_json) > 8000:
+            per_competitor = {}
+            for item in citation_bundle:
+                name = item.get("competitor_name", "unknown")
+                per_competitor.setdefault(name, []).append(item)
+            budget = 7500
+            trimmed_chunks: list[str] = []
+            used = 0
+            for name, items in per_competitor.items():
+                chunk_items: list[dict] = []
+                for item in items:
+                    item_json = json.dumps(item, ensure_ascii=False)
+                    candidate = ("," + item_json) if chunk_items else item_json
+                    if used + len(candidate) + 2 > budget:
+                        break
+                    chunk_items.append(item)
+                    used += len(candidate)
+                if chunk_items:
+                    trimmed_chunks.append(json.dumps(chunk_items, ensure_ascii=False))
+            citation_bundle_json = "[" + ",".join(trimmed_chunks) + "]"
+            if len(citation_bundle_json) > 8000:
+                safe_items: list[str] = []
+                total = 1
+                for item in citation_bundle:
+                    item_json = json.dumps(item, ensure_ascii=False)
+                    if total + len(item_json) + 2 > 7990:
+                        break
+                    safe_items.append(item_json)
+                    total += len(item_json) + 1
+                citation_bundle_json = "[" + ",".join(safe_items) + "]"
+
+        removed_names_text = ""
+        if removed_competitor_names:
+            removed_names_text = json.dumps(
+                removed_competitor_names, ensure_ascii=False
+            )
 
         prompt = f"""你是报告撰写 Agent。请严格根据修订计划改写当前 Markdown 报告。
 
 当前报告：
-{current_report.get("markdown_content", "")[:9000]}
+{old_markdown[:9000]}
 
 修订计划：
 {json.dumps(revision_plan, ensure_ascii=False)}
 
-citation_bundle：
-{json.dumps(citation_bundle, ensure_ascii=False)[:8000]}
+ citation_bundle：
+{citation_bundle_json}
 
-要求：
-1. 结构需要改就改；不需要改则只局部改。
-2. 每个新增或修改后的事实性结论必须就近引用，格式必须是 `[[数字]](URL)`。
-3. 不要减少原有有效引用；保留仍然成立的旧引用。
-4. 如果 citation_bundle 里没有证据，写"证据中未涉及"，不要编造。
-5. 不要自行生成参考来源部分，系统会自动补充。
-6. 如果修订计划要求新增竞品章节（sections_to_change.change_type==add），必须在正文中新增独立 ## 二级标题章节，不得只在参考来源中体现。
-7. 如果修订计划要求删除竞品章节（sections_to_change.change_type==delete），必须完全移除该竞品的 ## 章节及其所有子内容，不得保留任何痕迹。
-8. 更新"分析概览"中的"分析竞品数量"，需与正文中实际 ## 竞品章节数量一致。
-9. 禁止同一个竞品出现多次同名 ## 章节。
-10.【最重要】citation_bundle 中的每一个竞品（competitor_name）都必须在正文中拥有独立的 ## 二级标题章节，一个都不能遗漏。如果 citation_bundle 里有 N 个竞品，正文就必须有 N 个 ## 竞品章节。这是硬性要求，违反此规则视为任务失败。
+报告修订要求：
+1. 【最重要】必须维持或更新当前报告的「动态对比表格」结构（列为竞品，行为维度），严禁退回传统的 ## 竞品二级标题章节模式。
+2. 开头必须保留或更新 2-3 句话的「市场综述」摘要，概括整体竞争格局和核心发现。
+3. 如果修订计划要求新增竞品（sections_to_change.change_type==add），请在表格中增加对应的列。
+4. 如果修订计划要求删除竞品（sections_to_change.change_type==delete），请从表格中移除对应的列及其所有内容。
+5. 如果修订计划涉及新的分析维度，请在表格中增加对应的行；维度名使用其 label 字段，用户特别关注的维度标注"（重点关注）"。
+6. 每个单元格的关键结论必须引用该条目下证据提供的 source_reference_id，格式为 `[[1]]`；严禁写成 `[1]` 或 `[1](URL)`。
+7. 【引用保留——硬性要求】对于未被修订计划涉及的旧结论和旧单元格，必须原封不动地保留其 `[[n]]` 引用标记。即使你微调了措辞，也绝对不得丢弃原有的引用编号。引用是报告可信度的唯一来源，丢失引用等同于数据造假。
+8. 如果某些信息不确定或缺失，如实填入"证据中未涉及"，不要编造。
+9. 单元格内容控制在 20-60 字，单元格内禁止使用换行符，如需分行请用「；」或「——」连接。
+10. 在表格之后，保留或更新原有的「深度解读」段落，每段不超过 3-4 句话。
+11. 不要自行生成 `## 参考来源` 部分，系统会自动补充。
+{removed_clause}
 
 输出严格 JSON：
-{{"title": "标题", "summary": "摘要", "markdown_content": "完整 Markdown 报告"}}"""
+{{"title": "报告标题（应包含具体产品或领域名称）", "summary": "修订摘要（2-3句话概括改动点和核心发现）", "markdown_content": "修订后的完整 Markdown 报告（含摘要段落 + 对比表格 + 深度解读）"}}"""
         result = self._json_chat(prompt, fallback)
 
-        # Stitch back missing citations
-        result["markdown_content"] = _stitch_citations(
-            result.get("markdown_content", ""), fingerprints
+        new_markdown = result.get("markdown_content", "")
+        new_markdown = _table_aware_stitch(
+            old_markdown,
+            new_markdown,
+            fingerprints,
+            excluded_citation_ids=excluded_citation_ids,
         )
 
-        result["markdown_content"] = _ensure_reference_section(
-            result.get("markdown_content", ""), sources
-        )
+        result["markdown_content"] = _ensure_reference_section(new_markdown, sources)
         return result
 
     def generate_revision_summary(

@@ -96,7 +96,7 @@ export default function QAResultsPanel({ runId }: Props) {
         <span>{results.length} 轮</span>
       </div>
       <div className="qa-results-panel">
-        <QACurrentRound result={latest} isLatest={true} />
+        <QACurrentRound result={latest} />
         {historical.length > 0 && (
           <QAHistoricalRounds rounds={historical} />
         )}
@@ -109,14 +109,19 @@ function dedupeQAResultsByIteration(results: QAResultType[]) {
   const byIteration = new Map<number, QAResultType>();
   results.forEach((result) => {
     const existing = byIteration.get(result.iteration);
-    if (!existing || new Date(result.created_at).getTime() >= new Date(existing.created_at).getTime()) {
+    if (!existing) {
       byIteration.set(result.iteration, result);
+    } else {
+      const existingTime = new Date(existing.created_at).getTime();
+      if (new Date(result.created_at).getTime() >= existingTime) {
+        byIteration.set(result.iteration, result);
+      }
     }
   });
   return Array.from(byIteration.values());
 }
 
-function QACurrentRound({ result }: { result: QAResultType; isLatest: boolean }) {
+function QACurrentRound({ result }: { result: QAResultType }) {
   const scorePercent = Math.round(result.overall_score * 100);
   const scoreClass = result.overall_score >= 0.7 ? 'pass' : 'fail';
   const hasRetryQueries = result.decision === 'retry_collection' && (result.retry_queries ?? []).length > 0;
@@ -130,6 +135,13 @@ function QACurrentRound({ result }: { result: QAResultType; isLatest: boolean })
         </div>
         <div className={`qa-score-badge ${scoreClass}`}>{scorePercent}分</div>
       </div>
+
+      {result.quality_warning && (
+        <div className="qa-quality-warning-banner">
+          <AlertTriangle size={14} />
+          <span>报告质量较低（{scorePercent}分），系统已达到重试上限自动通过，建议关注上述问题。</span>
+        </div>
+      )}
 
       <div className="qa-score-bar-track">
         <div className={`qa-score-bar-fill ${scoreClass}`} style={{ width: `${scorePercent}%` }} />
@@ -252,7 +264,7 @@ function QAHistoricalRounds({ rounds }: { rounds: QAResultType[] }) {
   );
 }
 
-function DecisionBadge({ decision, hasRetryQueries, queries }: { decision: string; hasRetryQueries: boolean; queries: QARetryQuery[] }) {
+function DecisionBadge({ decision, hasRetryQueries, queries }: { decision: string; hasRetryQueries: boolean; queries?: QARetryQuery[] }) {
   const [showQueries, setShowQueries] = useState(false);
 
   return (
@@ -266,9 +278,9 @@ function DecisionBadge({ decision, hasRetryQueries, queries }: { decision: strin
         {decisionLabels[decision] ?? decision}
         {hasRetryQueries ? <Search size={12} style={{ marginLeft: 2 }} /> : null}
       </span>
-      {showQueries && (
+      {showQueries && queries ? (
         <RetryQueriesModal queries={queries} onClose={() => setShowQueries(false)} />
-      )}
+      ) : null}
     </>
   );
 }
@@ -290,6 +302,7 @@ function QAIssueItem({ issue }: { issue: QAIssue }) {
 }
 
 function RetryQueriesModal({ queries, onClose }: { queries: QARetryQuery[]; onClose: () => void }) {
+  if (!queries?.length) return null;
   return (
     <div className="retry-queries-overlay" onClick={onClose}>
       <div className="retry-queries-modal" onClick={(e) => e.stopPropagation()}>

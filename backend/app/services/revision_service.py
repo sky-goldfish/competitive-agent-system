@@ -15,19 +15,21 @@ from app.db.models import (
     Revision,
     RevisionTrace,
     Run,
+    Source,
 )
 from app.db.session import SessionLocal
 from app.services.chat_service import (
     ChatError,
+    _active_focus_items,
     _analysis_list,
     _analyze_revision_competitors,
-    _append_new_source_citations,
     _commit_with_retry,
     _competitor_to_dict,
     _ensure_analyses_for_all_selected,
     _ensure_revision_competitors,
     _evidence_list,
     _execute_revision_search_plan,
+    _extract_ref_id,
     _get_run_context,
     _human_report_version,
     _protect_inline_citations,
@@ -35,6 +37,7 @@ from app.services.chat_service import (
     _source_list,
     _source_to_dict,
 )
+from app.services.run_service import _set_run_status
 
 logger = logging.getLogger(__name__)
 from app.providers.llm.factory import get_llm_provider
@@ -111,7 +114,7 @@ def execute_revision_run(revision_id: str) -> None:
         # Sync Run status to 'revising'
         run = db.get(Run, revision.run_id)
         if run:
-            run.status = "revising"
+            _set_run_status(run, "revising")
             run.active_revision_id = revision.id
 
         _commit_with_retry(db)
@@ -131,7 +134,8 @@ def execute_revision_run(revision_id: str) -> None:
             "iteration": ctx["report"].iteration,
         }
         competitor_list = [_competitor_to_dict(item) for item in ctx["competitors"]]
-        source_list = _source_list(db, revision.run_id)
+        selected_comp_ids_early = {c.id for c in ctx["competitors"] if c.selected}
+        source_list = _source_list(db, revision.run_id, selected_comp_ids_early)
 
         intent_result = _run_revision_stage(
             db,
@@ -187,6 +191,8 @@ def execute_revision_run(revision_id: str) -> None:
         activated_competitors = competitor_result.get("activated", [])
         removed_competitors = competitor_result.get("removed", [])
         affected_competitors = competitor_result.get("affected", [])
+        ctx["removed_competitor_names"] = [c.name for c in removed_competitors]
+        ctx["competitors_original"] = list(ctx["competitors"])
 
         if added_competitors or activated_competitors or removed_competitors:
             # Fresh fetch: re-query from DB to ensure all IDs are populated
@@ -267,7 +273,12 @@ def execute_revision_run(revision_id: str) -> None:
                 "revision_competitor_analysis",
                 {"competitors": [item.name for item in to_analyze]},
                 lambda: _analyze_revision_competitors(
-                    db, revision.run_id, to_analyze, llm
+                    db,
+                    revision.run_id,
+                    to_analyze,
+                    llm,
+                    focus_items=_active_focus_items(ctx.get("requirement", {})),
+                    qa_feedback=ctx.get("qa_feedback"),
                 ),
             )
             workflow_steps.append(
@@ -284,6 +295,9 @@ def execute_revision_run(revision_id: str) -> None:
 
         analysis_list = _analysis_list(db, revision.run_id, evidence_list=evidence_list)
         new_source_list = [_source_to_dict(item) for item in new_sources]
+
+        selected_comp_ids = {c.id for c in ctx["competitors"] if c.selected}
+        source_list = _source_list(db, revision.run_id, selected_comp_ids)
 
         revision_plan = _run_revision_stage(
             db,
@@ -331,13 +345,33 @@ def execute_revision_run(revision_id: str) -> None:
                 revision_plan,
                 citation_bundle,
                 source_list,
+                removed_competitor_names=ctx.get("removed_competitor_names"),
+                excluded_citation_ids=ctx.get("excluded_citation_ids"),
             ),
         )
 
+        removed_citation_ids: set[str] = set()
+        removed_names = ctx.get("removed_competitor_names") or []
+        if removed_names:
+            removed_comp_ids = {
+                c.id
+                for c in ctx.get("competitors_original", [])
+                if c.name in removed_names
+            }
+            for src in db.query(Source).filter(Source.run_id == revision.run_id).all():
+                if src.competitor_id in removed_comp_ids:
+                    ref_id = _extract_ref_id(src.metadata_json)
+                    if ref_id:
+                        removed_citation_ids.add(str(ref_id))
+        ctx["excluded_citation_ids"] = {
+            int(x) for x in removed_citation_ids if x.isdigit()
+        }
+
         markdown_content = _protect_inline_citations(
-            ctx["report"].markdown_content, new_report.get("markdown_content", "")
+            ctx["report"].markdown_content,
+            new_report.get("markdown_content", ""),
+            excluded_ids=removed_citation_ids,
         )
-        markdown_content = _append_new_source_citations(markdown_content, new_sources)
 
         new_report["markdown_content"] = markdown_content
 
@@ -345,8 +379,9 @@ def execute_revision_run(revision_id: str) -> None:
             db.query(func.max(Report.iteration))
             .filter(Report.run_id == revision.run_id)
             .scalar()
-            or 0
         )
+        if max_iteration is None:
+            max_iteration = -1
         # Save competitor names snapshot
         selected_names = [c.name for c in ctx["competitors"] if c.selected]
 
@@ -371,8 +406,9 @@ def execute_revision_run(revision_id: str) -> None:
                 revision.user_message,
                 revision_plan,
                 {
-                    "title": new_report_record.title,
-                    "summary": new_report_record.summary,
+                    "title": new_report_record.title or "",
+                    "summary": new_report_record.summary or "",
+                    "markdown_content": new_report_record.markdown_content or "",
                 },
             ),
         )
@@ -403,7 +439,7 @@ def execute_revision_run(revision_id: str) -> None:
             },
         }
 
-        revision.intent = result.get("intent")
+        revision.intent = result.get("intent") or "report_edit"
         revision.status = "completed"
         revision.target_report_iteration = result.get("report_version")
         revision.summary = result.get("revision_summary") or result.get("reply")
@@ -412,7 +448,7 @@ def execute_revision_run(revision_id: str) -> None:
         # Restore Run status to 'completed'
         run = db.get(Run, revision.run_id)
         if run:
-            run.status = "completed"
+            _set_run_status(run, "completed")
             run.active_revision_id = None
 
         _update_processing_message(db, revision, result)
@@ -452,7 +488,7 @@ def execute_revision_run(revision_id: str) -> None:
             # Restore Run status to 'completed' even on failure
             run = db.get(Run, revision.run_id)
             if run:
-                run.status = "completed"
+                _set_run_status(run, "completed")
                 run.active_revision_id = None
 
             _close_running_revision_traces(db, revision_id, str(exc))

@@ -2,7 +2,7 @@ import type { Analysis, ChatMessage, ChatResponse, CitationBundleCompetitor, Cit
 
 const API_BASE = '/api';
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
+async function request<T>(path: string, options?: RequestInit & { signal?: AbortSignal }): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     headers: {
       'Content-Type': 'application/json',
@@ -15,7 +15,11 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     throw new Error(detail || `Request failed: ${response.status}`);
   }
   if (response.status === 204) return undefined as T;
-  return response.json() as Promise<T>;
+  try {
+    return await response.json() as Promise<T>;
+  } catch {
+    throw new Error('Invalid JSON response from server');
+  }
 }
 
 export function createRun(userRequirement: string): Promise<Run> {
@@ -81,8 +85,9 @@ export function getReportCitations(runId: string, iteration?: number): Promise<C
   return request<CitationMapItem[]>(`/runs/${runId}/report/citations${params}`);
 }
 
-export function getReportCitationBundle(runId: string): Promise<CitationBundleCompetitor[]> {
-  return request<CitationBundleCompetitor[]>(`/runs/${runId}/report/citation-bundle`);
+export function getReportCitationBundle(runId: string, iteration?: number): Promise<CitationBundleCompetitor[]> {
+  const params = iteration != null ? `?iteration=${iteration}` : '';
+  return request<CitationBundleCompetitor[]>(`/runs/${runId}/report/citation-bundle${params}`);
 }
 
 export function getEvidence(runId: string): Promise<Evidence[]> {
@@ -104,12 +109,12 @@ export function sendChatMessage(runId: string, message: string): Promise<ChatRes
   });
 }
 
-export function getChatMessages(runId: string): Promise<ChatMessage[]> {
-  return request<ChatMessage[]>(`/runs/${runId}/chat`);
+export function getChatMessages(runId: string, signal?: AbortSignal): Promise<ChatMessage[]> {
+  return request<ChatMessage[]>(`/runs/${runId}/chat`, { signal });
 }
 
-export function getRevisions(runId: string): Promise<Revision[]> {
-  return request<Revision[]>(`/runs/${runId}/revisions`);
+export function getRevisions(runId: string, signal?: AbortSignal): Promise<Revision[]> {
+  return request<Revision[]>(`/runs/${runId}/revisions`, { signal });
 }
 
 export function getRevisionTimeline(revisionId: string): Promise<RevisionTrace[]> {
