@@ -160,5 +160,6 @@ def _summarize_output(stage: str, output: dict[str, Any]) -> dict[str, Any]:
             "decision": qa.get("decision"),
             "issue_count": len(qa.get("issues", [])),
             "iteration": qa.get("iteration"),
+            "check_phase": qa.get("check_phase"),
         }
     return {"stage": stage, "status": "completed"}

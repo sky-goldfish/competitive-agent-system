@@ -44,11 +44,29 @@ const slotLabels: Record<string, string> = {
   relationship_evidence: '竞争关系',
 };
 
-function roundLabel(iteration: number): string {
-  const retryCount = iteration - 1;
-  return retryCount > 0
-    ? `第 ${iteration} 轮质检（第 ${retryCount} 次重试）`
-    : `第 ${iteration} 轮质检`;
+function roundLabel(iteration: number, checkPhase: string = 'full_check'): string {
+  if (checkPhase === 'issue_verification') {
+    return `复核-${iteration}`;
+  }
+  return `第 ${iteration} 轮全面检查`;
+}
+
+function groupQAResults(results: QAResultType[]) {
+  const fullChecks = results.filter(r => r.check_phase === 'full_check');
+  const verifications = results.filter(r => r.check_phase === 'issue_verification');
+
+  const groups: { round: QAResultType; verifications: QAResultType[] }[] = [];
+
+  for (let i = 0; i < fullChecks.length; i++) {
+    const round = fullChecks[i];
+    const nextFullCheckIteration = fullChecks[i + 1]?.iteration ?? Infinity;
+    const roundVerifications = verifications.filter(
+      v => v.iteration > round.iteration && v.iteration < nextFullCheckIteration
+    );
+    groups.push({ round, verifications: roundVerifications });
+  }
+
+  return groups;
 }
 
 type Props = {
@@ -84,19 +102,21 @@ export default function QAResultsPanel({ runId }: Props) {
     </section>
   );
 
-  const dedupedResults = dedupeQAResultsByIteration(results);
-  const sorted = [...dedupedResults].sort((a, b) => b.iteration - a.iteration);
-  const latest = sorted[0];
-  const historical = sorted.slice(1);
+  const groups = groupQAResults(results);
+  const fullCheckCount = groups.length;
+  const latestGroup = groups[groups.length - 1];
+  const historical = groups.slice(0, -1);
 
   return (
     <section className="panel">
       <div className="panel-header">
         <h2>质量检查</h2>
-        <span>{results.length} 轮</span>
+        <span>{fullCheckCount} 轮</span>
       </div>
       <div className="qa-results-panel">
-        <QACurrentRound result={latest} />
+        {latestGroup ? (
+          <QACurrentRound group={latestGroup} />
+        ) : null}
         {historical.length > 0 && (
           <QAHistoricalRounds rounds={historical} />
         )}
@@ -105,23 +125,8 @@ export default function QAResultsPanel({ runId }: Props) {
   );
 }
 
-function dedupeQAResultsByIteration(results: QAResultType[]) {
-  const byIteration = new Map<number, QAResultType>();
-  results.forEach((result) => {
-    const existing = byIteration.get(result.iteration);
-    if (!existing) {
-      byIteration.set(result.iteration, result);
-    } else {
-      const existingTime = new Date(existing.created_at).getTime();
-      if (new Date(result.created_at).getTime() >= existingTime) {
-        byIteration.set(result.iteration, result);
-      }
-    }
-  });
-  return Array.from(byIteration.values());
-}
-
-function QACurrentRound({ result }: { result: QAResultType }) {
+function QACurrentRound({ group }: { group: { round: QAResultType; verifications: QAResultType[] } }) {
+  const result = group.round;
   const scorePercent = Math.round(result.overall_score * 100);
   const scoreClass = result.overall_score >= 0.7 ? 'pass' : 'fail';
   const hasRetryQueries = result.decision === 'retry_collection' && (result.retry_queries ?? []).length > 0;
@@ -131,7 +136,7 @@ function QACurrentRound({ result }: { result: QAResultType }) {
       <div className="qa-iteration-header">
         <div className="qa-iteration-title">
           {result.decision === 'pass' ? <ShieldCheck size={16} /> : <AlertTriangle size={16} />}
-          <strong>{roundLabel(result.iteration)}</strong>
+          <strong>{roundLabel(result.iteration, 'full_check')}</strong>
         </div>
         <div className={`qa-score-badge ${scoreClass}`}>{scorePercent}分</div>
       </div>
@@ -220,11 +225,38 @@ function QACurrentRound({ result }: { result: QAResultType }) {
           <p className="qa-retry-instructions">{result.retry_instructions}</p>
         </div>
       )}
+
+      {group.verifications.length > 0 && (
+        <div className="qa-section">
+          <div className="qa-section-header">
+            <History size={13} /> 专项复核（{group.verifications.length} 次）
+          </div>
+          {group.verifications.map((v, i) => {
+            const scorePercent = Math.round(v.overall_score * 100);
+            const scoreClass = v.overall_score >= 0.7 ? 'pass' : 'fail';
+            return (
+              <div key={v.id} className="qa-verification-item">
+                <div className="qa-verification-header">
+                  <span className="qa-verification-label">复核-{i + 1}</span>
+                  <span className={`qa-score-badge small ${scoreClass}`}>{scorePercent}分</span>
+                  <span className={`qa-decision qa-decision-${v.decision}`}>
+                    {v.decision === 'pass' ? <CheckCircle2 size={12} /> : <RefreshCw size={12} />}
+                    {decisionLabels[v.decision] ?? v.decision}
+                  </span>
+                </div>
+                {v.retry_instructions && (
+                  <p className="qa-verification-instructions">{v.retry_instructions}</p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
 
-function QAHistoricalRounds({ rounds }: { rounds: QAResultType[] }) {
+function QAHistoricalRounds({ rounds }: { rounds: { round: QAResultType; verifications: QAResultType[] }[] }) {
   const [expanded, setExpanded] = useState(false);
 
   return (
@@ -240,7 +272,7 @@ function QAHistoricalRounds({ rounds }: { rounds: QAResultType[] }) {
       </button>
       {expanded && (
         <div className="qa-historical-list">
-          {rounds.map((result) => {
+          {rounds.map(({ round: result, verifications }) => {
             const scorePercent = Math.round(result.overall_score * 100);
             const scoreClass = result.overall_score >= 0.7 ? 'pass' : 'fail';
             const hasRetryQueries = result.decision === 'retry_collection' && (result.retry_queries ?? []).length > 0;
@@ -248,12 +280,21 @@ function QAHistoricalRounds({ rounds }: { rounds: QAResultType[] }) {
             return (
               <div key={result.id} className={`qa-historical-card ${scoreClass}`}>
                 <div className="qa-historical-header">
-                  <span className="qa-historical-label">{roundLabel(result.iteration)}</span>
+                  <span className="qa-historical-label">{roundLabel(result.iteration, 'full_check')}</span>
                   <span className={`qa-score-badge ${scoreClass}`}>{scorePercent}分</span>
                   <DecisionBadge decision={result.decision} hasRetryQueries={hasRetryQueries} queries={result.retry_queries} />
                 </div>
                 {result.retry_instructions && (
                   <p className="qa-historical-instructions">{result.retry_instructions}</p>
+                )}
+                {verifications.length > 0 && (
+                  <div className="qa-historical-verifications">
+                    {verifications.map((v, i) => (
+                      <span key={v.id} className={`qa-historical-vchip qa-decision-${v.decision}`}>
+                        复核-{i + 1} {v.decision === 'pass' ? '✓' : '↺'}
+                      </span>
+                    ))}
+                  </div>
                 )}
               </div>
             );

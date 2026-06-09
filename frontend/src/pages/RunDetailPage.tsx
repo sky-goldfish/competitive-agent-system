@@ -140,9 +140,80 @@ function isStageVisible(status: string) {
   return status !== 'pending';
 }
 
-function getStageDetail(stage: string, run: Run, counts: { competitors: number; selectedCompetitors: number; sources: number; evidence: number; hasReport: boolean }) {
-  const iterationPrefix = run.feedback_loop_count && run.feedback_loop_count > 0 ? `[第 ${run.feedback_loop_count + 1} 轮分析] ` : '';
-  
+function _parseCheckPhase(trace: Trace): string | undefined {
+  if (!trace.output_json) return undefined;
+  try {
+    const data = JSON.parse(trace.output_json) as Record<string, unknown>;
+    const phase = data.check_phase;
+    return typeof phase === 'string' ? phase : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+interface StageInstance {
+  stage: string;
+  status: string;
+  round: number;
+  key: string;
+  checkPhase?: string;
+  verifyIdx?: number;  // 专项复核序号，仅 issue_verification 时有值
+}
+
+function buildStageInstances(traces: Trace[], run: Run): StageInstance[] {
+  const mainTraces = traces
+    .filter(t => stageOrder.includes(t.stage))
+    .filter(t => t.status === 'completed' || t.status === 'running' || t.status === 'failed')
+    .sort((a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime());
+
+  const instances: StageInstance[] = [];
+  const stageOccurrence: Record<string, number> = {};
+  let qcRound = 1;       // 全面检查轮次
+  let verifyIdx = 0;     // 同一轮内专项复核序号
+
+  for (const trace of mainTraces) {
+    const stage = trace.stage;
+    const isReportGeneration = stage === 'report_generation';
+    const checkPhase = stage === 'quality_check' ? _parseCheckPhase(trace) : undefined;
+    const isFullCheck = checkPhase === 'full_check';
+    const isIssueVerification = checkPhase === 'issue_verification';
+
+    let round: number;
+    let vIdx: number | undefined;
+
+    if (isReportGeneration) {
+      round = 0;
+    } else if (isFullCheck) {
+      round = qcRound;
+      qcRound++;
+      verifyIdx = 0;
+    } else if (isIssueVerification) {
+      verifyIdx++;
+      round = qcRound;
+      vIdx = verifyIdx;
+    } else {
+      round = qcRound;
+    }
+
+    stageOccurrence[stage] = (stageOccurrence[stage] || 0) + 1;
+
+    const status = trace.status === 'running'
+      ? qcRound > 1 && !isReportGeneration ? 'completed-retry' : 'running'
+      : trace.status === 'failed' ? 'failed'
+      : 'completed';
+
+    instances.push({ stage, status, round, key: `${stage}-${stageOccurrence[stage]}`, checkPhase, verifyIdx: vIdx });
+  }
+
+  if (instances.length === 0 && run) {
+    instances.push({ stage: 'requirement_understanding', status: 'running' as const, round: 1, key: 'requirement_understanding-1' });
+  }
+
+  return instances;
+}
+
+function getStageDetail(stage: string, run: Run, counts: { competitors: number; selectedCompetitors: number; sources: number; evidence: number; hasReport: boolean }, round: number = 0) {
+
   if (stage === 'requirement_understanding') {
     return run.requirement_summary ? `已形成需求摘要：${run.requirement_summary}` : '正在提炼目标产品、用户场景和分析维度。';
   }
@@ -157,18 +228,18 @@ function getStageDetail(stage: string, run: Run, counts: { competitors: number; 
     return counts.selectedCompetitors > 0 ? `已锁定 ${counts.selectedCompetitors} 个竞品，后续资料采集会围绕这些对象展开。` : '等待候选竞品生成后确认。';
   }
   if (stage === 'material_collection') {
-    return counts.sources > 0 ? `${iterationPrefix}已采集 ${counts.sources} 条来源，并抽取 ${counts.evidence} 条证据。` : '正在按竞品和分析维度采集公开资料。';
+    return counts.sources > 0 ? `已采集 ${counts.sources} 条来源，并抽取 ${counts.evidence} 条证据。` : '正在按竞品和分析维度采集公开资料。';
   }
   if (stage === 'structured_analysis') {
-    return counts.evidence > 0 ? `${iterationPrefix}基于 ${counts.evidence} 条证据整理定位、功能、价格、优劣势和机会点。` : '正在把采集资料转换为结构化分析。';
+    return counts.evidence > 0 ? `基于 ${counts.evidence} 条证据整理定位、功能、价格、优劣势和机会点。` : '正在把采集资料转换为结构化分析。';
   }
   if (stage === 'quality_check') {
     return counts.evidence > 0
-      ? `${iterationPrefix}已对结构化分析进行多维度检查。`
+      ? `已对结构化分析进行多维度检查。`
       : '结构化分析完成后会进入质量检查。';
   }
   if (stage === 'report_generation') {
-    return counts.hasReport ? `${iterationPrefix}Markdown 报告已生成，可在右侧查看、复制或下载。` : '正在生成带来源引用的 Markdown 报告。';
+    return counts.hasReport ? `Markdown 报告已生成，可在右侧查看、复制或下载。` : '正在生成带来源引用的 Markdown 报告。';
   }
   return stageDescriptions[stage] ?? '正在执行当前分析节点。';
 }
@@ -214,15 +285,15 @@ function getReportStatusLabel(run: Run | undefined, report: { iteration: number 
 
 function ReportDiffBanner({ current, previous }: { current: AppReport; previous?: AppReport }) {
   if (!previous) return null;
-  
+
   const currentNames = current.competitor_names ?? [];
   const previousNames = previous.competitor_names ?? [];
-  
+
   const added = currentNames.filter(n => !previousNames.includes(n));
   const removed = previousNames.filter(n => !currentNames.includes(n));
-  
+
   if (added.length === 0 && removed.length === 0) return null;
-  
+
   return (
     <div className="report-diff-banner">
       <div className="diff-stats">
@@ -592,16 +663,14 @@ export default function RunDetailPage() {
   }), [competitors.length, evidence.length, report, sources.length]);
   const stages = useMemo(() => {
     if (!run) return [];
+    const instances = buildStageInstances(traces, run);
     if (completed) {
-      return stageOrder
-        .filter((stage) => traces.some((trace) => normalizeStage(trace.stage) === stage && trace.status === 'completed') || stage === 'report_generation')
-        .map((stage) => ({ stage, status: 'completed' }));
+      return instances.map(i => ({ stage: i.stage, status: 'completed' as const, round: i.round, key: i.key, checkPhase: i.checkPhase, verifyIdx: i.verifyIdx }));
     }
-    const visibleStages = stageOrder
-      .map((stage) => ({ stage, status: getStageStatus(stage, run, traces, reportVersions) }))
-      .filter(({ status }) => isStageVisible(status));
-    return visibleStages.length > 0 ? visibleStages : [{ stage: 'requirement_understanding', status: 'running' }];
-  }, [completed, run, traces, reportVersions]);
+    return instances.length > 0
+      ? instances.map(i => ({ stage: i.stage, status: i.status, round: i.round, key: i.key, checkPhase: i.checkPhase, verifyIdx: i.verifyIdx }))
+      : [{ stage: 'requirement_understanding', status: 'running' as const, round: 1, key: 'requirement_understanding-1', checkPhase: undefined as string | undefined, verifyIdx: undefined as number | undefined }];
+  }, [completed, run, traces]);
   const revealedStages = stages.slice(0, ui.revealedStageCount);
   const nextStage = stages[ui.revealedStageCount];
 
@@ -704,18 +773,28 @@ export default function RunDetailPage() {
                   <CheckCircle2 size={16} />
                   <strong>分析过程</strong>
                   <span className="stage-collapse-summary">
-                    {revealedStages.map(({ stage, status }) => status === 'completed' ? `${stageLabels[stage] ?? stage} ✓` : `...`).join(' → ')}
+                    {(() => {
+                      const seen = new Set<string>();
+                      return revealedStages
+                        .filter(s => s.status === 'completed')
+                        .filter(s => !seen.has(s.stage) && seen.add(s.stage))
+                        .map(s => `${stageLabels[s.stage] ?? s.stage} ✓`)
+                        .join(' → ');
+                    })()}
                   </span>
                 </div>
                 {ui.stagesCollapsed ? <ChevronDown size={18} /> : <ChevronUp size={18} />}
               </button>
               {!ui.stagesCollapsed ? (
                 <div className="dialogue-stage-list">
-                  {revealedStages.map(({ stage, status }) => (
+                  {revealedStages.map(({ stage, status, round, key: stageKey, checkPhase, verifyIdx }) => (
                     <StageDialogueCard
-                      key={stage}
+                      key={stageKey}
                       stage={stage}
                       status={status}
+                      round={round}
+                      checkPhase={checkPhase}
+                      verifyIdx={verifyIdx}
                       run={run}
                       counts={stageCounts}
                       competitors={competitors}
@@ -971,9 +1050,9 @@ export default function RunDetailPage() {
           </div>
         ) : null}
         {report && (
-          <ReportDiffBanner 
-            current={report} 
-            previous={reportVersions.find(v => v.iteration === report.iteration - 1)} 
+          <ReportDiffBanner
+            current={report}
+            previous={reportVersions.find(v => v.iteration === report.iteration - 1)}
           />
         )}
         {reportVersions.length > 1 ? (
@@ -1354,6 +1433,9 @@ function listValue(value: unknown): string[] {
 function StageDialogueCard({
   stage,
   status,
+  round = 0,
+  checkPhase,
+  verifyIdx,
   run,
   counts,
   competitors,
@@ -1368,6 +1450,9 @@ function StageDialogueCard({
 }: {
   stage: string;
   status: string;
+  round?: number;
+  checkPhase?: string;
+  verifyIdx?: number;
   run: Run;
   counts: { competitors: number; selectedCompetitors: number; sources: number; evidence: number; hasReport: boolean };
   competitors: Competitor[];
@@ -1386,7 +1471,9 @@ function StageDialogueCard({
     error: unknown;
   };
 }) {
-  const isAutoExpanded = status === 'running' || status === 'waiting' || status === 'completed-retry';
+  const isAutoExpanded = status === 'running' || status === 'waiting' || status === 'completed-retry'
+    || (stage === 'human_confirm_competitors' && run.status === 'waiting_for_human')
+    || (stage === 'focus_profile' && run.status === 'waiting_for_clarification');
   const [manuallyExpanded, setManuallyExpanded] = useState(false);
   const showEmbedded = isAutoExpanded || manuallyExpanded;
   const competitorConfirmRef = useRef<HTMLDivElement>(null);
@@ -1410,8 +1497,8 @@ function StageDialogueCard({
   const requirementOutput = safeParseJson<Record<string, unknown>>(requirementTrace?.output_json, {});
   const focusOutput = focusProfileOutputFromTraces(traces);
 
-  const isHighlighted = (stage === 'report_generation' || stage === 'quality_check') && 
-                       selectedIteration !== undefined && 
+  const isHighlighted = (stage === 'report_generation' || stage === 'quality_check') &&
+                       selectedIteration !== undefined &&
                        run.feedback_loop_count !== undefined &&
                        (selectedIteration === run.feedback_loop_count - 1 || (run.status === 'running' && stage === 'report_generation' && selectedIteration === run.feedback_loop_count));
 
@@ -1424,7 +1511,21 @@ function StageDialogueCard({
         <div className="stage-message-head" style={canCollapse ? { cursor: 'pointer' } : undefined} onClick={() => canCollapse && setManuallyExpanded((v) => !v)}>
           <div className="stage-status-icon">{statusIcon(status)}</div>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <h3>{stageLabels[stage] ?? stage}</h3>
+            <h3>
+              {stage === 'quality_check' && checkPhase === 'issue_verification'
+                ? <span className="round-label">[第{round - 1}轮复核-{verifyIdx}] </span>
+                : stage === 'quality_check' && checkPhase === 'full_check'
+                ? <span className="round-label">[第{round}轮] </span>
+                : null}
+              {stageLabels[stage] ?? stage}
+              {stage === 'quality_check' && checkPhase === 'issue_verification'
+                ? <span className="check-phase-label">专项复核</span>
+                : stage === 'quality_check' && checkPhase === 'full_check'
+                ? <span className="check-phase-label">全面检查</span>
+                : round > 1 && (stage === 'material_collection' || stage === 'structured_analysis')
+                ? <span className="check-phase-label retry-tag">复核修正</span>
+                : null}
+            </h3>
             <span>{statusText(status, stage)}</span>
           </div>
           {canCollapse ? (
@@ -1433,7 +1534,7 @@ function StageDialogueCard({
             </button>
           ) : null}
         </div>
-        <p>{getStageDetail(stage, run, counts)}</p>
+        <p>{getStageDetail(stage, run, counts, round)}</p>
 
         {showEmbedded ? (
           <>

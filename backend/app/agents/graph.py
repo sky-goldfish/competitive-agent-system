@@ -28,6 +28,8 @@ def build_competitor_discovery_graph(
     graph = StateGraph(AgentState)
 
     def requirement_understanding(state: AgentState) -> AgentState:
+        if state.get("requirement"):
+            return {**state}
         return _run_node(
             trace,
             "requirement_understanding",
@@ -36,6 +38,9 @@ def build_competitor_discovery_graph(
         )
 
     def focus_profile(state: AgentState) -> AgentState:
+        requirement = state.get("requirement", {})
+        if isinstance(requirement, dict) and requirement.get("focus_profile"):
+            return {**state}
         return _run_node(
             trace, "focus_profile", state, lambda: focus_profile_node(state, llm)
         )
