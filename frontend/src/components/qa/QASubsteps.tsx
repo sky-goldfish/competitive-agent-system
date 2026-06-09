@@ -35,6 +35,8 @@ interface QARound {
   issueCount: number | null;
   isCompleted: boolean;
   isCurrent: boolean;
+  checkPhase: string;
+  verifyIdx?: number;
 }
 
 const substepLabels: Record<QASubstepKind, string> = {
@@ -48,6 +50,7 @@ const decisionShortLabels: Record<string, string> = {
   pass: '通过',
   retry_collection: '重新采集',
   retry_analysis: '重新分析',
+  retry_collection_and_analysis: '重新采集+分析',
 };
 
 function formatDuration(ms: number | null): string {
@@ -79,13 +82,22 @@ function buildQARounds(traces: Trace[]): QARound[] {
   if (qaTraces.length === 0) return [];
 
   const rounds: QARound[] = [];
-  const isQACompleted = qaTraces.every((qt) => qt.trace.status === 'completed') &&
-    qaTraces[qaTraces.length - 1].trace.status === 'completed';
+  let roundIndex = 0;
+  let verifyIdx = 0;
 
   for (let qi = 0; qi < qaTraces.length; qi++) {
     const { trace: qaTrace, index: qaIdx } = qaTraces[qi];
     const nextQaIdx = qi + 1 < qaTraces.length ? qaTraces[qi + 1].index : traces.length;
     const output = parseOutputJson(qaTrace);
+    const checkPhase = typeof output.check_phase === 'string' ? output.check_phase : 'full_check';
+    const isFullCheck = checkPhase === 'full_check';
+
+    if (isFullCheck) {
+      roundIndex++;
+      verifyIdx = 0;
+    } else {
+      verifyIdx++;
+    }
 
     const substeps: QASubstep[] = [];
 
@@ -114,18 +126,20 @@ function buildQARounds(traces: Trace[]): QARound[] {
       }
     }
 
-    const isLastRound = qi === qaTraces.length - 1;
+    const isLastTrace = qi === qaTraces.length - 1;
     const roundCompleted = qaTrace.status === 'completed';
-    const isCurrent = isLastRound && !roundCompleted;
+    const isCurrent = isLastTrace && !roundCompleted;
 
     rounds.push({
-      roundIndex: qi + 1,
+      roundIndex,
       substeps,
       finalScore: substeps[0].score,
       finalDecision: substeps[0].decision,
       issueCount: substeps[0].issueCount,
       isCompleted: roundCompleted,
       isCurrent,
+      checkPhase,
+      verifyIdx: isFullCheck ? undefined : verifyIdx,
     });
   }
 
@@ -156,7 +170,7 @@ function SubstepIcon({ substep }: { substep: QASubstep }) {
   return <CheckCircle2 size={14} className="qa-substep-icon done" />;
 }
 
-function SubstepRow({ substep }: { substep: QASubstep }) {
+function SubstepRow({ substep, showScore = true }: { substep: QASubstep; showScore?: boolean }) {
   const label = substepLabels[substep.kind] ?? substep.kind;
 
   return (
@@ -166,7 +180,7 @@ function SubstepRow({ substep }: { substep: QASubstep }) {
       {substep.status === 'completed' && substep.durationMs != null ? (
         <span className="qa-substep-duration">{formatDuration(substep.durationMs)}</span>
       ) : null}
-      {substep.kind === 'quality_check' && substep.score != null && substep.status === 'completed' ? (
+      {showScore && substep.kind === 'quality_check' && substep.score != null && substep.status === 'completed' ? (
         <span className={`qa-substep-score ${substep.score >= 70 ? 'pass' : 'fail'}`}>
           {substep.score} 分
         </span>
@@ -197,6 +211,11 @@ function DecisionNote({ substep }: { substep: QASubstep }) {
 }
 
 function QARoundBlock({ round }: { round: QARound }) {
+  const isFullCheck = round.checkPhase === 'full_check';
+  const isVerification = round.checkPhase === 'issue_verification';
+  const label = isVerification
+    ? `复核-${round.verifyIdx ?? 1}`
+    : `第 ${round.roundIndex} 轮质检`;
   return (
     <div className={`qa-round-block ${round.isCurrent ? 'current' : ''} ${round.isCompleted ? 'completed' : ''}`}>
       <div className="qa-round-header">
@@ -207,8 +226,8 @@ function QARoundBlock({ round }: { round: QARound }) {
         ) : (
           <RefreshCw size={14} className="qa-round-icon retry" />
         )}
-        <span className="qa-round-label">第 {round.roundIndex} 轮质检</span>
-        {round.isCompleted && round.finalScore != null ? (
+        <span className="qa-round-label">{label}</span>
+        {isFullCheck && round.isCompleted && round.finalScore != null ? (
           <span className={`qa-round-score ${round.finalScore >= 70 ? 'pass' : 'fail'}`}>
             {round.finalScore} 分
           </span>
@@ -220,7 +239,7 @@ function QARoundBlock({ round }: { round: QARound }) {
       <div className="qa-round-substeps">
         {round.substeps.map((substep) => (
           <div key={`${substep.kind}-${substep.status}`}>
-            <SubstepRow substep={substep} />
+            <SubstepRow substep={substep} showScore={isFullCheck} />
             <DecisionNote substep={substep} />
           </div>
         ))}
@@ -230,6 +249,7 @@ function QARoundBlock({ round }: { round: QARound }) {
 }
 
 function CompletedSummary({ rounds }: { rounds: QARound[] }) {
+  const fullCheckRounds = rounds.filter(r => r.checkPhase === 'full_check');
   const finalRound = rounds[rounds.length - 1];
   const finalScore = finalRound?.finalScore;
   const passed = finalRound?.finalDecision === 'pass';
@@ -240,24 +260,30 @@ function CompletedSummary({ rounds }: { rounds: QARound[] }) {
         {passed ? <CheckCircle2 size={18} /> : <AlertTriangle size={18} />}
         <strong>{passed ? '通过' : '未通过'}</strong>
         {finalScore != null ? <span className="qa-summary-score">{finalScore} 分</span> : null}
-        <span className="qa-summary-rounds">共 {rounds.length} 轮</span>
+        <span className="qa-summary-rounds">共 {fullCheckRounds.length} 轮</span>
       </div>
       <div className="qa-summary-round-list">
-        {rounds.map((round) => (
-          <div key={round.roundIndex} className="qa-summary-round-item">
-            <span className="qa-summary-round-label">第 {round.roundIndex} 轮</span>
-            {round.finalScore != null ? (
-              <span className={`qa-summary-round-score ${round.finalScore >= 70 ? 'pass' : 'fail'}`}>
-                {round.finalScore} 分
-              </span>
-            ) : null}
-            {round.finalDecision === 'pass' ? (
-              <span className="qa-summary-round-result pass">通过 ✅</span>
-            ) : round.finalDecision ? (
-              <span className="qa-summary-round-result retry">{decisionShortLabels[round.finalDecision]}</span>
-            ) : null}
-          </div>
-        ))}
+        {rounds.map((round) => {
+          const isFullCheck = round.checkPhase === 'full_check';
+          const label = isFullCheck
+            ? `第 ${round.roundIndex} 轮`
+            : `复核-${round.verifyIdx ?? 1}`;
+          return (
+            <div key={`${round.roundIndex}-${round.checkPhase}-${round.verifyIdx ?? 0}`} className="qa-summary-round-item">
+              <span className="qa-summary-round-label">{label}</span>
+              {isFullCheck && round.finalScore != null ? (
+                <span className={`qa-summary-round-score ${round.finalScore >= 70 ? 'pass' : 'fail'}`}>
+                  {round.finalScore} 分
+                </span>
+              ) : null}
+              {round.finalDecision === 'pass' ? (
+                <span className="qa-summary-round-result pass">通过 ✅</span>
+              ) : round.finalDecision ? (
+                <span className="qa-summary-round-result retry">{decisionShortLabels[round.finalDecision]}</span>
+              ) : null}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
