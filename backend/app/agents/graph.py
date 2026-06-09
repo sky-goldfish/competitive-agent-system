@@ -127,22 +127,22 @@ def build_report_generation_graph(
 
     graph.add_node("material_collection", material_collection)
     graph.add_node("structured_analysis", structured_analysis)
-    graph.add_node("report_generation", report_generation)
     graph.add_node("quality_check", quality_check)
+    graph.add_node("report_generation", report_generation)
     graph.set_entry_point("material_collection")
     graph.add_edge("material_collection", "structured_analysis")
-    graph.add_edge("structured_analysis", "report_generation")
-    graph.add_edge("report_generation", "quality_check")
+    graph.add_edge("structured_analysis", "quality_check")
     graph.add_conditional_edges(
         "quality_check",
         qa_route,
         {
-            "end": END,
+            "end": "report_generation",
             "retry_collection": "material_collection",
             "retry_analysis": "structured_analysis",
             "retry_collection_and_analysis": "material_collection",
         },
     )
+    graph.add_edge("report_generation", END)
     return graph.compile()
 
 

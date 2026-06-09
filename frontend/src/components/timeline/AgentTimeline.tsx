@@ -33,8 +33,8 @@ const mainStages = [
   'human_confirm_competitors',
   'material_collection',
   'structured_analysis',
-  'report_generation',
   'quality_check',
+  'report_generation',
 ];
 
 const childStageGroups: Record<string, string[]> = {
@@ -67,8 +67,8 @@ const stageDescriptions: Record<string, string> = {
   human_confirm_competitors: '等待你确认、删除或补充竞品',
   material_collection: '围绕已确认竞品采集公开资料和证据',
   structured_analysis: '按维度整理定位、功能、价格和机会点',
+  quality_check: '对结构化分析结果进行多维度质检，判断是否需要重做采集或分析',
   report_generation: '生成 Markdown 报告并关联来源证据',
-  quality_check: '对报告进行多维度质检，判断是否需要重做采集或分析',
   target_query_planning: '为目标产品或产品想法规划搜索关键词',
   target_search: '调用搜索工具采集目标相关公开资料',
   target_understanding: '归纳目标对象的定位、用户和核心能力',

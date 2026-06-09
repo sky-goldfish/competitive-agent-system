@@ -79,7 +79,7 @@ export default function QAResultsPanel({ runId }: Props) {
       </div>
       <div className="empty-state">
         <p className="empty-state-title">暂无质检结果</p>
-        <p className="empty-state-desc">质检数据将在报告生成后自动展示。</p>
+        <p className="empty-state-desc">结构化分析完成后会进入质量检查。</p>
       </div>
     </section>
   );

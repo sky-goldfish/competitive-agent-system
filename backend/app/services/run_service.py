@@ -72,8 +72,8 @@ VALID_CURRENT_STAGES = frozenset(
 REPORT_GRAPH_STAGES = [
     "material_collection",
     "structured_analysis",
-    "report_generation",
     "quality_check",
+    "report_generation",
 ]
 
 
@@ -454,15 +454,6 @@ def _resume_from_report_generation(
 ) -> bool:
     from app.agents.nodes.quality_check import quality_check_node, qa_route
 
-    _set_run_status(run, "running", "report_generation")
-    db.commit()
-    try:
-        state = report_generation_node(state, llm)
-    except Exception as exc:
-        logger.error("Resumed report_generation failed for run %s: %s", run_id, exc)
-        raise
-    on_stage_complete("report_generation", state)
-
     _set_run_status(run, "running", "quality_check")
     db.commit()
     try:
@@ -474,6 +465,14 @@ def _resume_from_report_generation(
 
     route = qa_route(state)
     if route == "end":
+        _set_run_status(run, "running", "report_generation")
+        db.commit()
+        try:
+            state = report_generation_node(state, llm)
+        except Exception as exc:
+            logger.error("Resumed report_generation failed for run %s: %s", run_id, exc)
+            raise
+        on_stage_complete("report_generation", state)
         return True
 
     logger.info(
@@ -797,7 +796,7 @@ def execute_report_run(run_id: str) -> None:
                             overlap_dims, ensure_ascii=False
                         )
                     db.add(competitor)
-            _set_run_status(run, "running", "report_generation")
+            _set_run_status(run, "running", "quality_check")
             db.commit()
         elif stage == "report_generation":
             feedback_count = state.get("feedback_loop_count", 0)
@@ -893,6 +892,16 @@ def execute_report_run(run_id: str) -> None:
                 )
             )
             run.feedback_loop_count = state.get("feedback_loop_count", 0)
+            decision = qa_result.get("decision", "pass")
+            if decision == "pass":
+                _set_run_status(run, "running", "report_generation")
+            elif decision in {
+                "retry_collection",
+                "retry_collection_and_analysis",
+            }:
+                _set_run_status(run, "running", "material_collection")
+            elif decision == "retry_analysis":
+                _set_run_status(run, "running", "structured_analysis")
             db.commit()
             if _has_unprocessed_queued_revisions(db, run_id):
                 raise QueuedRevisionPending()
@@ -1068,8 +1077,8 @@ def _trace_input(stage: str, state: AgentState) -> dict:
     if stage == "quality_check":
         prev = state.get("qa_result", {})
         return {
-            "report_title": state.get("report", {}).get("title"),
             "analysis_count": len(state.get("analyses", [])),
+            "evidence_count": len(state.get("evidence", [])),
             "feedback_loop_count": state.get("feedback_loop_count", 0),
             "previous_decision": prev.get("decision")
             if isinstance(prev, dict)

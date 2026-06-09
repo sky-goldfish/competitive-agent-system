@@ -38,7 +38,7 @@ interface QARound {
 }
 
 const substepLabels: Record<QASubstepKind, string> = {
-  quality_check: '检查报告质量',
+  quality_check: '检查分析质量',
   material_collection: '重新采集资料',
   structured_analysis: '重新分析',
   report_generation: '更新报告',
@@ -98,7 +98,7 @@ function buildQARounds(traces: Trace[]): QARound[] {
       issueCount: typeof output.issue_count === 'number' ? output.issue_count : null,
     });
 
-    const repairStages: QASubstepKind[] = ['material_collection', 'structured_analysis', 'report_generation'];
+    const repairStages: QASubstepKind[] = ['material_collection', 'structured_analysis'];
     for (let ti = qaIdx + 1; ti < nextQaIdx; ti++) {
       const t = traces[ti];
       const norm = normalizeStageLocal(t.stage);
@@ -334,7 +334,7 @@ export default function QASubsteps({ runId, traces, stageStatus }: Props) {
           className="qa-expand-toggle"
           onClick={() => setExpanded(!expanded)}
         >
-          <span>{expanded ? '收起质检详情' : '查看详细质检报告'}</span>
+          <span>{expanded ? '收起质检详情' : '查看详细质检结果'}</span>
           {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
         </button>
       )}

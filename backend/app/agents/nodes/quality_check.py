@@ -59,7 +59,6 @@ def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
     if open_issues and not forced_pass:
         phase = "issue_verification"
         verification_raw = llm.qa_verify_issues(
-            state.get("report", {}),
             _cap_analyses(state.get("analyses", [])),
             _cap_evidence(state.get("evidence", [])),
             open_issues,
@@ -120,7 +119,6 @@ def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
     if not open_issues and not forced_pass:
         issue_verification_count = 0
         qa_raw = llm.qa_check_report(
-            state.get("report", {}),
             _cap_analyses(state.get("analyses", [])),
             _cap_evidence(state.get("evidence", [])),
         )
@@ -175,19 +173,17 @@ def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
 
     retry_guidance_map = None
     retry_analysis_ids = None
-    retry_report_guidance = None
+    retry_analysis_guidance = None
     if decision == "retry_collection":
         retry_queries = _normalize_retry_queries(
             retry_queries
         ) or _fallback_retry_queries(issues)
         retry_guidance_map = _build_retry_guidance_map(issues)
-        retry_report_guidance = retry_instructions
+        retry_analysis_guidance = retry_instructions
     elif decision == "retry_analysis":
         retry_guidance_map = _build_retry_guidance_map(issues)
-        # --- Fix #6: avoid full reanalysis when no flagged_names ---
         retry_analysis_ids = _identify_retry_analyses(issues, state.get("analyses", []))
-        # --- Fix #7: pass retry_instructions as global guidance ---
-        retry_report_guidance = retry_instructions
+        retry_analysis_guidance = retry_instructions
     elif decision == "retry_collection_and_analysis":
         retry_queries = _normalize_retry_queries(
             retry_queries
@@ -197,23 +193,7 @@ def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
             [i for i in issues if i.get("dimension") not in COLLECTION_DIMENSIONS],
             state.get("analyses", []),
         )
-        retry_report_guidance = retry_instructions
-
-    # --- Fix #10: append report-level issues to guidance ---
-    report_issues = [
-        i
-        for i in issues
-        if i.get("competitor_name") in {"report", "system"} and i.get("fix_suggestion")
-    ]
-    if report_issues and retry_report_guidance is not None:
-        report_guidance = "; ".join(
-            f"[报告级] {i.get('fix_suggestion')}" for i in report_issues
-        )
-        retry_report_guidance = f"{retry_report_guidance}\n{report_guidance}"
-    elif report_issues and retry_report_guidance is None:
-        retry_report_guidance = "; ".join(
-            f"[报告级] {i.get('fix_suggestion')}" for i in report_issues
-        )
+        retry_analysis_guidance = retry_instructions
 
     qa_result: dict[str, Any] = {
         "overall_score": overall_score,
@@ -249,7 +229,7 @@ def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
         "qa_retry_guidance_map",
         "qa_retry_queries",
         "qa_retry_analysis_ids",
-        "qa_report_guidance",
+        "qa_analysis_guidance",
     ):
         new_state.pop(stale_key, None)
     if retry_guidance_map is not None:
@@ -258,8 +238,8 @@ def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
         new_state["qa_retry_queries"] = retry_queries
     if retry_analysis_ids is not None:
         new_state["qa_retry_analysis_ids"] = retry_analysis_ids
-    if retry_report_guidance is not None:
-        new_state["qa_report_guidance"] = retry_report_guidance
+    if retry_analysis_guidance is not None:
+        new_state["qa_analysis_guidance"] = retry_analysis_guidance
     return new_state  # type: ignore[return-value]
 
 
@@ -289,11 +269,8 @@ def _derive_decision(
     )
     has_analysis_issue = any(
         issue.get("dimension") not in COLLECTION_DIMENSIONS
-        and issue.get("competitor_name") not in {"report", "system", None}
+        and issue.get("competitor_name") not in {"system", None}
         for issue in issues
-    )
-    has_report_issue = any(
-        issue.get("competitor_name") in {"report", "system"} for issue in issues
     )
     if has_collection_issue and has_analysis_issue:
         return "retry_collection_and_analysis"
@@ -305,8 +282,6 @@ def _derive_decision(
     if all_dimensions_pass and overall_score >= QA_MIN_FORCED_PASS_SCORE:
         return "pass"
     if has_analysis_issue:
-        return "retry_analysis"
-    if has_report_issue:
         return "retry_analysis"
     if all_dimensions_pass and overall_score < QA_MIN_FORCED_PASS_SCORE:
         return "retry_collection"
@@ -321,7 +296,7 @@ def _derive_retry_decision(
     )
     has_analysis_issue = any(
         issue.get("dimension") not in COLLECTION_DIMENSIONS
-        and issue.get("competitor_name") not in {"report", "system", None}
+        and issue.get("competitor_name") not in {"system", None}
         for issue in issues
     )
     if has_collection_issue and has_analysis_issue:
@@ -535,7 +510,7 @@ def _fallback_retry_queries(issues: list[dict[str, Any]]) -> list[dict[str, str]
     queries = []
     for issue in issues:
         competitor_name = issue.get("competitor_name")
-        if not competitor_name or competitor_name in {"report", "system"}:
+        if not competitor_name or competitor_name == "system":
             continue
         dimension = issue.get("dimension")
         is_cjk = any("\u4e00" <= ch <= "\u9fff" for ch in competitor_name)
@@ -610,7 +585,7 @@ def _build_retry_guidance_map(issues: list[dict[str, Any]]) -> dict[str, str]:
         suggestion = issue.get("fix_suggestion", "")
         if not (description or suggestion):
             continue
-        if name in {"report", "system"}:
+        if name == "system":
             name = "__report__"
         if name:
             result.setdefault(name, "")
@@ -629,7 +604,7 @@ def _identify_retry_analyses(
     flagged_names = {
         issue.get("competitor_name")
         for issue in issues
-        if issue.get("competitor_name") not in {"report", "system", None}
+        if issue.get("competitor_name") not in {"system", None}
     }
     if not flagged_names:
         all_ids = [

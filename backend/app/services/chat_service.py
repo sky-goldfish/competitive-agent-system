@@ -119,7 +119,7 @@ def process_chat_message(run_id: str, user_message: str) -> dict[str, Any]:
             assistant_msg = ChatMessage(
                 run_id=run_id,
                 role="assistant",
-                content="已收到反馈。当前质检 Agent 仍在优化报告，我会在质检结束后基于最新版本处理你的修改。",
+                content="已收到反馈。当前质检 Agent 仍在检查分析结果，我会在质检结束后基于最新版本处理你的修改。",
                 intent="queued_revision",
                 action_type="queued_revision",
                 report_version=report.iteration,
@@ -216,7 +216,7 @@ def enqueue_chat_message(run_id: str, user_message: str) -> dict[str, Any]:
             run_id=run_id,
             role="assistant",
             content=(
-                "已收到反馈。当前质检 Agent 仍在优化报告，我会在质检结束后基于最新版本处理你的修改。"
+                "已收到反馈。当前质检 Agent 仍在检查分析结果，我会在质检结束后基于最新版本处理你的修改。"
                 if waiting_for_auto_flow
                 else "已收到反馈，Agent 正在基于当前报告规划修订流程。"
             ),
@@ -921,7 +921,7 @@ def _handle_report_redo(
             "title": report.title,
             "user_requirement": ctx["run"].user_requirement,
             "requirement_summary": ctx["run"].requirement_summary,
-            "qa_report_guidance": retry_instructions,
+            "qa_analysis_guidance": retry_instructions,
             "citation_bundle": citation_bundle,
         },
         analysis_list,

@@ -34,8 +34,8 @@ const stageOrder = [
   'human_confirm_competitors',
   'material_collection',
   'structured_analysis',
-  'report_generation',
   'quality_check',
+  'report_generation',
 ];
 
 const stageLabels: Record<string, string> = {
@@ -58,8 +58,8 @@ const stageDescriptions: Record<string, string> = {
   human_confirm_competitors: '等待你确认保留哪些竞品，也可以手动新增。',
   material_collection: '围绕已确认竞品采集公开资料、来源和证据。',
   structured_analysis: '把资料整理为定位、功能、价格、优势和机会点。',
+  quality_check: '对结构化分析进行多维度质检，判断是否需要重做采集或分析。',
   report_generation: '生成带来源引用的 Markdown 竞品分析报告。',
-  quality_check: '检查来源覆盖、引用准确性和报告完整度。',
 };
 
 const statusLabels: Record<string, string> = {
@@ -162,11 +162,13 @@ function getStageDetail(stage: string, run: Run, counts: { competitors: number; 
   if (stage === 'structured_analysis') {
     return counts.evidence > 0 ? `${iterationPrefix}基于 ${counts.evidence} 条证据整理定位、功能、价格、优劣势和机会点。` : '正在把采集资料转换为结构化分析。';
   }
+  if (stage === 'quality_check') {
+    return counts.evidence > 0
+      ? `${iterationPrefix}已对结构化分析进行多维度检查。`
+      : '结构化分析完成后会进入质量检查。';
+  }
   if (stage === 'report_generation') {
     return counts.hasReport ? `${iterationPrefix}Markdown 报告已生成，可在右侧查看、复制或下载。` : '正在生成带来源引用的 Markdown 报告。';
-  }
-  if (stage === 'quality_check') {
-    return counts.hasReport ? `${iterationPrefix}已对报告进行来源覆盖、引用准确性和完整度检查。` : '报告生成后会进入质量检查。';
   }
   return stageDescriptions[stage] ?? '正在执行当前分析节点。';
 }
@@ -943,7 +945,7 @@ export default function RunDetailPage() {
               : '报告生成后会显示在这里'}
           </p>
           {isOptimizingReport ? (
-            <p className="report-intervention-hint">Agent 正在质检这份报告。你也可以通过左侧对话人工介入修改。</p>
+            <p className="report-intervention-hint">Agent 正在质检结构化分析结果。你也可以通过左侧对话人工介入修改。</p>
           ) : null}
           {isFailedWithReport ? (
             <p className="report-intervention-hint">任务已中断，当前展示的是最近一次成功生成的报告版本。你可以通过左侧对话继续修改。</p>
@@ -1403,7 +1405,7 @@ function StageDialogueCard({
   const showCompetitorConfirm = stage === 'human_confirm_competitors' && (run.status === 'waiting_for_human' || competitors.length > 0);
   const showSources = stage === 'material_collection' && (sources.length > 0 || evidence.length > 0);
   const showCitations = stage === 'structured_analysis' && citationBundle.length > 0;
-  const showQA = stage === 'quality_check' && hasReport;
+  const showQA = stage === 'quality_check';
   const requirementTrace = traces.find((trace) => normalizeStage(trace.stage) === 'requirement_understanding' && trace.status === 'completed');
   const requirementOutput = safeParseJson<Record<string, unknown>>(requirementTrace?.output_json, {});
   const focusOutput = focusProfileOutputFromTraces(traces);

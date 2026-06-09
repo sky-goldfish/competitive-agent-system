@@ -1064,15 +1064,15 @@ JSON schema:
         fallback = self.fallback.generate_report(run, analyses, sources)
         citation_bundle_raw = run.get("citation_bundle", [])
         citation_bundle = json.dumps(citation_bundle_raw, ensure_ascii=False)
-        qa_guidance = run.get("qa_report_guidance")
+        qa_guidance = run.get("qa_analysis_guidance")
         qa_guidance_section = ""
         if qa_guidance:
             qa_guidance_section = f"""
 
-【上次质检反馈——请务必在本次报告中改进以下问题】
+【上次质检反馈——请务必在本次分析中改进以下问题】
 {qa_guidance}
 
-请特别注意：上次报告存在上述问题，请在本次报告中针对性改进。
+请特别注意：上次分析存在上述问题，请在本次报告生成时针对性改进。
 """
         prompt = f"""
 你是报告撰写 Agent。请基于以下 citation_bundle 生成一份专业的中文 Markdown 竞品分析报告。
@@ -1115,11 +1115,10 @@ JSON schema:
 
     def qa_check_report(
         self,
-        report: dict[str, str],
         analyses: list[dict[str, Any]],
         evidence: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        fallback = self.fallback.qa_check_report(report, analyses, evidence)
+        fallback = self.fallback.qa_check_report(analyses, evidence)
         capped_analyses = analyses[:15]
         capped_evidence = sorted(
             evidence,
@@ -1131,8 +1130,7 @@ JSON schema:
             reverse=True,
         )[:30]
         analyses_summary = "\n".join(
-            f"- 竞品={a.get('competitor_name', '')}；定位={a.get('positioning', '')}；"
-            f"定价={a.get('pricing_summary', '')}；证据数={len(_json_list(a.get('evidence_ids_json')))}"
+            _format_analysis_for_qa(a)
             for a in capped_analyses
         )
         evidence_summary = "\n".join(
@@ -1140,14 +1138,10 @@ JSON schema:
             f"来源类型={e.get('source_type', '')}；置信度={e.get('confidence', 0)}；摘要={e.get('summary', '')}"
             for e in capped_evidence
         )
-        report_content = report.get("markdown_content", "")
         prompt = f"""
-你是竞品分析系统的质检 Agent。请对以下报告和支撑数据进行多维度质量检查。
+你是竞品分析系统的质检 Agent。请对以下结构化分析数据和证据进行多维度质量检查。
 
-## 报告内容
-{report_content}
-
-## 分析摘要
+## 结构化分析（每个竞品的完整分析数据）
 {analyses_summary}
 
 ## 证据摘要（含引用号）
@@ -1157,12 +1151,12 @@ JSON schema:
 
 请从以下 6 个维度评估，每个维度打分 0.0-1.0：
 
-1. **evidence_grounding（证据支撑度）**：分析结论是否被证据支撑？是否有幻觉内容？
-2. **citation_accuracy（引用准确性）**：报告中的 `[[N]](URL)` 引用是否指向真实来源？
-3. **schema_completeness（Schema 完整度）**：每个竞品的 7 个分析字段是否都有实质内容？
-4. **coverage_gaps（覆盖缺口）**：每个竞品的 4 个核心维度（产品定位、核心功能、价格与商业模式、用户评价与痛点）证据是否充足？
-5. **cross_competitor_consistency（跨竞品一致性）**：各竞品分析深度是否一致？
-6. **factual_plausibility（事实合理性）**：是否有明显不合理内容？
+1. **evidence_grounding（证据支撑度）**：分析结论（定位、目标用户、功能、定价、优劣势、机会点等）是否被对应的 evidence_ids 所引用的证据支撑？是否存在幻觉内容？
+2. **citation_accuracy（引用准确性）**：每个竞品分析中 evidence_ids_json 列出的引用号是否确实指向与该竞品相关、维度匹配的证据？是否存在张冠李戴？
+3. **schema_completeness（Schema 完整度）**：每个竞品的 7 个分析字段（product positioning、target users、core features、pricing、strengths、weaknesses、opportunities）是否都有实质内容而非占位文本？
+4. **coverage_gaps（覆盖缺口）**：每个竞品的 4 个核心维度（产品定位、核心功能、价格与商业模式、用户评价与痛点）证据是否充足（建议≥3 条）？
+5. **cross_competitor_consistency（跨竞品一致性）**：各竞品分析深度和信息量是否一致？是否有的竞品分析非常详尽、有的非常简略？
+6. **factual_plausibility（事实合理性）**：分析内容是否有明显不合理的陈述？例如与已知事实矛盾、逻辑不通等。
 
 输出严格 JSON，不要输出 Markdown 代码块，不要输出 schema 外字段。
 JSON schema:
@@ -1187,7 +1181,7 @@ JSON schema:
     {{
       "dimension": "维度名",
       "severity": "critical | major | minor",
-      "competitor_name": "单个竞品名，或 report，或 system。严禁填入多个竞品名（如\"A、B\"或\"全部竞品\"）",
+      "competitor_name": "单个竞品名，或 system。严禁填入多个竞品名（如\"A、B\"或\"全部竞品\"）",
       "description": "问题描述",
       "fix_suggestion": "修复建议"
     }}
@@ -1197,6 +1191,7 @@ JSON schema:
 【issues 生成规则】
 - 每条 issue 必须对应且只对应一个竞品。如果一个问题同时影响多个竞品（如\"A 和 B 都缺少用户评价\"），必须拆成多条独立的 issue，每条只关联一个竞品
 - 对于 cross_competitor_consistency 类问题，每条 issue 只需列出受影响的一方（如\"A 的分析深度高于 B\"，应拆为一条针对 A 的 issue 和一条针对 B 的 issue）
+- system 级别 issue 仅用于全局性问题（如所有竞品证据数量均不足），不要滥用
 
 【retry_queries 生成规则】
 - 当 issue 需要补采公开资料时填写，尤其是 coverage_gaps 或 evidence_grounding 问题
@@ -1216,13 +1211,12 @@ JSON schema:
 
     def qa_verify_issues(
         self,
-        report: dict[str, str],
         analyses: list[dict[str, Any]],
         evidence: list[dict[str, Any]],
         open_issues: list[dict[str, Any]],
     ) -> dict[str, Any]:
         fallback = self.fallback.qa_verify_issues(
-            report, analyses, evidence, open_issues
+            analyses, evidence, open_issues
         )
         issues_json = json.dumps(open_issues, ensure_ascii=False)
         capped_analyses = analyses[:15]
@@ -1236,8 +1230,7 @@ JSON schema:
             reverse=True,
         )[:30]
         analyses_summary = "\n".join(
-            f"- 竞品={a.get('competitor_name', '')}；定位={a.get('positioning', '')}；"
-            f"定价={a.get('pricing_summary', '')}；证据数={len(_json_list(a.get('evidence_ids_json')))}"
+            _format_analysis_for_qa(a)
             for a in capped_analyses
         )
         evidence_summary = "\n".join(
@@ -1246,15 +1239,12 @@ JSON schema:
             for e in capped_evidence
         )
         prompt = f"""
-你是竞品分析系统的质检复核 Agent。请只检查以下历史未解决问题是否已经被本轮报告、分析和证据解决。
+你是竞品分析系统的质检复核 Agent。请只检查以下历史未解决问题是否已经被本轮结构化分析和证据解决。
 
 ## 历史未解决 issues
 {issues_json}
 
-## 报告内容
-{report.get("markdown_content", "")}
-
-## 分析摘要
+## 结构化分析（每个竞品的完整分析数据）
 {analyses_summary}
 
 ## 证据摘要
@@ -1282,7 +1272,8 @@ JSON schema:
 
 规则：
 - 每个历史 issue 必须返回一条 resolution。
-- 只有在新报告/新分析/新证据已经直接覆盖原问题时，status 才能是 resolved。
+- 只有在新分析/新证据已经直接覆盖原问题时，status 才能是 resolved。
+- 检查标准：对应的分析字段是否已有实质内容、证据数量是否充足、引用是否准确匹配。
 - 如果证据仍不足、字段仍空泛、引用仍无法核验，status 必须是 open。
 """
         result = self._json_chat(prompt, fallback)
@@ -1797,6 +1788,33 @@ JSON schema:
 
 只输出总结文本，不要 Markdown。"""
         return self._chat(prompt) or "已根据你的反馈更新报告，并生成新的报告版本。"
+
+
+def _format_analysis_for_qa(a: dict[str, Any]) -> str:
+    """Format a single structured analysis entry for QA prompt context.
+
+    Exposes all 7 core fields plus evidence_ids counts so the QA LLM can
+    judge completeness, grounding, and citation accuracy.
+    """
+    evidence_count = len(_json_list(a.get("evidence_ids_json")))
+    lines = [
+        f"竞品={a.get('competitor_name', '')}",
+        f"  定位: {a.get('positioning', '')}",
+        f"  目标用户: {_join_json_list_for_qa(a.get('target_users'))}",
+        f"  核心功能: {_join_json_list_for_qa(a.get('core_features_json'))}",
+        f"  定价: {a.get('pricing_summary', '')}",
+        f"  优势: {_join_json_list_for_qa(a.get('strengths_json'))}",
+        f"  劣势: {_join_json_list_for_qa(a.get('weaknesses_json'))}",
+        f"  机会点: {_join_json_list_for_qa(a.get('opportunities_json'))}",
+        f"  关联证据数: {evidence_count}",
+    ]
+    return "\n".join(lines)
+
+
+def _join_json_list_for_qa(value: Any) -> str:
+    """Join a JSON list stored as string into a semicolon-separated summary."""
+    items = _json_list(value)
+    return "；".join(items[:6]) or "(无)"
 
 
 def _json_list(value: Any) -> list[str]:

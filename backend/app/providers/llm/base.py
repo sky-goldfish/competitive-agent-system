@@ -46,16 +46,14 @@ class LLMProvider(Protocol):
 
     def qa_check_report(
         self,
-        report: dict[str, str],
         analyses: list[dict[str, Any]],
         evidence: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        """Quality-check a report and its supporting data. Returns structured QA verdict."""
+        """Quality-check structured analyses and their supporting evidence. Returns structured QA verdict."""
         ...
 
     def qa_verify_issues(
         self,
-        report: dict[str, str],
         analyses: list[dict[str, Any]],
         evidence: list[dict[str, Any]],
         open_issues: list[dict[str, Any]],

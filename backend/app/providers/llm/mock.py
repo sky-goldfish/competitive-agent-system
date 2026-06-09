@@ -772,13 +772,12 @@ class MockLLMProvider(LLMProvider):
 
     def qa_check_report(
         self,
-        report: dict[str, str],
         analyses: list[dict[str, Any]],
         evidence: list[dict[str, Any]],
     ) -> dict[str, Any]:
         issues: list[dict[str, Any]] = []
-        evidence_ref_ids = {
-            e.get("reference_id") for e in evidence if e.get("reference_id")
+        evidence_ids = {
+            e.get("id") for e in evidence if e.get("id")
         }
         competitor_evidence_count: dict[str, int] = {}
         for item in evidence:
@@ -810,21 +809,44 @@ class MockLLMProvider(LLMProvider):
                         "fix_suggestion": f"补充搜索 {name} pricing plans",
                     }
                 )
-
-        markdown = report.get("markdown_content", "")
-        import re
-
-        cited_refs = re.findall(r"\[\[(\d+)\]\]", markdown)
-        for ref_str in cited_refs:
-            ref_id = int(ref_str)
-            if ref_id not in evidence_ref_ids:
+            # Check citation accuracy: every evidence_id referenced in the analysis
+            # must exist in the actual evidence pool.
+            ana_evidence_ids = set()
+            raw_ids = analysis.get("evidence_ids_json")
+            if isinstance(raw_ids, str):
+                try:
+                    parsed = json.loads(raw_ids)
+                except (json.JSONDecodeError, TypeError):
+                    parsed = []
+                if isinstance(parsed, list):
+                    ana_evidence_ids = {str(i) for i in parsed}
+            elif isinstance(raw_ids, list):
+                ana_evidence_ids = {str(i) for i in raw_ids}
+            dangling = [
+                eid for eid in ana_evidence_ids if eid not in evidence_ids
+            ]
+            if dangling:
                 issues.append(
                     {
                         "dimension": "citation_accuracy",
                         "severity": "minor",
-                        "competitor_name": "report",
-                        "description": f"报告引用了不存在的来源 [[{ref_id}]]",
-                        "fix_suggestion": "移除或修正无效引用",
+                        "competitor_name": name,
+                        "description": (
+                            f"{name} 的分析引用了不存在的证据 "
+                            f"（{len(dangling)} 条无效引用）"
+                        ),
+                        "fix_suggestion": "重新核验 evidence_ids，移除无效引用",
+                    }
+                )
+            # Check schema completeness for all 7 fields
+            if not str(analysis.get("positioning", "")).strip():
+                issues.append(
+                    {
+                        "dimension": "schema_completeness",
+                        "severity": "major",
+                        "competitor_name": name,
+                        "description": f"{name} 的定位信息缺失",
+                        "fix_suggestion": f"补充搜索 {name} 产品定位和市场描述",
                     }
                 )
 
@@ -859,7 +881,7 @@ class MockLLMProvider(LLMProvider):
         retry_queries = []
         for issue in issues:
             comp = issue.get("competitor_name", "")
-            if comp in {"report", "system", ""}:
+            if comp in {"system", ""}:
                 continue
             dim = issue.get("dimension", "")
             if dim in {"coverage_gaps", "evidence_grounding"}:
@@ -897,7 +919,6 @@ class MockLLMProvider(LLMProvider):
 
     def qa_verify_issues(
         self,
-        report: dict[str, str],
         analyses: list[dict[str, Any]],
         evidence: list[dict[str, Any]],
         open_issues: list[dict[str, Any]],
@@ -906,6 +927,7 @@ class MockLLMProvider(LLMProvider):
         competitor_id_by_name = {
             a.get("competitor_name"): a.get("competitor_id") for a in analyses
         }
+        evidence_ids = {e.get("id") for e in evidence if e.get("id")}
         evidence_count_by_name: dict[str, int] = {}
         for item in evidence:
             name = item.get("related_product")
@@ -918,7 +940,6 @@ class MockLLMProvider(LLMProvider):
                         evidence_count_by_name.get(comp_name, 0) + 1
                     )
 
-        markdown = report.get("markdown_content", "")
         resolutions = []
         for issue in open_issues:
             issue_id = issue.get("id", "")
@@ -931,16 +952,44 @@ class MockLLMProvider(LLMProvider):
                 resolved = ev_count >= 3
                 reason = f"{comp} 当前证据数为 {ev_count}。"
             elif dimension == "schema_completeness":
-                pricing = str(
-                    (analysis_by_name.get(comp) or {}).get("pricing_summary", "")
-                )
-                resolved = bool(
-                    pricing and "未涉及" not in pricing and "Mock" not in pricing
-                )
-                reason = f"{comp} 当前定价字段{'已有实质内容' if resolved else '仍缺少实质内容'}。"
+                analysis = analysis_by_name.get(comp) or {}
+                if comp == "system":
+                    # system-level completeness check: verify all analyses have non-empty fields
+                    missing = [
+                        a.get("competitor_name")
+                        for a in analyses
+                        if not str(a.get("pricing_summary", "")).strip()
+                    ]
+                    resolved = len(missing) == 0
+                    reason = (
+                        "所有竞品定价字段均已填充"
+                        if resolved
+                        else f"仍有 {len(missing)} 个竞品缺少定价信息"
+                    )
+                else:
+                    pricing = str(analysis.get("pricing_summary", ""))
+                    resolved = bool(
+                        pricing and "未涉及" not in pricing and "Mock" not in pricing
+                    )
+                    reason = f"{comp} 当前定价字段{'已有实质内容' if resolved else '仍缺少实质内容'}。"
             elif dimension == "citation_accuracy":
-                resolved = "不存在的来源" not in markdown
-                reason = "报告引用复核完成。"
+                # Check whether the analysis evidence_ids now reference valid evidence
+                analysis = analysis_by_name.get(comp) or {}
+                raw_ids = analysis.get("evidence_ids_json")
+                ana_ids = set()
+                if isinstance(raw_ids, str):
+                    try:
+                        parsed = json.loads(raw_ids)
+                    except (json.JSONDecodeError, TypeError):
+                        parsed = []
+                    if isinstance(parsed, list):
+                        ana_ids = {str(i) for i in parsed}
+                elif isinstance(raw_ids, list):
+                    ana_ids = {str(i) for i in raw_ids}
+                resolved = all(
+                    eid in evidence_ids for eid in ana_ids
+                ) if ana_ids else True
+                reason = "分析中的引用均已核实" if resolved else "仍有无效引用存在于分析中"
             resolutions.append(
                 {
                     "issue_id": issue_id,
@@ -955,7 +1004,7 @@ class MockLLMProvider(LLMProvider):
                             "query": f"{comp} core features evidence",
                         }
                     ]
-                    if comp not in {"report", "system", ""}
+                    if comp not in {"system", ""}
                     and dimension in {"coverage_gaps", "evidence_grounding"}
                     else [],
                 }
