@@ -1477,7 +1477,7 @@ button:disabled {
   color: #172033;
 }
 
-.workspace-regenerate {
+.workspace-retry {
   background: transparent;
   border: 1px solid #cbd6e8;
   border-radius: 6px;
@@ -1487,7 +1487,7 @@ button:disabled {
   padding: 5px 10px;
 }
 
-.workspace-regenerate:hover {
+.workspace-retry:hover {
   border-color: #5366d9;
   color: #3151a3;
 }

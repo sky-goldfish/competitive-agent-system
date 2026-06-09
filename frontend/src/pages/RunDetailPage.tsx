@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormEvent, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { AlertCircle, BarChart3, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Clipboard, Download, Loader2, MessageSquare, RefreshCw, RotateCcw, Send, XCircle } from 'lucide-react';
+import { AlertCircle, BarChart3, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Clipboard, Download, Loader2, MessageSquare, RefreshCw, Send, XCircle } from 'lucide-react';
 import CompetitorConfirmPanel from '../components/competitors/CompetitorConfirmPanel';
 import EvidenceList from '../components/evidence/EvidenceList';
 import SourceList from '../components/evidence/SourceList';
@@ -23,7 +23,6 @@ import {
   getRun,
   getSources,
   getTimeline,
-  regenerateReport,
   sendChatMessage,
 } from '../lib/api';
 import type { ChatMessage, CitationBundleCompetitor, Competitor, Evidence, Report as AppReport, Revision, RevisionTrace, Run, Source, Trace } from '../lib/types';
@@ -406,19 +405,6 @@ export default function RunDetailPage() {
     refetchInterval: isActive ? 5000 : false,
   });
 
-  const regenerateMutation = useMutation({
-    mutationFn: () => regenerateReport(id),
-    onSuccess: () => {
-      manualSelectionRef.current = false;
-      setSelectedIteration(undefined);
-      queryClient.invalidateQueries({ queryKey: ['run', id] });
-      queryClient.invalidateQueries({ queryKey: ['report', id] });
-      queryClient.invalidateQueries({ queryKey: ['report-versions', id] });
-      queryClient.invalidateQueries({ queryKey: ['report-citations', id] });
-      queryClient.invalidateQueries({ queryKey: ['citation-bundle', id] });
-    },
-  });
-
   const clarificationMutation = useMutation({
     mutationFn: (answer: string) => answerRunClarification(id, answer),
     onSuccess: (_, answer) => {
@@ -678,12 +664,6 @@ export default function RunDetailPage() {
           <h1>{run.title}</h1>
           <p>{isRevisionRunning ? '正在修订报告...' : completed ? '报告已完成' : (statusLabels[run.status] ?? run.status)}</p>
         </div>
-        {completed ? (
-          <button type="button" className="icon-text-button" onClick={() => regenerateMutation.mutate()} disabled={regenerateMutation.isPending}>
-            <RotateCcw size={16} />
-            {regenerateMutation.isPending ? '生成中' : '重新生成'}
-          </button>
-        ) : null}
         <a href={`/runs/${id}/observability`} target="_blank" rel="noopener noreferrer" className="icon-text-button" title="在新标签页中查看可观测详情">
           <BarChart3 size={16} />
           查看详情
@@ -1524,7 +1504,7 @@ function statusText(status: string, stage?: string) {
     const retryLabels: Record<string, string> = {
       material_collection: '重新采集中',
       structured_analysis: '重新分析中',
-      report_generation: '重新生成中',
+      report_generation: '生成报告中',
       quality_check: '质检修正中',
     };
     return retryLabels[stage ?? ''] ?? '重新执行中';

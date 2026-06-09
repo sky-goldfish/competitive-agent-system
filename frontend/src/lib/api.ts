@@ -49,10 +49,6 @@ export function deleteRun(runId: string): Promise<void> {
   return request<void>(`/runs/${runId}`, { method: 'DELETE' });
 }
 
-export function regenerateReport(runId: string): Promise<Run> {
-  return request<Run>(`/runs/${runId}/regenerate`, { method: 'POST' });
-}
-
 export function getCompetitors(runId: string): Promise<Competitor[]> {
   return request<Competitor[]>(`/runs/${runId}/competitors`);
 }

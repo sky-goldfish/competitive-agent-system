@@ -14,7 +14,6 @@ from app.services.run_service import (
     execute_report_run,
     get_run_or_raise,
     reconcile_stale_run_state,
-    regenerate_report,
     start_run,
 )
 
@@ -95,29 +94,6 @@ def confirm_competitors(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
-
-
-@router.post("/{run_id}/regenerate", response_model=RunResponse)
-def regenerate_run_report(
-    run_id: str, background_tasks: BackgroundTasks, db: Session = Depends(get_db)
-):
-    try:
-        run = get_run_or_raise(db, run_id)
-    except RunNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
-    if run.status not in ("completed", "failed"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Can only regenerate report for completed or failed runs.",
-        )
-    run.status = "running"
-    run.current_stage = "report_generation"
-    db.commit()
-    db.refresh(run)
-    background_tasks.add_task(regenerate_report, run_id)
-    return run
 
 
 @router.delete("/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
