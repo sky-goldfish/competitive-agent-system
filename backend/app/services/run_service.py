@@ -31,7 +31,9 @@ from app.db.models import (
 )
 from app.db.session import SessionLocal
 from app.providers.llm.factory import get_llm_provider
+from app.providers.llm.mock import MockLLMProvider
 from app.providers.search.factory import get_search_provider
+from app.providers.search.mock import MockSearchProvider
 from app.services import call_tracer
 
 
@@ -204,23 +206,52 @@ def reconcile_stale_run_state(db: Session, run: Run) -> None:
     db.commit()
 
 
-def start_run(db: Session, user_requirement: str) -> Run:
+def _run_uses_mock_discovery(db: Session, run_id: str) -> bool:
+    marker = (
+        db.query(Message)
+        .filter(Message.run_id == run_id, Message.role == "system")
+        .order_by(Message.created_at.desc())
+        .first()
+    )
+    if marker is None:
+        return False
+    try:
+        metadata = json.loads(marker.metadata_json or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return metadata.get("kind") == "dev_mock_discovery"
+
+
+def start_run(db: Session, user_requirement: str, mock_discovery: bool = False) -> Run:
     run = Run(
         user_requirement=user_requirement,
     )
     _set_run_status(run, "running", "requirement_understanding")
     db.add(run)
+    db.flush()
+    if mock_discovery:
+        db.add(
+            Message(
+                run_id=run.id,
+                role="system",
+                content="mock_discovery",
+                metadata_json=json.dumps(
+                    {"kind": "dev_mock_discovery"}, ensure_ascii=False
+                ),
+            )
+        )
     db.commit()
     db.refresh(run)
     return run
 
 
-def execute_discovery_run(run_id: str) -> None:
+def execute_discovery_run(run_id: str, use_mock_providers: bool = False) -> None:
     db = SessionLocal()
     try:
         run = get_run_or_raise(db, run_id)
-        llm = get_llm_provider()
-        search = get_search_provider()
+        use_mock_providers = use_mock_providers or _run_uses_mock_discovery(db, run_id)
+        llm = MockLLMProvider() if use_mock_providers else get_llm_provider()
+        search = MockSearchProvider() if use_mock_providers else get_search_provider()
         call_tracer.set_trace_context(run_id, run.current_stage)
         state: AgentState = {"run_id": run.id, "user_requirement": run.user_requirement}
         if run.requirement_json:

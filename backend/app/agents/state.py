@@ -1,6 +1,10 @@
 from typing import Any, TypedDict
 
 
+def ensure_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
 class AgentState(TypedDict, total=False):
     run_id: str
     user_requirement: str

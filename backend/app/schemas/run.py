@@ -5,6 +5,7 @@ from pydantic import BaseModel, field_validator
 
 class RunCreateRequest(BaseModel):
     user_requirement: str
+    mock_discovery: bool = False
 
     @field_validator("user_requirement")
     @classmethod

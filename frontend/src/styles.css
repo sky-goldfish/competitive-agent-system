@@ -3190,6 +3190,10 @@ html[data-theme='dark'] .conversation-input-row {
   background: var(--ai-surface);
 }
 
+html[data-theme='dark'] .mock-discovery-toggle {
+  color: var(--ai-muted);
+}
+
 html[data-theme='dark'] .analysis-workspace.has-report .report-toolbar,
 html[data-theme='dark'] .report-toolbar {
   background: linear-gradient(180deg, #161b24 0%, #121722 100%);
@@ -4168,6 +4172,7 @@ body {
   align-items: center;
   border-top: 1px solid #eef1f5;
   display: flex;
+  gap: 12px;
   justify-content: space-between;
   padding: 10px 4px 0 10px;
 }
@@ -4175,6 +4180,28 @@ body {
 .composer-footer span {
   color: var(--ai-muted);
   font-size: 12px;
+}
+
+.mock-discovery-toggle {
+  align-items: center;
+  color: #40506a;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.mock-discovery-toggle input {
+  accent-color: #111827;
+  height: 14px;
+  margin: 0;
+  width: 14px;
+}
+
+.mock-discovery-toggle + span {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .send-button {

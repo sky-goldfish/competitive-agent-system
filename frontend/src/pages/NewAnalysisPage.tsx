@@ -7,6 +7,7 @@ import { createRun } from '../lib/api';
 export default function NewAnalysisPage() {
   const navigate = useNavigate();
   const [value, setValue] = useState('');
+  const [mockDiscovery, setMockDiscovery] = useState(false);
   const mutation = useMutation({
     mutationFn: createRun,
     onSuccess: (run) => navigate(`/runs/${run.id}`),
@@ -15,7 +16,7 @@ export default function NewAnalysisPage() {
 
   function submit() {
     if (!canSubmit) return;
-    mutation.mutate(value.trim());
+    mutation.mutate({ userRequirement: value.trim(), mockDiscovery });
   }
 
   function handleSubmit(event: FormEvent) {
@@ -61,6 +62,16 @@ export default function NewAnalysisPage() {
             aria-label="产品或想法描述"
           />
           <div className="composer-footer">
+            {import.meta.env.VITE_DEV_MODE === 'true' && (
+              <label className="mock-discovery-toggle">
+                <input
+                  type="checkbox"
+                  checked={mockDiscovery}
+                  onChange={(event) => setMockDiscovery(event.target.checked)}
+                />
+                <span>前半段 Mock</span>
+              </label>
+            )}
             <span>{mutation.isPending ? 'Agent 正在理解需求...' : 'Enter 提交 · Shift + Enter 换行'}</span>
             <button type="submit" className="send-button" disabled={!canSubmit} aria-label="提交分析">
               <ArrowUp size={18} />

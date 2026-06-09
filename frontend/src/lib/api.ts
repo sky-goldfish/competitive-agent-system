@@ -23,10 +23,18 @@ async function request<T>(path: string, options?: RequestInit & { signal?: Abort
   }
 }
 
-export function createRun(userRequirement: string): Promise<Run> {
+export type CreateRunInput = {
+  userRequirement: string;
+  mockDiscovery?: boolean;
+};
+
+export function createRun(input: CreateRunInput): Promise<Run> {
   return request<Run>('/runs', {
     method: 'POST',
-    body: JSON.stringify({ user_requirement: userRequirement }),
+    body: JSON.stringify({
+      user_requirement: input.userRequirement,
+      mock_discovery: Boolean(input.mockDiscovery),
+    }),
   });
 }
 

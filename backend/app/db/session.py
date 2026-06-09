@@ -109,12 +109,8 @@ def _ensure_compatible_schema() -> None:
 
             if needs_recreate:
                 _recreate_reports_table_with_unique(connection)
-            else:
-                pass
 
-            report_columns = {
-                column["name"] for column in inspector.get_columns("reports")
-            }
+            report_columns = _sqlite_columns(connection, "reports")
             if "competitor_names_json" not in report_columns:
                 connection.execute(
                     text("ALTER TABLE reports ADD COLUMN competitor_names_json TEXT")
@@ -182,6 +178,12 @@ def _ensure_compatible_schema() -> None:
                         ") WHERE reference_id IS NULL"
                     )
                 )
+
+
+def _sqlite_columns(connection, table_name: str) -> set[str]:
+    return {
+        row[1] for row in connection.execute(text(f"PRAGMA table_info({table_name})"))
+    }
 
 
 def _has_reports_unique(connection) -> bool:

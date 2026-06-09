@@ -26,8 +26,8 @@ def create_run(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
-    run = start_run(db, payload.user_requirement)
-    background_tasks.add_task(execute_discovery_run, run.id)
+    run = start_run(db, payload.user_requirement, payload.mock_discovery)
+    background_tasks.add_task(execute_discovery_run, run.id, payload.mock_discovery)
     return run
 
 
