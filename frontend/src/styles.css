@@ -3238,12 +3238,46 @@ button:disabled {
 }
 
 .qa-substep-decision-note {
-  align-items: center;
+  align-items: flex-start;
   color: #92400e;
   display: flex;
   font-size: 12px;
   gap: 4px;
+  line-height: 1.5;
   padding: 2px 0 4px 24px;
+}
+
+.qa-substep-decision-note > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.qa-substep-issue-list {
+  display: grid;
+  gap: 3px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.qa-substep-issue-list li {
+  background: rgba(251, 191, 36, 0.08);
+  border: 1px solid rgba(251, 191, 36, 0.2);
+  border-radius: 6px;
+  color: #7c4a03;
+  display: grid;
+  gap: 2px;
+  padding: 5px 7px;
+}
+
+.qa-substep-issue-list strong {
+  color: #92400e;
+  font-size: 11px;
+}
+
+.qa-substep-issue-list span {
+  color: #6f4b13;
 }
 
 .qa-completed-summary {
@@ -4108,6 +4142,20 @@ html[data-theme='dark'] .qa-substep-running-text {
 
 html[data-theme='dark'] .qa-substep-decision-note {
   color: #fbbf24;
+}
+
+html[data-theme='dark'] .qa-substep-issue-list li {
+  background: rgba(251, 191, 36, 0.08);
+  border-color: rgba(251, 191, 36, 0.2);
+  color: #f8d88c;
+}
+
+html[data-theme='dark'] .qa-substep-issue-list strong {
+  color: #fbbf24;
+}
+
+html[data-theme='dark'] .qa-substep-issue-list span {
+  color: #f8d88c;
 }
 
 html[data-theme='dark'] .qa-completed-summary {
@@ -5389,15 +5437,25 @@ html[data-theme='dark'] .settings-danger-action:hover {
 }
 
 .stage-message-head h3 {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
   font-size: 16px;
+  gap: 6px;
   margin: 0;
 }
 
 .stage-message-head h3 .round-label {
-  color: var(--ai-muted, #6b7280);
-  font-size: 13px;
-  font-weight: 650;
-  margin-right: 2px;
+  background: #f8faff;
+  border: 1px solid #dbe4f0;
+  border-radius: 4px;
+  color: #53627c;
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1.35;
+  padding: 1px 7px;
+  vertical-align: middle;
 }
 
 .stage-message-head h3 .check-phase-label {
@@ -5407,7 +5465,6 @@ html[data-theme='dark'] .settings-danger-action:hover {
   display: inline-block;
   font-size: 11px;
   font-weight: 650;
-  margin-left: 6px;
   padding: 1px 7px;
   vertical-align: middle;
 }
@@ -5420,6 +5477,12 @@ html[data-theme='dark'] .settings-danger-action:hover {
 html[data-theme='dark'] .stage-message-head h3 .check-phase-label.retry-tag {
   border-color: #fbbf24;
   color: #fcd34d;
+}
+
+html[data-theme='dark'] .stage-message-head h3 .round-label {
+  background: #1e3359;
+  border-color: #2d4f85;
+  color: #dbe7ff;
 }
 
 .stage-message-head span {

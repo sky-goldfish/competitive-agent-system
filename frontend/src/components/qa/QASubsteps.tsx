@@ -9,13 +9,11 @@ import {
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { getQAResults } from '../../lib/api';
-import type { QAResult as QAResultType, Trace } from '../../lib/types';
+import type { QAIssue, QAResult as QAResultType, Trace } from '../../lib/types';
 import QAResultsPanel from './QAResultsPanel';
 
 type QASubstepKind =
   | 'quality_check'
-  | 'material_collection'
-  | 'structured_analysis'
   | 'report_generation';
 
 interface QASubstep {
@@ -25,6 +23,7 @@ interface QASubstep {
   score: number | null;
   decision: string | null;
   issueCount: number | null;
+  issues: QAIssue[];
 }
 
 interface QARound {
@@ -41,8 +40,6 @@ interface QARound {
 
 const substepLabels: Record<QASubstepKind, string> = {
   quality_check: '检查分析质量',
-  material_collection: '重新采集资料',
-  structured_analysis: '重新分析',
   report_generation: '更新报告',
 };
 
@@ -51,6 +48,15 @@ const decisionShortLabels: Record<string, string> = {
   retry_collection: '重新采集',
   retry_analysis: '重新分析',
   retry_collection_and_analysis: '重新采集+分析',
+};
+
+const dimensionLabels: Record<string, string> = {
+  evidence_grounding: '证据支撑度',
+  citation_accuracy: '引用准确性',
+  schema_completeness: 'Schema 完整度',
+  coverage_gaps: '覆盖缺口',
+  cross_competitor_consistency: '跨竞品一致性',
+  factual_plausibility: '事实合理性',
 };
 
 function formatDuration(ms: number | null): string {
@@ -71,7 +77,7 @@ function parseOutputJson(trace: Trace): Record<string, unknown> {
   }
 }
 
-function buildQARounds(traces: Trace[]): QARound[] {
+function buildQARounds(traces: Trace[], qaResults: QAResultType[] = []): QARound[] {
   const qaTraces: { trace: Trace; index: number }[] = [];
   traces.forEach((t, i) => {
     if (normalizeStageLocal(t.stage) === 'quality_check') {
@@ -86,9 +92,9 @@ function buildQARounds(traces: Trace[]): QARound[] {
   let verifyIdx = 0;
 
   for (let qi = 0; qi < qaTraces.length; qi++) {
-    const { trace: qaTrace, index: qaIdx } = qaTraces[qi];
-    const nextQaIdx = qi + 1 < qaTraces.length ? qaTraces[qi + 1].index : traces.length;
+    const { trace: qaTrace } = qaTraces[qi];
     const output = parseOutputJson(qaTrace);
+    const qaResult = qaResults[qi];
     const checkPhase = typeof output.check_phase === 'string' ? output.check_phase : 'full_check';
     const isFullCheck = checkPhase === 'full_check';
 
@@ -107,24 +113,9 @@ function buildQARounds(traces: Trace[]): QARound[] {
       durationMs: qaTrace.duration_ms,
       score: typeof output.overall_score === 'number' ? Math.round(output.overall_score * 100) : null,
       decision: typeof output.decision === 'string' ? output.decision : null,
-      issueCount: typeof output.issue_count === 'number' ? output.issue_count : null,
+      issueCount: typeof output.issue_count === 'number' ? output.issue_count : qaResult?.issues.length ?? null,
+      issues: qaResult?.issues ?? [],
     });
-
-    const repairStages: QASubstepKind[] = ['material_collection', 'structured_analysis'];
-    for (let ti = qaIdx + 1; ti < nextQaIdx; ti++) {
-      const t = traces[ti];
-      const norm = normalizeStageLocal(t.stage);
-      if (repairStages.includes(norm as QASubstepKind)) {
-        substeps.push({
-          kind: norm as QASubstepKind,
-          status: t.status === 'completed' ? 'completed' : 'running',
-          durationMs: t.duration_ms,
-          score: null,
-          decision: null,
-          issueCount: null,
-        });
-      }
-    }
 
     const isLastTrace = qi === qaTraces.length - 1;
     const roundCompleted = qaTrace.status === 'completed';
@@ -187,10 +178,7 @@ function SubstepRow({ substep, showScore = true }: { substep: QASubstep; showSco
       ) : null}
       {substep.status === 'running' ? (
         <span className="qa-substep-running-text">
-          {substep.kind === 'quality_check' ? '正在质检...' :
-           substep.kind === 'material_collection' ? '正在重新采集资料...' :
-           substep.kind === 'structured_analysis' ? '正在重新分析...' :
-           '正在更新报告...'}
+          {substep.kind === 'quality_check' ? '正在质检...' : '正在更新报告...'}
         </span>
       ) : null}
     </div>
@@ -205,9 +193,29 @@ function DecisionNote({ substep }: { substep: QASubstep }) {
   return (
     <div className="qa-substep-decision-note">
       <AlertTriangle size={13} />
-      <span>发现{substep.issueCount != null ? ` ${substep.issueCount} 个问题` : '问题'}，决定{label}</span>
+      <div>
+        <span>发现{substep.issueCount != null ? ` ${substep.issueCount} 个问题` : '问题'}，决定{label}</span>
+        {substep.issues.length > 0 ? (
+          <ul className="qa-substep-issue-list">
+            {substep.issues.map((issue, index) => (
+              <li key={issue.id ?? `${issue.dimension}-${index}`}>
+                <strong>{issueLabel(issue)}</strong>
+                <span>{issue.description}</span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
     </div>
   );
+}
+
+function issueLabel(issue: QAIssue) {
+  const dimension = dimensionLabels[issue.dimension] ?? issue.dimension;
+  const competitor = issue.competitor_name && !['report', 'system'].includes(issue.competitor_name)
+    ? ` · ${issue.competitor_name}`
+    : '';
+  return `${dimension}${competitor}`;
 }
 
 function QARoundBlock({ round }: { round: QARound }) {
@@ -239,7 +247,7 @@ function QARoundBlock({ round }: { round: QARound }) {
       <div className="qa-round-substeps">
         {round.substeps.map((substep) => (
           <div key={`${substep.kind}-${substep.status}`}>
-            <SubstepRow substep={substep} showScore={isFullCheck} />
+            <SubstepRow substep={substep} showScore={false} />
             <DecisionNote substep={substep} />
           </div>
         ))}
@@ -304,7 +312,7 @@ export default function QASubsteps({ runId, traces, stageStatus }: Props) {
   });
 
   const qaResults = qaQuery.data ?? [];
-  const rounds = useMemo(() => buildQARounds(traces), [traces]);
+  const rounds = useMemo(() => buildQARounds(traces, qaResults), [traces, qaResults]);
   const isAllCompleted = rounds.length > 0 && rounds.every((r) => r.isCompleted);
   const finalPassed = rounds.length > 0 && rounds[rounds.length - 1].finalDecision === 'pass';
 

@@ -1504,6 +1504,16 @@ function StageDialogueCard({
 
   const hasEmbeddedContent = showClarification || showCompetitorConfirm || showSources || showCitations || showQA || stage === 'requirement_understanding' || stage === 'focus_profile';
   const canCollapse = !isAutoExpanded && hasEmbeddedContent && (status === 'completed' || status === 'failed');
+  const qualityPhaseLabel = stage === 'quality_check' && checkPhase === 'issue_verification'
+    ? '专项复核'
+    : stage === 'quality_check' && checkPhase === 'full_check'
+    ? '全面检查'
+    : null;
+  const qualityRoundLabel = stage === 'quality_check' && checkPhase === 'issue_verification'
+    ? `第${Math.max(1, (round ?? 1) - 1)}轮复核-${verifyIdx ?? 1}`
+    : stage === 'quality_check' && checkPhase === 'full_check'
+    ? `第${round ?? 1}轮`
+    : null;
 
   return (
     <article className={`message-row assistant stage-message-row ${isHighlighted ? 'highlight-version' : ''}`}>
@@ -1512,19 +1522,13 @@ function StageDialogueCard({
           <div className="stage-status-icon">{statusIcon(status)}</div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <h3>
-              {stage === 'quality_check' && checkPhase === 'issue_verification'
-                ? <span className="round-label">[第{round - 1}轮复核-{verifyIdx}] </span>
-                : stage === 'quality_check' && checkPhase === 'full_check'
-                ? <span className="round-label">[第{round}轮] </span>
-                : null}
               {stageLabels[stage] ?? stage}
-              {stage === 'quality_check' && checkPhase === 'issue_verification'
-                ? <span className="check-phase-label">专项复核</span>
-                : stage === 'quality_check' && checkPhase === 'full_check'
-                ? <span className="check-phase-label">全面检查</span>
+              {qualityPhaseLabel
+                ? <span className="check-phase-label">{qualityPhaseLabel}</span>
                 : round > 1 && (stage === 'material_collection' || stage === 'structured_analysis')
                 ? <span className="check-phase-label retry-tag">复核修正</span>
                 : null}
+              {qualityRoundLabel ? <span className="round-label">{qualityRoundLabel}</span> : null}
             </h3>
             <span>{statusText(status, stage)}</span>
           </div>
