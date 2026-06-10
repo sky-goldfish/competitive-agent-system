@@ -327,6 +327,7 @@ type UIAction =
   | { type: 'TOGGLE_STAGES_COLLAPSED' }
   | { type: 'SET_STAGES_COLLAPSED'; collapsed: boolean }
   | { type: 'SET_MANUAL_STAGE_COLLAPSE'; value: boolean }
+  | { type: 'SET_REVEALED_STAGE_COUNT'; count: number }
   | { type: 'ADVANCE_REVEALED_STAGE'; maxStages: number }
   | { type: 'CLAMP_REVEALED_STAGE'; maxStages: number };
 
@@ -352,6 +353,8 @@ function uiReducer(state: UIState, action: UIAction): UIState {
       return { ...state, stagesCollapsed: action.collapsed };
     case 'SET_MANUAL_STAGE_COLLAPSE':
       return { ...state, manualStageCollapse: action.value };
+    case 'SET_REVEALED_STAGE_COUNT':
+      return { ...state, revealedStageCount: Math.max(0, action.count) };
     case 'ADVANCE_REVEALED_STAGE':
       return {
         ...state,
@@ -462,7 +465,7 @@ export default function RunDetailPage() {
   const evidenceQuery = useQuery({ queryKey: ['evidence', id], queryFn: () => getEvidence(id), enabled: Boolean(id), refetchInterval: isActive ? 5000 : false });
   const traces = timelineQuery.data ?? [];
   const reportGenerated = traces.some((trace) => normalizeStage(trace.stage) === 'report_generation' && trace.status === 'completed');
-  const shouldFetchReport = Boolean(reportGenerated);
+  const shouldFetchReport = Boolean(reportGenerated || run?.status === 'completed' || run?.completed_at);
   const reportQuery = useQuery({ queryKey: ['report', id, selectedIteration], queryFn: () => getReport(id, selectedIteration), enabled: Boolean(id) && Boolean(shouldFetchReport), refetchInterval: isActive ? 3000 : false });
   const reportVersionsQuery = useQuery({ queryKey: ['report-versions', id], queryFn: () => getReportVersions(id), enabled: Boolean(id) && Boolean(shouldFetchReport), refetchInterval: isActive ? 3000 : false });
   const displayedReportIteration = reportQuery.data?.iteration;
@@ -682,13 +685,19 @@ export default function RunDetailPage() {
 
   useEffect(() => {
     if (!run) return undefined;
+    if (run.status === 'completed' || run.status === 'failed') {
+      if (ui.revealedStageCount !== stages.length) {
+        uiDispatch({ type: 'SET_REVEALED_STAGE_COUNT', count: stages.length });
+      }
+      return undefined;
+    }
     if (ui.revealedStageCount > stages.length) {
       uiDispatch({ type: 'CLAMP_REVEALED_STAGE', maxStages: stages.length });
     }
     if (ui.revealedStageCount >= stages.length) return undefined;
     const timer = window.setTimeout(() => {
       uiDispatch({ type: 'ADVANCE_REVEALED_STAGE', maxStages: stages.length });
-    }, 1000);
+    }, 500);
     return () => window.clearTimeout(timer);
   }, [ui.revealedStageCount, run, stages.length]);
 
