@@ -5039,6 +5039,131 @@ html[data-theme='dark'] .settings-danger-action:hover {
   transform: translateX(24px);
 }
 
+.api-settings-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.api-settings-card {
+  background: var(--ai-surface-muted);
+  border: 1px solid var(--ai-border);
+  border-radius: 14px;
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  padding: 16px;
+}
+
+.api-settings-card-head {
+  align-items: center;
+  border-bottom: 1px solid var(--ai-border);
+  display: flex;
+  gap: 12px;
+  padding-bottom: 12px;
+}
+
+.api-settings-card-head div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.api-settings-card-head strong {
+  color: var(--ai-text);
+  font-size: 15px;
+}
+
+.api-settings-card-head span:not(.settings-row-icon) {
+  color: var(--ai-muted);
+  font-size: 12px;
+}
+
+.settings-field-group {
+  border: 1px solid var(--ai-border);
+  border-radius: 12px;
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+}
+
+.settings-field-group-title {
+  align-items: center;
+  color: var(--ai-text);
+  display: flex;
+  font-size: 13px;
+  font-weight: 800;
+  gap: 7px;
+}
+
+.settings-field {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.settings-field > span {
+  color: var(--ai-muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.settings-field input,
+.settings-field select {
+  background: var(--ai-surface);
+  border: 1px solid var(--ai-border);
+  border-radius: 10px;
+  color: var(--ai-text);
+  font: inherit;
+  font-size: 13px;
+  min-height: 40px;
+  min-width: 0;
+  outline: none;
+  padding: 9px 11px;
+  width: 100%;
+}
+
+.settings-field input:focus,
+.settings-field select:focus {
+  border-color: var(--ai-accent);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.settings-check-row {
+  align-items: flex-start;
+  color: var(--ai-muted);
+  display: flex;
+  font-size: 13px;
+  gap: 9px;
+  line-height: 1.5;
+}
+
+.settings-check-row input {
+  accent-color: var(--ai-accent);
+  flex: 0 0 auto;
+  margin-top: 3px;
+}
+
+.api-settings-note {
+  color: var(--ai-muted);
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.settings-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.settings-actions span {
+  color: var(--ai-muted);
+  font-size: 12px;
+}
+
 .analysis-workspace {
   height: 100vh;
   min-width: 0;
@@ -5932,6 +6057,20 @@ html[data-theme='dark'] .stage-message-head h3 .round-label {
   .knowledge-settings-card {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .api-settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .settings-actions .primary-action {
+    justify-content: center;
+    width: 100%;
   }
 
   .settings-danger-action {

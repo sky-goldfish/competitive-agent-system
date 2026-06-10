@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import (
     analyses,
+    api_settings,
     chat,
     competitors,
     health,
@@ -37,6 +38,7 @@ def on_startup() -> None:
 
 
 app.include_router(health.router, prefix="/api")
+app.include_router(api_settings.router, prefix="/api")
 app.include_router(runs.router, prefix="/api")
 app.include_router(competitors.router, prefix="/api")
 app.include_router(knowledge.router, prefix="/api")

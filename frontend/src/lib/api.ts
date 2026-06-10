@@ -156,3 +156,62 @@ export function getRevisionTimeline(revisionId: string): Promise<RevisionTrace[]
 export function getObservability(runId: string): Promise<ObservabilityData> {
   return request<ObservabilityData>(`/runs/${runId}/observability`);
 }
+
+export type SecretStatus = {
+  configured: boolean;
+  masked: string;
+};
+
+export type APISettings = {
+  llm: {
+    provider: 'mock' | 'ark' | 'openai';
+    effective_provider: 'mock' | 'ark' | 'openai';
+    ark_api_key: SecretStatus;
+    ark_endpoint_id: string;
+    ark_model: string;
+    ark_base_url: string;
+    openai_api_key: SecretStatus;
+    openai_model: string;
+    openai_base_url: string;
+    openai_temperature: number | null;
+  };
+  search: {
+    provider: 'mock' | 'tavily' | 'bocha';
+    effective_provider: 'mock' | 'tavily' | 'bocha';
+    tavily_api_key: SecretStatus;
+    bocha_api_key: SecretStatus;
+    enable_mock_search_fallback: boolean;
+  };
+  env_path: string;
+};
+
+export type APISettingsInput = {
+  llm: {
+    provider: string;
+    ark_api_key: string;
+    ark_endpoint_id: string;
+    ark_model: string;
+    ark_base_url: string;
+    openai_api_key: string;
+    openai_model: string;
+    openai_base_url: string;
+    openai_temperature: number | null;
+  };
+  search: {
+    provider: string;
+    tavily_api_key: string;
+    bocha_api_key: string;
+    enable_mock_search_fallback: boolean;
+  };
+};
+
+export function getAPISettings(): Promise<APISettings> {
+  return request<APISettings>('/settings/api');
+}
+
+export function saveAPISettings(input: APISettingsInput): Promise<APISettings> {
+  return request<APISettings>('/settings/api', {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  });
+}
