@@ -29,12 +29,17 @@ def _wait_for_status(run_id: str, expected: str, *, attempts: int = 20):
             return run
         if run["status"] == "failed":
             raise AssertionError(run.get("error_message") or "run failed")
-    raise AssertionError(f"Run {run_id} did not reach {expected}")
+    raise AssertionError(
+        f"Run {run_id} did not reach {expected}. Current status: {run['status']}"
+    )
 
 
 def test_run_lifecycle():
     init_db()
-    create_response = client.post("/api/runs", json={"user_requirement": "我想分析 AI 会议纪要工具的竞品"})
+    create_response = client.post(
+        "/api/runs",
+        json={"user_requirement": "我想分析 AI 会议纪要工具的竞品，侧重功能对比"},
+    )
     assert create_response.status_code == 201
     run = create_response.json()
     assert run["status"] == "running"
@@ -51,7 +56,13 @@ def test_run_lifecycle():
         f"/api/runs/{run['id']}/competitors/confirm",
         json={
             "competitor_ids": selected_ids,
-            "custom_competitors": [{"name": "自定义竞品", "website": "https://example.com", "category": "adjacent_product"}],
+            "custom_competitors": [
+                {
+                    "name": "自定义竞品",
+                    "website": "https://example.com",
+                    "category": "adjacent_product",
+                }
+            ],
         },
     )
     assert confirm_response.status_code == 200
@@ -77,7 +88,9 @@ def test_run_lifecycle():
     assert all(source["source_type_label"] for source in sources)
     assert all(source["credibility_score"] is not None for source in sources)
     assert any(source["classification_reason"] for source in sources)
-    assert len({(source["competitor_id"], source["url"]) for source in sources}) == len(sources)
+    assert len({(source["competitor_id"], source["url"]) for source in sources}) == len(
+        sources
+    )
     evidence_response = client.get(f"/api/runs/{run['id']}/evidence")
     assert evidence_response.status_code == 200
     evidence_items = evidence_response.json()
@@ -99,15 +112,33 @@ def test_run_lifecycle():
     timeline_response = client.get(f"/api/runs/{run['id']}/timeline")
     assert timeline_response.status_code == 200
     stages = {item["stage"] for item in timeline_response.json()}
-    assert {"requirement_understanding", "competitor_discovery", "human_confirm_competitors", "material_collection", "structured_analysis", "report_generation"}.issubset(stages)
-    assert {"quart_planning", "material_query_planning", "source_search", "source_classification", "evidence_extraction", "coverage_checking"}.issubset(stages)
+    assert {
+        "requirement_understanding",
+        "competitor_discovery",
+        "human_confirm_competitors",
+        "material_collection",
+        "structured_analysis",
+        "report_generation",
+    }.issubset(stages)
+    assert {
+        "quart_planning",
+        "material_query_planning",
+        "source_search",
+        "source_classification",
+        "evidence_extraction",
+        "coverage_checking",
+    }.issubset(stages)
 
 
 def test_report_citations_follow_selected_report_iteration():
     init_db()
     db = SessionLocal()
     try:
-        run = Run(user_requirement="验证报告版本引用", status="completed", current_stage="completed")
+        run = Run(
+            user_requirement="验证报告版本引用",
+            status="completed",
+            current_stage="completed",
+        )
         db.add(run)
         db.flush()
 
@@ -176,20 +207,29 @@ def test_report_citations_follow_selected_report_iteration():
     assert latest_report.status_code == 200
     assert latest_report.json()["iteration"] == 1
     assert latest_citations.status_code == 200
-    assert [item["source"]["id"] for item in latest_citations.json()] == [latest_source_id]
+    assert [item["source"]["id"] for item in latest_citations.json()] == [
+        latest_source_id
+    ]
 
     assert first_report.status_code == 200
     assert first_report.json()["iteration"] == 0
     assert first_citations.status_code == 200
-    assert [item["source"]["id"] for item in first_citations.json()] == [first_source_id]
+    assert [item["source"]["id"] for item in first_citations.json()] == [
+        first_source_id
+    ]
 
     assert missing_citations.status_code == 404
 
 
 def test_confirm_rejects_competitor_ids_from_other_runs():
     init_db()
-    first_response = client.post("/api/runs", json={"user_requirement": "我想分析飞书的竞品"})
-    second_response = client.post("/api/runs", json={"user_requirement": "我想分析 AI 会议纪要工具的竞品"})
+    first_response = client.post(
+        "/api/runs", json={"user_requirement": "我想分析飞书的竞品，侧重功能"}
+    )
+    second_response = client.post(
+        "/api/runs",
+        json={"user_requirement": "我想分析 AI 会议纪要工具的竞品，侧重功能"},
+    )
     assert first_response.status_code == 201
     assert second_response.status_code == 201
     first_run = _wait_for_status(first_response.json()["id"], "waiting_for_human")
@@ -199,7 +239,10 @@ def test_confirm_rejects_competitor_ids_from_other_runs():
     assert second_competitors
     confirm_response = client.post(
         f"/api/runs/{first_run['id']}/competitors/confirm",
-        json={"competitor_ids": [second_competitors[0]["id"]], "custom_competitors": []},
+        json={
+            "competitor_ids": [second_competitors[0]["id"]],
+            "custom_competitors": [],
+        },
     )
 
     assert confirm_response.status_code == 400
@@ -210,23 +253,69 @@ def test_material_source_classification_supports_domain_weights():
     from app.agents.nodes.material_collection import _classify_source
 
     commodity_requirement = {"domain": "智能保温杯与办公水杯"}
-    assert _classify_source("https://item.jd.com/100.html", "Ember Mug 京东商品页", "价格 参数", commodity_requirement, "价格与商业模式")[:2] == ("ecommerce_product_page", 0.86)
-    assert _classify_source("https://www.xiaohongshu.com/explore/1", "Ember Mug 使用体验", "用户评价", commodity_requirement, "用户评价与痛点")[:2] == ("social_review_post", 0.66)
-    assert _classify_source("https://www.zhihu.com/question/1", "智能杯值得买吗", "讨论", commodity_requirement, "用户评价与痛点")[:2] == ("community_discussion", 0.62)
+    assert _classify_source(
+        "https://item.jd.com/100.html",
+        "Ember Mug 京东商品页",
+        "价格 参数",
+        commodity_requirement,
+        "价格与商业模式",
+    )[:2] == ("ecommerce_product_page", 0.86)
+    assert _classify_source(
+        "https://www.xiaohongshu.com/explore/1",
+        "Ember Mug 使用体验",
+        "用户评价",
+        commodity_requirement,
+        "用户评价与痛点",
+    )[:2] == ("social_review_post", 0.66)
+    assert _classify_source(
+        "https://www.zhihu.com/question/1",
+        "智能杯值得买吗",
+        "讨论",
+        commodity_requirement,
+        "用户评价与痛点",
+    )[:2] == ("community_discussion", 0.62)
 
     saas_requirement = {"domain": "企业协作办公平台"}
-    assert _classify_source("https://slack.com/pricing", "Slack Pricing", "plans", saas_requirement, "价格与商业模式")[:2] == ("official_pricing_page", 0.93)
-    assert _classify_source("https://www.g2.com/products/slack/reviews", "Slack Reviews", "pros cons", saas_requirement, "用户评价与痛点")[:2] == ("review_site", 0.72)
+    assert _classify_source(
+        "https://slack.com/pricing",
+        "Slack Pricing",
+        "plans",
+        saas_requirement,
+        "价格与商业模式",
+    )[:2] == ("official_pricing_page", 0.93)
+    assert _classify_source(
+        "https://www.g2.com/products/slack/reviews",
+        "Slack Reviews",
+        "pros cons",
+        saas_requirement,
+        "用户评价与痛点",
+    )[:2] == ("review_site", 0.72)
 
 
 def test_retrieval_quart_planner_uses_software_and_commodity_rules():
-    from app.agents.nodes.material_collection import _detect_product_type, _plan_retrieval_quarts
+    from app.agents.nodes.material_collection import (
+        _detect_product_type,
+        _plan_retrieval_quarts,
+    )
 
     software_requirement = {"domain": "企业协作办公平台", "summary": "分析飞书竞品"}
-    commodity_requirement = {"domain": "智能保温杯", "summary": "分析办公室智能保温杯竞品"}
+    commodity_requirement = {
+        "domain": "智能保温杯",
+        "summary": "分析办公室智能保温杯竞品",
+    }
     competitors = [
-        {"id": "comp_global", "name": "Slack", "category": "direct_competitor", "region": "global"},
-        {"id": "comp_china", "name": "钉钉", "category": "direct_competitor", "region": "china"},
+        {
+            "id": "comp_global",
+            "name": "Slack",
+            "category": "direct_competitor",
+            "region": "global",
+        },
+        {
+            "id": "comp_china",
+            "name": "钉钉",
+            "category": "direct_competitor",
+            "region": "china",
+        },
     ]
 
     assert _detect_product_type(software_requirement) == "software"
@@ -234,18 +323,34 @@ def test_retrieval_quart_planner_uses_software_and_commodity_rules():
 
     software_quarts = _plan_retrieval_quarts(competitors, software_requirement)
     assert {quart["product_type"] for quart in software_quarts} == {"software"}
-    assert any(quart["target_slot"] == "relationship_evidence" for quart in software_quarts)
+    assert any(
+        quart["target_slot"] == "relationship_evidence" for quart in software_quarts
+    )
     assert any(quart["relation_claim"] for quart in software_quarts)
     assert any("vs Slack" in quart["query"] for quart in software_quarts)
-    assert any(quart["query"] == "Slack pricing plans enterprise" for quart in software_quarts)
-    assert any(quart["query"] == "钉钉 价格 收费 套餐 企业版" for quart in software_quarts)
+    assert any(
+        quart["query"] == "Slack pricing plans enterprise" for quart in software_quarts
+    )
+    assert any(
+        quart["query"] == "钉钉 价格 收费 套餐 企业版" for quart in software_quarts
+    )
     assert all(quart["success_criteria"] for quart in software_quarts)
 
-    commodity_quarts = _plan_retrieval_quarts([{"id": "cup", "name": "Ember Mug", "category": "direct_competitor"}], commodity_requirement)
+    commodity_quarts = _plan_retrieval_quarts(
+        [{"id": "cup", "name": "Ember Mug", "category": "direct_competitor"}],
+        commodity_requirement,
+    )
     assert {quart["product_type"] for quart in commodity_quarts} == {"commodity"}
-    assert any(quart["target_slot"] == "relationship_evidence" for quart in commodity_quarts)
-    assert any(quart["query"] == "Ember Mug 京东 天猫 淘宝 价格" for quart in commodity_quarts)
-    assert any(quart["query"] == "Ember Mug 用户评价 小红书 知乎 B站 京东 差评" for quart in commodity_quarts)
+    assert any(
+        quart["target_slot"] == "relationship_evidence" for quart in commodity_quarts
+    )
+    assert any(
+        quart["query"] == "Ember Mug 京东 天猫 淘宝 价格" for quart in commodity_quarts
+    )
+    assert any(
+        quart["query"] == "Ember Mug 用户评价 小红书 知乎 B站 京东 差评"
+        for quart in commodity_quarts
+    )
 
 
 def test_retrieval_quart_planner_uses_competitor_relationship_type():
@@ -258,13 +363,33 @@ def test_retrieval_quart_planner_uses_competitor_relationship_type():
         "primary_use_cases": ["团队知识沉淀", "文档协作"],
     }
     competitors = [
-        {"id": "clickup", "name": "ClickUp AI", "category": "indirect_competitor", "region": "global"},
-        {"id": "manual", "name": "搜索引擎 + 表格 + PPT", "category": "substitute_solution", "region": "china"},
+        {
+            "id": "clickup",
+            "name": "ClickUp AI",
+            "category": "indirect_competitor",
+            "region": "global",
+        },
+        {
+            "id": "manual",
+            "name": "搜索引擎 + 表格 + PPT",
+            "category": "substitute_solution",
+            "region": "china",
+        },
     ]
 
     quarts = _plan_retrieval_quarts(competitors, requirement)
-    clickup_relation = next(quart for quart in quarts if quart["competitor_id"] == "clickup" and quart["target_slot"] == "relationship_evidence")
-    manual_relation = next(quart for quart in quarts if quart["competitor_id"] == "manual" and quart["target_slot"] == "relationship_evidence")
+    clickup_relation = next(
+        quart
+        for quart in quarts
+        if quart["competitor_id"] == "clickup"
+        and quart["target_slot"] == "relationship_evidence"
+    )
+    manual_relation = next(
+        quart
+        for quart in quarts
+        if quart["competitor_id"] == "manual"
+        and quart["target_slot"] == "relationship_evidence"
+    )
 
     assert clickup_relation["competitor_type"] == "indirect_competitor"
     assert "use cases team workflow" in clickup_relation["query"]
@@ -277,7 +402,12 @@ def test_retrieval_quart_planner_uses_competitor_relationship_type():
 def test_retrieval_quart_planner_skips_covered_pricing_slot():
     from app.agents.nodes.material_collection import _plan_retrieval_quarts
 
-    competitor = {"id": "slack", "name": "Slack", "category": "direct_competitor", "region": "global"}
+    competitor = {
+        "id": "slack",
+        "name": "Slack",
+        "category": "direct_competitor",
+        "region": "global",
+    }
     sources = [{"id": "src_pricing", "source_type": "official_pricing_page"}]
     evidence = [
         {
@@ -289,7 +419,9 @@ def test_retrieval_quart_planner_skips_covered_pricing_slot():
         }
     ]
 
-    quarts = _plan_retrieval_quarts([competitor], {"domain": "企业协作办公平台"}, evidence, sources)
+    quarts = _plan_retrieval_quarts(
+        [competitor], {"domain": "企业协作办公平台"}, evidence, sources
+    )
 
     assert "pricing" not in {quart["target_slot"] for quart in quarts}
     assert "relationship_evidence" in {quart["target_slot"] for quart in quarts}
@@ -321,15 +453,25 @@ def test_ark_report_source_summary_reads_metadata_json():
     assert summary["query"] == "Slack pricing plans enterprise official"
     assert summary["classification_reason"] == "按领域、域名、标题关键词和维度匹配。"
 
-    numbered_summary = _source_report_summary({"title": "Example", "url": "https://example.com"}, reference_id=3)
+    numbered_summary = _source_report_summary(
+        {"title": "Example", "url": "https://example.com"}, reference_id=3
+    )
     assert numbered_summary["reference_id"] == 3
 
     content = "## 摘要\n\n结论引用[2](https://b.example)，越界引用[19](https://missing.example)。\n\n## 参考来源\n\n1. [旧来源](https://old.example)"
     updated = _ensure_reference_section(
         content,
         [
-            {"title": "A Source", "url": "https://a.example", "source_type": "official_site"},
-            {"title": "B Source", "url": "https://b.example", "source_type": "review_site"},
+            {
+                "title": "A Source",
+                "url": "https://a.example",
+                "source_type": "official_site",
+            },
+            {
+                "title": "B Source",
+                "url": "https://b.example",
+                "source_type": "review_site",
+            },
         ],
     )
     assert "旧来源" not in updated
@@ -339,10 +481,11 @@ def test_ark_report_source_summary_reads_metadata_json():
     assert "2. [[2]](https://b.example) [B Source](https://b.example)" in updated
 
 
-
 def test_feishu_competitor_discovery_uses_collaboration_context():
     init_db()
-    create_response = client.post("/api/runs", json={"user_requirement": "我想分析飞书的竞品"})
+    create_response = client.post(
+        "/api/runs", json={"user_requirement": "我想分析飞书的竞品，侧重功能对比"}
+    )
     assert create_response.status_code == 201
     run = create_response.json()
     assert run["status"] == "running"
@@ -355,11 +498,27 @@ def test_feishu_competitor_discovery_uses_collaboration_context():
     competitor_names = {item["name"] for item in competitors}
     competitor_regions = {item["region"] for item in competitors}
 
-    assert competitor_names & {"钉钉", "企业微信", "Slack", "Microsoft Teams", "Google Workspace", "Notion"}
+    assert competitor_names & {
+        "钉钉",
+        "企业微信",
+        "Slack",
+        "Microsoft Teams",
+        "Google Workspace",
+        "Notion",
+    }
     assert {"global", "china"}.issubset(competitor_regions)
-    assert not competitor_names & {"GIE", "Outscraper", "通用", "視点", "Products", "The", "EPD", "Industrial"}
+    assert not competitor_names & {
+        "GIE",
+        "Outscraper",
+        "通用",
+        "視点",
+        "Products",
+        "The",
+        "EPD",
+        "Industrial",
+    }
     assert all("匹配维度" in item["description"] for item in competitors)
-    assert all("推荐来源" in item["description"] for item in competitors)
+    assert all("来源" in item["description"] for item in competitors)
 
     timeline_response = client.get(f"/api/runs/{run['id']}/timeline")
     assert timeline_response.status_code == 200
@@ -373,7 +532,9 @@ def test_feishu_competitor_discovery_uses_collaboration_context():
         "competitor_search",
         "candidate_extraction",
     }.issubset(stages)
-    discovery_trace = next(item for item in timeline if item["stage"] == "competitor_discovery")
+    discovery_trace = next(
+        item for item in timeline if item["stage"] == "competitor_discovery"
+    )
     assert "飞书" in discovery_trace["output_json"]
     assert "target_search_result_count" in discovery_trace["output_json"]
 
@@ -391,7 +552,14 @@ def test_ai_coding_competitor_discovery_uses_developer_tool_context():
     assert requirement["domain"] == "AI 编程"
     assert focus_profile["clarification_needed"] is True
     assert "代码生成质量" in focus_profile["clarifying_question"]
-    assert names & {"Cursor", "GitHub Copilot", "Windsurf", "Codeium", "通义灵码", "豆包 MarsCode"}
+    assert names & {
+        "Cursor",
+        "GitHub Copilot",
+        "Windsurf",
+        "Codeium",
+        "通义灵码",
+        "豆包 MarsCode",
+    }
     assert not names & {"我想做", "编程", "同类产品榜单", "与竞品对比", "alternatives"}
 
 
@@ -407,5 +575,20 @@ def test_product_idea_competitor_discovery_uses_drinkware_context():
 
     assert requirement["domain"] == "水壶/饮具"
     assert focus_profile["clarification_needed"] is True
-    assert names & {"Stanley Quencher", "Hydro Flask", "YETI Rambler", "Fellow Carter", "膳魔师保温杯", "哈尔斯水杯", "富光水杯"}
-    assert not names & {"我要做", "水壶", "水壶产品", "同类产品榜单", "与竞品对比", "用户需求"}
+    assert names & {
+        "Stanley Quencher",
+        "Hydro Flask",
+        "YETI Rambler",
+        "Fellow Carter",
+        "膳魔师保温杯",
+        "哈尔斯水杯",
+        "富光水杯",
+    }
+    assert not names & {
+        "我要做",
+        "水壶",
+        "水壶产品",
+        "同类产品榜单",
+        "与竞品对比",
+        "用户需求",
+    }

@@ -1,7 +1,20 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import analyses, competitors, health, qa, reports, runs, sources, timeline
+from app.api.routes import (
+    analyses,
+    chat,
+    competitors,
+    health,
+    knowledge,
+    observability,
+    qa,
+    reports,
+    revisions,
+    runs,
+    sources,
+    timeline,
+)
 from app.core.config import get_settings
 from app.db.session import init_db
 
@@ -26,8 +39,12 @@ def on_startup() -> None:
 app.include_router(health.router, prefix="/api")
 app.include_router(runs.router, prefix="/api")
 app.include_router(competitors.router, prefix="/api")
+app.include_router(knowledge.router, prefix="/api")
 app.include_router(analyses.router, prefix="/api")
 app.include_router(timeline.router, prefix="/api")
 app.include_router(sources.router, prefix="/api")
 app.include_router(reports.router, prefix="/api")
 app.include_router(qa.router, prefix="/api")
+app.include_router(chat.router, prefix="/api")
+app.include_router(revisions.router, prefix="/api")
+app.include_router(observability.router, prefix="/api")

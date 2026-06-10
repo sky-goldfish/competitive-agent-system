@@ -13,17 +13,26 @@ __pycache__/
 .ruff_cache/
 .venv/
 venv/
+*.egg-info/
 
 # Local databases
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
 backend/competitive_agent.db
+backend/competitive_agent.db*
 
 # Frontend
 node_modules/
 dist/
 frontend/dist/
+
+# Runtime output and logs
+*.log
+*.err.log
+output/
 
 # OS / editor
 .DS_Store

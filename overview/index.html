@@ -345,7 +345,6 @@
             <span class="layer-chip" onclick="openModal('svc-discovery')">execute_discovery_run() — 阶段一编排</span>
             <span class="layer-chip" onclick="openModal('svc-confirm')">confirm_and_continue_run() — 确认竞品</span>
             <span class="layer-chip" onclick="openModal('svc-report')">execute_report_run() — 阶段二编排</span>
-            <span class="layer-chip" onclick="openModal('svc-regen')">regenerate_report() — 重新生成报告</span>
           </div>
         </div>
 
@@ -1041,12 +1040,6 @@
         <td>—</td>
         <td>质检结果列表（含Checklist）</td>
       </tr>
-      <tr>
-        <td><span class="badge green">POST</span></td>
-        <td><code>/api/runs/{id}/regenerate</code></td>
-        <td>regenerate_report() (bg)</td>
-        <td>重新生成报告（使用已有数据）</td>
-      </tr>
     </table>
   </div>
 
@@ -1484,7 +1477,7 @@ const MODALS = {
   'fe-api': {
     title: 'api.ts — 前端 REST 客户端',
     body: `<p>基于 <code>fetch</code> 的轻量封装，Base URL = <code>/api</code>。统一错误处理（非2xx抛异常）。</p>
-      <p>提供16个API函数，覆盖所有后端端点：createRun / listRuns / getRun / deleteRun / regenerateReport / getCompetitors / confirmCompetitors / getTimeline / getSources / getEvidence / getAnalyses / getReport / getReportVersions / getReportCitations / getReportCitationBundle / getQAResults</p>`
+      <p>提供15个API函数，覆盖所有后端端点：createRun / listRuns / getRun / deleteRun / getCompetitors / confirmCompetitors / getTimeline / getSources / getEvidence / getAnalyses / getReport / getReportVersions / getReportCitations / getReportCitationBundle / getQAResults</p>`
   },
   'fe-types': {
     title: 'types.ts — 前端类型定义',
@@ -1502,7 +1495,6 @@ const MODALS = {
   'svc-discovery': { title: 'execute_discovery_run()', body: '<p>在后台线程中执行。流程：</p><ol style="margin:0.3rem 0 0 1.2rem;"><li>从DB读取Run</li><li>构造初始AgentState：{run_id, user_requirement}</li><li>构建Graph 1（带trace/progress回调）</li><li>graph.invoke(state)</li><li>持久化：requirement → requirement_json/title/summary，competitors → Competitor表</li><li>status → "waiting_for_human"</li></ol>' },
   'svc-confirm': { title: 'confirm_and_continue_run()', body: '<p>验证竞品选择：检查 run.status == "waiting_for_human"，验证 competitor_ids 属于该 run。</p><p>支持 custom_competitors（用户手动输入的竞品），confidence=1.0，discovery_source="human_input"。</p><p>标记 selected=True，启动 execute_report_run()。</p>' },
   'svc-report': { title: 'execute_report_run()', body: '<p>核心编排函数。流程：</p><ol style="margin:0.3rem 0 0 1.2rem;"><li>从DB读取已选竞品+requirement</li><li>构造AgentState（含selected_competitors）</li><li>构建Graph 2（带 on_stage_complete 回调）</li><li>graph.invoke(state) — LangGraph 自动处理 QA 循环</li><li>每阶段完成回调：material_collection → 写 Sources+Evidence；structured_analysis → 写 Analyses（先删旧数据）；report_generation → 写 Report；quality_check → 写 QAResult</li><li>最终 status → "completed"</li></ol>' },
-  'svc-regen': { title: 'regenerate_report()', body: '<p>使用已有 sources/evidence/analyses 重新生成报告（不重新采集和分析）。直接调用 report_generation_node()，写入新版本 Report（iteration+1）。</p>' },
 
   'graph1': { title: 'Graph 1: Competitor Discovery (3节点)', body: '<p>线性图：requirement_understanding → competitor_discovery → human_confirm_competitors → END</p><p>3个节点，无分支。使用 set_entry_point + add_edge 构建。每次调用通过 _run_node() 包装 trace 回调。</p>' },
   'graph2': { title: 'Graph 2: Report Generation + QA Loop (4节点)', body: '<p>线性+条件图：material_collection → structured_analysis → report_generation → quality_check → qa_route(条件)</p><p>条件路由 3 分支：end（通过）、retry_collection（回到material_collection）、retry_analysis（回到structured_analysis）。最多3轮反馈循环。</p>' },
@@ -1711,7 +1703,7 @@ const MODALS = {
   'db-src': { title: 'Source — 网页来源', body: '<p>字段：title, url, snippet, source_type (17种), provider, raw_content, metadata_json（含 credibility_score, rank_score, query, dimension 等）。</p>' },
   'db-ev': { title: 'Evidence — 结构化证据', body: '<p>字段：source_id(FK), related_product, related_dimension, quote (≤800字符), summary, confidence (0.5-0.95)。</p>' },
   'db-ana': { title: 'Analysis — 竞品分析', body: '<p>7维度结构化数据：positioning, target_users(JSON), core_features_json, pricing_summary, strengths_json, weaknesses_json, opportunities_json, evidence_ids_json。analysis_iteration 标记第几轮分析。</p>' },
-  'db-rep': { title: 'Report — Markdown 报告', body: '<p>字段：iteration, title, markdown_content, summary。支持多版本（每次重新生成 iteration+1）。</p>' },
+  'db-rep': { title: 'Report — Markdown 报告', body: '<p>字段：iteration, title, markdown_content, summary。支持多版本报告迭代。</p>' },
   'db-qa': { title: 'QAResult — 质检结果', body: '<p>字段：iteration, overall_score, decision (pass/retry_collection/retry_analysis), check_phase (full_check/issue_verification), dimension_scores_json (6维度), issues_json, issue_checklist_json (跨轮追踪), retry_instructions, retry_queries_json。</p>' },
   'db-trace': { title: 'AgentTrace — 节点追踪', body: '<p>字段：stage, status (running/completed/failed), input_json, output_json, error_message, started_at, ended_at, duration_ms。</p>' },
 

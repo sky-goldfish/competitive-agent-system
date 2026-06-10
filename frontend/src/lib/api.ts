@@ -1,27 +1,40 @@
-import type { Analysis, CitationBundleCompetitor, CitationMapItem, Competitor, CustomCompetitorInput, Evidence, QAResult, Report, Run, Source, Trace } from './types';
+import type { Analysis, CallTrace, ChatMessage, ChatResponse, CitationBundleCompetitor, CitationMapItem, Competitor, CustomCompetitorInput, Evidence, KnowledgeClearResult, KnowledgeItem, KnowledgeRebuildResult, ObservabilityData, QAResult, Report, Revision, RevisionTrace, Run, Source, Trace } from './types';
 
 const API_BASE = '/api';
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
+async function request<T>(path: string, options?: RequestInit & { signal?: AbortSignal }): Promise<T> {
+  const { headers: optionHeaders, ...restOptions } = options ?? {};
   const response = await fetch(`${API_BASE}${path}`, {
+    ...restOptions,
     headers: {
       'Content-Type': 'application/json',
-      ...options?.headers,
+      ...optionHeaders,
     },
-    ...options,
   });
   if (!response.ok) {
     const detail = await response.text();
     throw new Error(detail || `Request failed: ${response.status}`);
   }
   if (response.status === 204) return undefined as T;
-  return response.json() as Promise<T>;
+  try {
+    return await response.json() as Promise<T>;
+  } catch {
+    throw new Error('Invalid JSON response from server');
+  }
 }
 
-export function createRun(userRequirement: string): Promise<Run> {
+export type CreateRunInput = {
+  userRequirement: string;
+  mockDiscovery?: boolean;
+};
+
+export function createRun(input: CreateRunInput): Promise<Run> {
   return request<Run>('/runs', {
     method: 'POST',
-    body: JSON.stringify({ user_requirement: userRequirement }),
+    body: JSON.stringify({
+      user_requirement: input.userRequirement,
+      mock_discovery: Boolean(input.mockDiscovery),
+    }),
   });
 }
 
@@ -42,10 +55,6 @@ export function answerRunClarification(runId: string, answer: string): Promise<R
 
 export function deleteRun(runId: string): Promise<void> {
   return request<void>(`/runs/${runId}`, { method: 'DELETE' });
-}
-
-export function regenerateReport(runId: string): Promise<Run> {
-  return request<Run>(`/runs/${runId}/regenerate`, { method: 'POST' });
 }
 
 export function getCompetitors(runId: string): Promise<Competitor[]> {
@@ -81,12 +90,40 @@ export function getReportCitations(runId: string, iteration?: number): Promise<C
   return request<CitationMapItem[]>(`/runs/${runId}/report/citations${params}`);
 }
 
-export function getReportCitationBundle(runId: string): Promise<CitationBundleCompetitor[]> {
-  return request<CitationBundleCompetitor[]>(`/runs/${runId}/report/citation-bundle`);
+export function getReportCitationBundle(runId: string, iteration?: number): Promise<CitationBundleCompetitor[]> {
+  const params = iteration != null ? `?iteration=${iteration}` : '';
+  return request<CitationBundleCompetitor[]>(`/runs/${runId}/report/citation-bundle${params}`);
 }
 
 export function getEvidence(runId: string): Promise<Evidence[]> {
   return request<Evidence[]>(`/runs/${runId}/evidence`);
+}
+
+export type KnowledgeSearchInput = {
+  q?: string;
+  productName?: string;
+  dimension?: string;
+  limit?: number;
+};
+
+export function getKnowledgeItems(input: KnowledgeSearchInput = {}): Promise<KnowledgeItem[]> {
+  const params = new URLSearchParams();
+  if (input.q?.trim()) params.set('q', input.q.trim());
+  if (input.productName?.trim()) params.set('product_name', input.productName.trim());
+  if (input.dimension?.trim()) params.set('dimension', input.dimension.trim());
+  if (input.limit) params.set('limit', String(input.limit));
+  const query = params.toString();
+  return request<KnowledgeItem[]>(`/knowledge/items${query ? `?${query}` : ''}`);
+}
+
+export function rebuildKnowledgeFromRun(runId: string): Promise<KnowledgeRebuildResult> {
+  return request<KnowledgeRebuildResult>(`/knowledge/rebuild-from-run/${runId}`, {
+    method: 'POST',
+  });
+}
+
+export function clearKnowledgeItems(): Promise<KnowledgeClearResult> {
+  return request<KnowledgeClearResult>('/knowledge/items', { method: 'DELETE' });
 }
 
 export function getAnalyses(runId: string): Promise<Analysis[]> {
@@ -95,4 +132,27 @@ export function getAnalyses(runId: string): Promise<Analysis[]> {
 
 export function getQAResults(runId: string): Promise<QAResult[]> {
   return request<QAResult[]>(`/runs/${runId}/qa/results`);
+}
+
+export function sendChatMessage(runId: string, message: string): Promise<ChatResponse> {
+  return request<ChatResponse>(`/runs/${runId}/chat`, {
+    method: 'POST',
+    body: JSON.stringify({ message }),
+  });
+}
+
+export function getChatMessages(runId: string, signal?: AbortSignal): Promise<ChatMessage[]> {
+  return request<ChatMessage[]>(`/runs/${runId}/chat`, { signal });
+}
+
+export function getRevisions(runId: string, signal?: AbortSignal): Promise<Revision[]> {
+  return request<Revision[]>(`/runs/${runId}/revisions`, { signal });
+}
+
+export function getRevisionTimeline(revisionId: string): Promise<RevisionTrace[]> {
+  return request<RevisionTrace[]>(`/revisions/${revisionId}/timeline`);
+}
+
+export function getObservability(runId: string): Promise<ObservabilityData> {
+  return request<ObservabilityData>(`/runs/${runId}/observability`);
 }

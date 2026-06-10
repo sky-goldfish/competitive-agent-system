@@ -28,16 +28,38 @@ def build_competitor_discovery_graph(
     graph = StateGraph(AgentState)
 
     def requirement_understanding(state: AgentState) -> AgentState:
-        return _run_node(trace, "requirement_understanding", state, lambda: requirement_understanding_node(state, llm))
+        if state.get("requirement"):
+            return {**state}
+        return _run_node(
+            trace,
+            "requirement_understanding",
+            state,
+            lambda: requirement_understanding_node(state, llm),
+        )
 
     def focus_profile(state: AgentState) -> AgentState:
-        return _run_node(trace, "focus_profile", state, lambda: focus_profile_node(state, llm))
+        requirement = state.get("requirement", {})
+        if isinstance(requirement, dict) and requirement.get("focus_profile"):
+            return {**state}
+        return _run_node(
+            trace, "focus_profile", state, lambda: focus_profile_node(state, llm)
+        )
 
     def competitor_discovery(state: AgentState) -> AgentState:
-        return _run_node(trace, "competitor_discovery", state, lambda: competitor_discovery_node(state, llm, search, progress=progress))
+        return _run_node(
+            trace,
+            "competitor_discovery",
+            state,
+            lambda: competitor_discovery_node(state, llm, search, progress=progress),
+        )
 
     def human_confirm_competitors(state: AgentState) -> AgentState:
-        return _run_node(trace, "human_confirm_competitors", state, lambda: human_confirm_competitors_node(state))
+        return _run_node(
+            trace,
+            "human_confirm_competitors",
+            state,
+            lambda: human_confirm_competitors_node(state),
+        )
 
     graph.add_node("requirement_understanding", requirement_understanding)
     graph.add_node("focus_profile", focus_profile)
@@ -68,50 +90,73 @@ def build_report_generation_graph(
     graph = StateGraph(AgentState)
 
     def material_collection(state: AgentState) -> AgentState:
-        result = _run_node(trace, "material_collection", state, lambda: material_collection_node(state, search, progress=progress))
+        result = _run_node(
+            trace,
+            "material_collection",
+            state,
+            lambda: material_collection_node(state, search, progress=progress),
+        )
         if on_stage_complete:
             on_stage_complete("material_collection", result)
         return result
 
     def structured_analysis(state: AgentState) -> AgentState:
-        result = _run_node(trace, "structured_analysis", state, lambda: structured_analysis_node(state, llm))
+        result = _run_node(
+            trace,
+            "structured_analysis",
+            state,
+            lambda: structured_analysis_node(state, llm),
+        )
         if on_stage_complete:
             on_stage_complete("structured_analysis", result)
         return result
 
     def report_generation(state: AgentState) -> AgentState:
-        result = _run_node(trace, "report_generation", state, lambda: report_generation_node(state, llm))
+        result = _run_node(
+            trace,
+            "report_generation",
+            state,
+            lambda: report_generation_node(state, llm),
+        )
         if on_stage_complete:
             on_stage_complete("report_generation", result)
         return result
 
     def quality_check(state: AgentState) -> AgentState:
-        result = _run_node(trace, "quality_check", state, lambda: quality_check_node(state, llm))
+        result = _run_node(
+            trace, "quality_check", state, lambda: quality_check_node(state, llm)
+        )
         if on_stage_complete:
             on_stage_complete("quality_check", result)
         return result
 
     graph.add_node("material_collection", material_collection)
     graph.add_node("structured_analysis", structured_analysis)
-    graph.add_node("report_generation", report_generation)
     graph.add_node("quality_check", quality_check)
+    graph.add_node("report_generation", report_generation)
     graph.set_entry_point("material_collection")
     graph.add_edge("material_collection", "structured_analysis")
-    graph.add_edge("structured_analysis", "report_generation")
-    graph.add_edge("report_generation", "quality_check")
+    graph.add_edge("structured_analysis", "quality_check")
     graph.add_conditional_edges(
         "quality_check",
         qa_route,
         {
-            "end": END,
+            "end": "report_generation",
             "retry_collection": "material_collection",
             "retry_analysis": "structured_analysis",
+            "retry_collection_and_analysis": "material_collection",
         },
     )
+    graph.add_edge("report_generation", END)
     return graph.compile()
 
 
-def _run_node(trace: TraceCallback | None, stage: str, state: AgentState, action: Callable[[], AgentState]) -> AgentState:
+def _run_node(
+    trace: TraceCallback | None,
+    stage: str,
+    state: AgentState,
+    action: Callable[[], AgentState],
+) -> AgentState:
     if trace is None:
         return action()
     return trace(stage, state, action)

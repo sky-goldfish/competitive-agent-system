@@ -7,6 +7,7 @@ import { createRun } from '../lib/api';
 export default function NewAnalysisPage() {
   const navigate = useNavigate();
   const [value, setValue] = useState('');
+  const [mockDiscovery, setMockDiscovery] = useState(false);
   const mutation = useMutation({
     mutationFn: createRun,
     onSuccess: (run) => navigate(`/runs/${run.id}`),
@@ -15,7 +16,7 @@ export default function NewAnalysisPage() {
 
   function submit() {
     if (!canSubmit) return;
-    mutation.mutate(value.trim());
+    mutation.mutate({ userRequirement: value.trim(), mockDiscovery });
   }
 
   function handleSubmit(event: FormEvent) {
@@ -33,10 +34,24 @@ export default function NewAnalysisPage() {
   return (
     <section className="chat-home">
       <div className="chat-home-inner">
-        <h1>输入产品或想法，让 Agent 小组生成竞品分析报告</h1>
+        <h1>突然有idea？快来找竞品</h1>
         <p>
-          MVP 会先理解需求并发现候选竞品，等待人工确认后继续采集资料、结构化分析并生成带来源的 Markdown 报告
+          输入产品、功能或创业想法，Agent 会发现候选竞品、采集公开资料，并生成带来源的 Markdown 报告。
         </p>
+        <ol className="analysis-flow" aria-label="竞品分析流程">
+          <li>
+            <strong>理解需求</strong>
+          </li>
+          <li>
+            <strong>发现竞品</strong>
+          </li>
+          <li>
+            <strong>人工确认</strong>
+          </li>
+          <li>
+            <strong>生成报告</strong>
+          </li>
+        </ol>
         <form className="prompt-composer" onSubmit={handleSubmit}>
           <textarea
             value={value}
@@ -47,13 +62,23 @@ export default function NewAnalysisPage() {
             aria-label="产品或想法描述"
           />
           <div className="composer-footer">
+            {import.meta.env.VITE_DEV_MODE === 'true' && (
+              <label className="mock-discovery-toggle">
+                <input
+                  type="checkbox"
+                  checked={mockDiscovery}
+                  onChange={(event) => setMockDiscovery(event.target.checked)}
+                />
+                <span>前半段 Mock</span>
+              </label>
+            )}
             <span>{mutation.isPending ? 'Agent 正在理解需求...' : 'Enter 提交 · Shift + Enter 换行'}</span>
             <button type="submit" className="send-button" disabled={!canSubmit} aria-label="提交分析">
               <ArrowUp size={18} />
             </button>
           </div>
         </form>
-        {mutation.isError ? <p className="error-text">创建失败：{String(mutation.error.message)}</p> : null}
+        {mutation.isError ? <p className="error-text">创建失败：{mutation.error instanceof Error ? mutation.error.message : String(mutation.error)}</p> : null}
       </div>
     </section>
   );

@@ -1,29 +1,107 @@
+from datetime import datetime
+
 from app.providers.search.base import SearchResult
+from app.services import call_tracer
 
 
 class MockSearchProvider:
     name = "mock"
 
-    def search(self, query: str, *, limit: int = 5) -> list[SearchResult]:
+    def search(
+        self, query: str, *, limit: int = 5, include_raw_content: bool = True
+    ) -> list[SearchResult]:
+        started_at = datetime.utcnow()
         query_lower = query.lower()
-        if "ember mug" in query_lower and self._matches(query_lower, ["京东", "天猫", "淘宝", "小红书", "知乎", "b站", "差评", "评价", "测评", "体验", "参数"]):
+        if "ember mug" in query_lower and self._matches(
+            query_lower,
+            [
+                "京东",
+                "天猫",
+                "淘宝",
+                "小红书",
+                "知乎",
+                "b站",
+                "差评",
+                "评价",
+                "测评",
+                "体验",
+                "参数",
+            ],
+        ):
             results = self._smart_cup_materials(query_lower)
-        elif "slack" in query_lower and self._matches(query_lower, ["pricing", "docs", "reviews", "g2", "capterra", "features"]):
+        elif "slack" in query_lower and self._matches(
+            query_lower, ["pricing", "docs", "reviews", "g2", "capterra", "features"]
+        ):
             results = self._slack_materials(query_lower)
-        elif self._matches(query_lower, ["保温杯", "智能杯", "水杯", "水壶", "水瓶", "杯子", "饮具", "thermos", "mug", "cup", "bottle", "ember"]):
+        elif self._matches(
+            query_lower,
+            [
+                "保温杯",
+                "智能杯",
+                "水杯",
+                "水壶",
+                "水瓶",
+                "杯子",
+                "饮具",
+                "thermos",
+                "mug",
+                "cup",
+                "bottle",
+                "ember",
+            ],
+        ):
             results = self._smart_cup_tools()
-        elif self._matches(query_lower, ["飞书", "feishu", "lark", "协作", "协同", "办公平台", "dingtalk", "wecom", "slack", "teams"]):
+        elif self._matches(
+            query_lower,
+            [
+                "飞书",
+                "feishu",
+                "lark",
+                "协作",
+                "协同",
+                "办公平台",
+                "dingtalk",
+                "wecom",
+                "slack",
+                "teams",
+            ],
+        ):
             results = self._collaboration_tools()
         elif self._matches(query_lower, ["会议", "meeting", "minutes", "纪要"]):
             results = self._meeting_tools()
-        elif self._matches(query_lower, ["编程", "coding", "代码", "developer", "ide", "cursor", "copilot"]):
+        elif self._matches(
+            query_lower,
+            ["编程", "coding", "代码", "developer", "ide", "cursor", "copilot"],
+        ):
             results = self._coding_tools()
         elif self._matches(query_lower, ["crm", "客户", "sales"]):
             results = self._crm_tools()
-        elif self._matches(query_lower, ["competitive intelligence", "market research", "research tools", "analysis tools", "市场调研"]):
+        elif self._matches(
+            query_lower,
+            [
+                "competitive intelligence",
+                "market research",
+                "research tools",
+                "analysis tools",
+                "市场调研",
+            ],
+        ):
             results = self._research_tools()
         else:
             results = self._fallback_tools(query)
+        call_tracer.record_search_call(
+            provider=self.name,
+            input_data={"query": query, "limit": limit},
+            output_data={
+                "results": [
+                    {"title": r.title, "url": r.url, "snippet": r.snippet[:200]}
+                    for r in results[:limit]
+                ],
+                "count": len(results[:limit]),
+            },
+            duration_ms=int((datetime.utcnow() - started_at).total_seconds() * 1000),
+            started_at=started_at,
+        )
         return results[:limit]
 
     @staticmethod
@@ -251,7 +329,9 @@ class MockSearchProvider:
 
     @staticmethod
     def _smart_cup_materials(query: str) -> list[SearchResult]:
-        if any(keyword in query for keyword in ["小红书", "知乎", "b站", "差评", "评价"]):
+        if any(
+            keyword in query for keyword in ["小红书", "知乎", "b站", "差评", "评价"]
+        ):
             return [
                 SearchResult(
                     title="Ember Mug 使用体验：办公室恒温杯值不值",
@@ -345,7 +425,6 @@ class MockSearchProvider:
                 raw_content="富光主打大众饮具渠道，覆盖办公室、家庭、学生和户外饮水需求。",
             ),
         ]
-
 
     @staticmethod
     def _fallback_tools(query: str) -> list[SearchResult]:

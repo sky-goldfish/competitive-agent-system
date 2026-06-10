@@ -3,16 +3,20 @@ import { useEffect, useMemo, useState } from 'react';
 import { Globe, MapPin } from 'lucide-react';
 import { confirmCompetitors } from '../../lib/api';
 import type { Competitor, CustomCompetitorInput, Run } from '../../lib/types';
+import SafeAnchor from '../SafeAnchor';
+import { safeHref } from '../../lib/utils';
 
 function renderTextWithLinks(text: string) {
   const urlRegex = /(https?:\/\/[^\s]+)/g;
   const parts = text.split(urlRegex);
   return parts.map((part, idx) => {
     if (part.match(urlRegex)) {
+      const href = safeHref(part);
+      if (!href) return part;
       return (
-        <a key={idx} href={part} target="_blank" rel="noreferrer" className="text-link">
+        <SafeAnchor key={idx} href={part} className="text-link">
           {part}
-        </a>
+        </SafeAnchor>
       );
     }
     return part;
@@ -93,6 +97,8 @@ export default function CompetitorConfirmPanel({ run, competitors }: Props) {
   function addCustomCompetitor() {
     const name = customName.trim();
     if (!name) return;
+    const isDuplicate = customCompetitors.some((item) => item.name === name) || competitors.some((item) => item.name === name);
+    if (isDuplicate) return;
     setCustomCompetitors((current) => [
       ...current,
       { name, website: customWebsite.trim() || undefined, category: customCategory },
@@ -129,7 +135,7 @@ export default function CompetitorConfirmPanel({ run, competitors }: Props) {
               {relationshipTypeLabels[competitor.relationship_type] ?? competitor.relationship_type}
             </span>
           )}
-          <strong>{(competitor.confidence * 100).toFixed(0)}%</strong>
+          <strong>{Math.min(99, Math.round((competitor.confidence ?? 0) * 100))}%</strong>
         </div>
         <button type="button" className="detail-action" onClick={() => setDetailCompetitor(competitor)}>
           查看详情
@@ -238,7 +244,7 @@ export default function CompetitorConfirmPanel({ run, competitors }: Props) {
           {mutation.isPending ? '已提交，Agent 正在采集资料...' : '确认竞品并生成报告'}
         </button>
       ) : null}
-      {mutation.isError ? <p className="error-text">确认失败：{String(mutation.error.message)}</p> : null}
+      {mutation.isError ? <p className="error-text">确认失败：{mutation.error instanceof Error ? mutation.error.message : String(mutation.error)}</p> : null}
       {isCustomModalOpen ? (
         <div className="modal-backdrop" role="presentation" onClick={() => setIsCustomModalOpen(false)}>
           <div className="competitor-modal small" role="dialog" aria-modal="true" aria-labelledby="custom-competitor-title" onClick={(event) => event.stopPropagation()}>
@@ -318,7 +324,7 @@ export default function CompetitorConfirmPanel({ run, competitors }: Props) {
                 <dt>官网</dt>
                 <dd>
                   {detailCompetitor.website ? (
-                    <a href={detailCompetitor.website} target="_blank" rel="noreferrer">{detailCompetitor.website}</a>
+                    <SafeAnchor href={detailCompetitor.website}>{detailCompetitor.website}</SafeAnchor>
                   ) : '暂无'}
                 </dd>
               </div>
@@ -349,7 +355,7 @@ export default function CompetitorConfirmPanel({ run, competitors }: Props) {
                 <dt>官网</dt>
                 <dd>
                   {customDetail.website ? (
-                    <a href={customDetail.website} target="_blank" rel="noreferrer">{customDetail.website}</a>
+                    <SafeAnchor href={customDetail.website}>{customDetail.website}</SafeAnchor>
                   ) : '暂无'}
                 </dd>
               </div>

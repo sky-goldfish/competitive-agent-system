@@ -1,10 +1,12 @@
 import type { Source } from '../../lib/types';
 import { useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
+import SafeAnchor from '../SafeAnchor';
 
 type Props = {
   sources: Source[];
   isCollecting?: boolean;
+  initialVisibleCount?: number;
 };
 
 function parseCollectionIteration(metadataJson: string | null): number | null {
@@ -27,17 +29,17 @@ function parseMetadata(metadataJson: string | null): Record<string, unknown> | n
   }
 }
 
-export default function SourceList({ sources, isCollecting = false }: Props) {
+export default function SourceList({ sources, isCollecting = false, initialVisibleCount = 5 }: Props) {
   const [detailSource, setDetailSource] = useState<Source | null>(null);
   const [expanded, setExpanded] = useState(false);
-  const visibleSources = expanded ? sources : sources.slice(0, 5);
+  const visibleSources = expanded ? sources : sources.slice(0, initialVisibleCount);
   const hiddenCount = Math.max(0, sources.length - visibleSources.length);
 
   return (
     <section className="panel">
       <div className="panel-header">
         <h2>来源资料</h2>
-        <span>{sources.length} sources</span>
+        <span>{sources.length} 条来源</span>
       </div>
       <div className="source-list source-list-grid">
         {sources.length === 0 ? (
@@ -64,7 +66,7 @@ export default function SourceList({ sources, isCollecting = false }: Props) {
             </article>
           );
         })}
-        {sources.length > 5 ? (
+        {sources.length > initialVisibleCount ? (
           <button type="button" className="source-list-toggle" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
             {expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
             {expanded ? '收起来源链接' : `展开全部来源链接（还有 ${hiddenCount} 条）`}
@@ -102,7 +104,7 @@ export default function SourceList({ sources, isCollecting = false }: Props) {
               })()}
               <div>
                 <dt>URL</dt>
-                <dd><a href={detailSource.url} target="_blank" rel="noreferrer">{detailSource.url}</a></dd>
+                <dd><SafeAnchor href={detailSource.url}>{detailSource.url}</SafeAnchor></dd>
               </div>
               <div>
                 <dt>摘要</dt>

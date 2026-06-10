@@ -1,6 +1,7 @@
+import json
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator, computed_field
 
 from app.schemas.evidence import EvidenceResponse
 from app.schemas.source import SourceResponse
@@ -13,8 +14,19 @@ class ReportResponse(BaseModel):
     title: str
     markdown_content: str
     summary: str
+    competitor_names_json: str | None = None
     created_at: datetime
     updated_at: datetime
+
+    @computed_field
+    @property
+    def competitor_names(self) -> list[str]:
+        if not self.competitor_names_json:
+            return []
+        try:
+            return json.loads(self.competitor_names_json)
+        except Exception:
+            return []
 
     model_config = {"from_attributes": True}
 

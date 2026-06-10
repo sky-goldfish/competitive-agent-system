@@ -44,11 +44,29 @@ const slotLabels: Record<string, string> = {
   relationship_evidence: '竞争关系',
 };
 
-function roundLabel(iteration: number): string {
-  const retryCount = iteration - 1;
-  return retryCount > 0
-    ? `第 ${iteration} 轮质检（第 ${retryCount} 次重试）`
-    : `第 ${iteration} 轮质检`;
+function roundLabel(iteration: number, checkPhase: string = 'full_check'): string {
+  if (checkPhase === 'issue_verification') {
+    return `复核-${iteration}`;
+  }
+  return `第 ${iteration} 轮全面检查`;
+}
+
+function groupQAResults(results: QAResultType[]) {
+  const fullChecks = results.filter(r => r.check_phase === 'full_check');
+  const verifications = results.filter(r => r.check_phase === 'issue_verification');
+
+  const groups: { round: QAResultType; verifications: QAResultType[] }[] = [];
+
+  for (let i = 0; i < fullChecks.length; i++) {
+    const round = fullChecks[i];
+    const nextFullCheckIteration = fullChecks[i + 1]?.iteration ?? Infinity;
+    const roundVerifications = verifications.filter(
+      v => v.iteration > round.iteration && v.iteration < nextFullCheckIteration
+    );
+    groups.push({ round, verifications: roundVerifications });
+  }
+
+  return groups;
 }
 
 type Props = {
@@ -79,23 +97,26 @@ export default function QAResultsPanel({ runId }: Props) {
       </div>
       <div className="empty-state">
         <p className="empty-state-title">暂无质检结果</p>
-        <p className="empty-state-desc">质检数据将在报告生成后自动展示。</p>
+        <p className="empty-state-desc">结构化分析完成后会进入质量检查。</p>
       </div>
     </section>
   );
 
-  const sorted = [...results].sort((a, b) => b.iteration - a.iteration);
-  const latest = sorted[0];
-  const historical = sorted.slice(1);
+  const groups = groupQAResults(results);
+  const fullCheckCount = groups.length;
+  const latestGroup = groups[groups.length - 1];
+  const historical = groups.slice(0, -1);
 
   return (
     <section className="panel">
       <div className="panel-header">
         <h2>质量检查</h2>
-        <span>{results.length} 轮</span>
+        <span>{fullCheckCount} 轮</span>
       </div>
       <div className="qa-results-panel">
-        <QACurrentRound result={latest} isLatest={true} />
+        {latestGroup ? (
+          <QACurrentRound group={latestGroup} />
+        ) : null}
         {historical.length > 0 && (
           <QAHistoricalRounds rounds={historical} />
         )}
@@ -104,7 +125,8 @@ export default function QAResultsPanel({ runId }: Props) {
   );
 }
 
-function QACurrentRound({ result }: { result: QAResultType; isLatest: boolean }) {
+function QACurrentRound({ group }: { group: { round: QAResultType; verifications: QAResultType[] } }) {
+  const result = group.round;
   const scorePercent = Math.round(result.overall_score * 100);
   const scoreClass = result.overall_score >= 0.7 ? 'pass' : 'fail';
   const hasRetryQueries = result.decision === 'retry_collection' && (result.retry_queries ?? []).length > 0;
@@ -114,10 +136,17 @@ function QACurrentRound({ result }: { result: QAResultType; isLatest: boolean })
       <div className="qa-iteration-header">
         <div className="qa-iteration-title">
           {result.decision === 'pass' ? <ShieldCheck size={16} /> : <AlertTriangle size={16} />}
-          <strong>{roundLabel(result.iteration)}</strong>
+          <strong>{roundLabel(result.iteration, 'full_check')}</strong>
         </div>
         <div className={`qa-score-badge ${scoreClass}`}>{scorePercent}分</div>
       </div>
+
+      {result.quality_warning && (
+        <div className="qa-quality-warning-banner">
+          <AlertTriangle size={14} />
+          <span>报告质量较低（{scorePercent}分），系统已达到重试上限自动通过，建议关注上述问题。</span>
+        </div>
+      )}
 
       <div className="qa-score-bar-track">
         <div className={`qa-score-bar-fill ${scoreClass}`} style={{ width: `${scorePercent}%` }} />
@@ -196,11 +225,38 @@ function QACurrentRound({ result }: { result: QAResultType; isLatest: boolean })
           <p className="qa-retry-instructions">{result.retry_instructions}</p>
         </div>
       )}
+
+      {group.verifications.length > 0 && (
+        <div className="qa-section">
+          <div className="qa-section-header">
+            <History size={13} /> 专项复核（{group.verifications.length} 次）
+          </div>
+          {group.verifications.map((v, i) => {
+            const scorePercent = Math.round(v.overall_score * 100);
+            const scoreClass = v.overall_score >= 0.7 ? 'pass' : 'fail';
+            return (
+              <div key={v.id} className="qa-verification-item">
+                <div className="qa-verification-header">
+                  <span className="qa-verification-label">复核-{i + 1}</span>
+                  <span className={`qa-score-badge small ${scoreClass}`}>{scorePercent}分</span>
+                  <span className={`qa-decision qa-decision-${v.decision}`}>
+                    {v.decision === 'pass' ? <CheckCircle2 size={12} /> : <RefreshCw size={12} />}
+                    {decisionLabels[v.decision] ?? v.decision}
+                  </span>
+                </div>
+                {v.retry_instructions && (
+                  <p className="qa-verification-instructions">{v.retry_instructions}</p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
 
-function QAHistoricalRounds({ rounds }: { rounds: QAResultType[] }) {
+function QAHistoricalRounds({ rounds }: { rounds: { round: QAResultType; verifications: QAResultType[] }[] }) {
   const [expanded, setExpanded] = useState(false);
 
   return (
@@ -216,7 +272,7 @@ function QAHistoricalRounds({ rounds }: { rounds: QAResultType[] }) {
       </button>
       {expanded && (
         <div className="qa-historical-list">
-          {rounds.map((result) => {
+          {rounds.map(({ round: result, verifications }) => {
             const scorePercent = Math.round(result.overall_score * 100);
             const scoreClass = result.overall_score >= 0.7 ? 'pass' : 'fail';
             const hasRetryQueries = result.decision === 'retry_collection' && (result.retry_queries ?? []).length > 0;
@@ -224,12 +280,21 @@ function QAHistoricalRounds({ rounds }: { rounds: QAResultType[] }) {
             return (
               <div key={result.id} className={`qa-historical-card ${scoreClass}`}>
                 <div className="qa-historical-header">
-                  <span className="qa-historical-label">{roundLabel(result.iteration)}</span>
+                  <span className="qa-historical-label">{roundLabel(result.iteration, 'full_check')}</span>
                   <span className={`qa-score-badge ${scoreClass}`}>{scorePercent}分</span>
                   <DecisionBadge decision={result.decision} hasRetryQueries={hasRetryQueries} queries={result.retry_queries} />
                 </div>
                 {result.retry_instructions && (
                   <p className="qa-historical-instructions">{result.retry_instructions}</p>
+                )}
+                {verifications.length > 0 && (
+                  <div className="qa-historical-verifications">
+                    {verifications.map((v, i) => (
+                      <span key={v.id} className={`qa-historical-vchip qa-decision-${v.decision}`}>
+                        复核-{i + 1} {v.decision === 'pass' ? '✓' : '↺'}
+                      </span>
+                    ))}
+                  </div>
                 )}
               </div>
             );
@@ -240,7 +305,7 @@ function QAHistoricalRounds({ rounds }: { rounds: QAResultType[] }) {
   );
 }
 
-function DecisionBadge({ decision, hasRetryQueries, queries }: { decision: string; hasRetryQueries: boolean; queries: QARetryQuery[] }) {
+function DecisionBadge({ decision, hasRetryQueries, queries }: { decision: string; hasRetryQueries: boolean; queries?: QARetryQuery[] }) {
   const [showQueries, setShowQueries] = useState(false);
 
   return (
@@ -254,9 +319,9 @@ function DecisionBadge({ decision, hasRetryQueries, queries }: { decision: strin
         {decisionLabels[decision] ?? decision}
         {hasRetryQueries ? <Search size={12} style={{ marginLeft: 2 }} /> : null}
       </span>
-      {showQueries && (
+      {showQueries && queries ? (
         <RetryQueriesModal queries={queries} onClose={() => setShowQueries(false)} />
-      )}
+      ) : null}
     </>
   );
 }
@@ -278,6 +343,7 @@ function QAIssueItem({ issue }: { issue: QAIssue }) {
 }
 
 function RetryQueriesModal({ queries, onClose }: { queries: QARetryQuery[]; onClose: () => void }) {
+  if (!queries?.length) return null;
   return (
     <div className="retry-queries-overlay" onClick={onClose}>
       <div className="retry-queries-modal" onClick={(e) => e.stopPropagation()}>

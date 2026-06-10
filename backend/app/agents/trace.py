@@ -44,7 +44,9 @@ def run_traced_stage(
 
     ended_at = datetime.utcnow()
     trace.status = "completed"
-    trace.output_json = json.dumps(_summarize_output(stage, output), ensure_ascii=False, default=str)
+    trace.output_json = json.dumps(
+        _summarize_output(stage, output), ensure_ascii=False, default=str
+    )
     trace.ended_at = ended_at
     trace.duration_ms = int((ended_at - started_at).total_seconds() * 1000)
     db.commit()
@@ -87,14 +89,39 @@ def record_progress_trace(
     db.commit()
 
 
-
 def _summarize_output(stage: str, output: dict[str, Any]) -> dict[str, Any]:
     if stage == "requirement_understanding":
         requirement = output.get("requirement", {})
         return {
+            "input_type": requirement.get("input_type"),
+            "target_product": requirement.get("target_product"),
+            "product_description": requirement.get("product_description"),
             "domain": requirement.get("domain"),
+            "possible_market_category": requirement.get("possible_market_category"),
             "summary": requirement.get("summary"),
+            "target_users": requirement.get("target_users") or [],
+            "core_capabilities": requirement.get("core_capabilities") or [],
+            "use_cases": requirement.get("use_cases") or [],
+            "analysis_dimensions": requirement.get("analysis_dimensions") or [],
             "dimension_count": len(requirement.get("analysis_dimensions", [])),
+            "queries": requirement.get("queries")
+            or ([requirement.get("query")] if requirement.get("query") else []),
+            "confidence": requirement.get("confidence"),
+            "warnings": requirement.get("warnings") or [],
+        }
+    if stage == "focus_profile":
+        requirement = output.get("requirement", {})
+        profile = (
+            requirement.get("focus_profile", {})
+            if isinstance(requirement, dict)
+            else {}
+        )
+        return {
+            "explicit_focuses": profile.get("explicit_focuses") or [],
+            "inferred_focuses": profile.get("inferred_focuses") or [],
+            "clarification_needed": profile.get("clarification_needed"),
+            "clarifying_question": profile.get("clarifying_question"),
+            "assumptions": profile.get("assumptions") or [],
         }
     if stage == "competitor_discovery":
         target = output.get("target_understanding", {})
@@ -102,17 +129,27 @@ def _summarize_output(stage: str, output: dict[str, Any]) -> dict[str, Any]:
             "target": target.get("name"),
             "target_category": target.get("category"),
             "target_confidence": target.get("confidence"),
-            "competitor_count": len(output.get("competitors", [])),
-            "target_search_result_count": len(output.get("target_search_results", [])),
-            "competitor_search_result_count": len(output.get("competitor_search_results", [])),
+            "competitor_count": len(output.get("competitors") or []),
+            "target_search_result_count": len(
+                output.get("target_search_results") or []
+            ),
+            "competitor_search_result_count": len(
+                output.get("competitor_search_results", [])
+            ),
             "competitors": [item.get("name") for item in output.get("competitors", [])],
         }
     if stage == "human_confirm_competitors":
-        return {"status": output.get("status"), "candidate_count": len(output.get("competitors", []))}
+        return {
+            "status": output.get("status"),
+            "candidate_count": len(output.get("competitors") or []),
+        }
     if stage == "material_collection":
-        return {"source_count": len(output.get("sources", [])), "evidence_count": len(output.get("evidence", []))}
+        return {
+            "source_count": len(output.get("sources") or []),
+            "evidence_count": len(output.get("evidence") or []),
+        }
     if stage == "structured_analysis":
-        return {"analysis_count": len(output.get("analyses", []))}
+        return {"analysis_count": len(output.get("analyses") or [])}
     if stage == "report_generation":
         report = output.get("report", {})
         return {"title": report.get("title"), "summary": report.get("summary")}
@@ -123,5 +160,6 @@ def _summarize_output(stage: str, output: dict[str, Any]) -> dict[str, Any]:
             "decision": qa.get("decision"),
             "issue_count": len(qa.get("issues", [])),
             "iteration": qa.get("iteration"),
+            "check_phase": qa.get("check_phase"),
         }
     return {"stage": stage, "status": "completed"}

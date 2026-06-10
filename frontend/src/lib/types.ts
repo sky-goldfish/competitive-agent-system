@@ -8,6 +8,7 @@ export type Run = {
   error_message: string | null;
   clarification_question: string | null;
   feedback_loop_count: number;
+  active_revision_id: string | null;
   created_at: string;
   updated_at: string;
   completed_at: string | null;
@@ -103,6 +104,34 @@ export type Source = {
   retrieved_at: string;
 };
 
+export type KnowledgeItem = {
+  id: string;
+  product_name: string;
+  dimension: string;
+  claim: string;
+  summary: string;
+  confidence: number;
+  source_type: string;
+  source_title: string | null;
+  source_url: string | null;
+  run_id: string | null;
+  evidence_id: string | null;
+  metadata_json: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type KnowledgeRebuildResult = {
+  run_id: string;
+  created_count: number;
+  updated_count: number;
+  skipped_count: number;
+};
+
+export type KnowledgeClearResult = {
+  deleted_count: number;
+};
+
 export type Report = {
   id: string;
   run_id: string;
@@ -110,6 +139,8 @@ export type Report = {
   title: string;
   markdown_content: string;
   summary: string;
+  competitor_names: string[];
+  competitor_names_json: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -172,6 +203,55 @@ export type QARetryQuery = {
   query: string;
 };
 
+export type ChatMessage = {
+  id: string;
+  run_id: string;
+  role: string;
+  content: string;
+  intent: string | null;
+  action_type: string | null;
+  report_version: number | null;
+  metadata_json: string | null;
+  created_at: string;
+};
+
+export type ChatResponse = {
+  message: ChatMessage;
+  report_version: number | null;
+  intent: string | null;
+  action_type: string | null;
+};
+
+export type Revision = {
+  id: string;
+  run_id: string;
+  base_report_iteration: number;
+  target_report_iteration: number | null;
+  user_message: string;
+  intent: string | null;
+  status: string;
+  error_message: string | null;
+  summary: string | null;
+  chat_user_message_id: string | null;
+  chat_assistant_message_id: string | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+};
+
+export type RevisionTrace = {
+  id: string;
+  revision_id: string;
+  stage: string;
+  status: string;
+  input_json: string | null;
+  output_json: string | null;
+  error_message: string | null;
+  started_at: string;
+  ended_at: string | null;
+  duration_ms: number | null;
+};
+
 export type QAResult = {
   id: string;
   run_id: string;
@@ -180,9 +260,50 @@ export type QAResult = {
   dimension_scores: Record<string, number>;
   decision: string;
   check_phase: string;
+  forced_pass: boolean;
+  quality_warning: boolean;
   issues: QAIssue[];
   issue_checklist: QAIssue[];
   retry_instructions: string | null;
   retry_queries: QARetryQuery[];
   created_at: string;
+};
+
+export type CallTrace = {
+  id: string;
+  run_id: string;
+  stage: string;
+  call_type: 'llm' | 'search';
+  provider: string;
+  model: string | null;
+  input_json: string | null;
+  output_json: string | null;
+  token_count: number | null;
+  duration_ms: number | null;
+  status: string;
+  error_message: string | null;
+  started_at: string;
+  ended_at: string | null;
+};
+
+export type ObservabilityStats = {
+  total_llm_calls: number;
+  total_search_calls: number;
+  total_tokens: number;
+  total_duration_ms: number;
+};
+
+export type ObservabilityStage = {
+  stage: string;
+  label: string;
+  status: string;
+  duration_ms: number;
+  total_tokens: number;
+  calls: CallTrace[];
+};
+
+export type ObservabilityData = {
+  run: Run;
+  stages: ObservabilityStage[];
+  stats: ObservabilityStats;
 };

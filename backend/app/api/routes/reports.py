@@ -1,44 +1,112 @@
 import json
+import logging
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.schemas.analysis import parse_focus_analysis_json
 from app.db.models import Analysis, Evidence, Report, Run, Source
 from app.db.session import get_db
-from app.schemas.report import CitationAnalysisRef, CitationBundleClaim, CitationBundleCompetitor, CitationBundleEvidenceRef, CitationMapItem, ReportResponse
+from app.schemas.report import (
+    CitationAnalysisRef,
+    CitationBundleClaim,
+    CitationBundleCompetitor,
+    CitationBundleEvidenceRef,
+    CitationMapItem,
+    ReportResponse,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/runs/{run_id}/report", tags=["reports"])
 
 
 @router.get("", response_model=ReportResponse)
-def get_report(run_id: str, iteration: int | None = None, db: Session = Depends(get_db)):
+def get_report(
+    run_id: str, iteration: int | None = None, db: Session = Depends(get_db)
+):
     if db.get(Run, run_id) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found.")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Run not found."
+        )
     report = _get_report_version(db, run_id, iteration)
     if report is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found.")
+        existing_iterations = [
+            row[0]
+            for row in db.query(Report.iteration).filter(Report.run_id == run_id).all()
+        ]
+        logger.warning(
+            "Report not found for run=%s iteration=%s, existing iterations=%s",
+            run_id,
+            iteration,
+            existing_iterations,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Report not found."
+        )
     return report
 
 
 @router.get("/versions", response_model=list[ReportResponse])
 def get_report_versions(run_id: str, db: Session = Depends(get_db)):
     if db.get(Run, run_id) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found.")
-    return db.query(Report).filter(Report.run_id == run_id).order_by(Report.iteration.asc()).all()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Run not found."
+        )
+    versions = (
+        db.query(Report)
+        .filter(Report.run_id == run_id, Report.is_qa_intermediate.is_(False))
+        .order_by(Report.iteration.desc())
+        .limit(20)
+        .all()
+    )
+    versions.reverse()
+    return versions
 
 
 @router.get("/citations", response_model=list[CitationMapItem])
-def get_report_citations(run_id: str, iteration: int | None = None, db: Session = Depends(get_db)):
+def get_report_citations(
+    run_id: str, iteration: int | None = None, db: Session = Depends(get_db)
+):
     if db.get(Run, run_id) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found.")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Run not found."
+        )
     report = _get_report_version(db, run_id, iteration)
     if report is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found.")
+        logger.warning(
+            "Citations requested for run=%s iteration=%s but report not found",
+            run_id,
+            iteration,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Report not found."
+        )
 
-    reference_urls = _extract_reference_urls(report.markdown_content)
-    sources = db.query(Source).filter(Source.run_id == run_id).order_by(Source.retrieved_at.asc(), Source.id.asc()).all()
+    try:
+        reference_urls = _extract_reference_urls(report.markdown_content)
+    except Exception:
+        logger.exception(
+            "Failed to extract reference URLs for run=%s iteration=%s",
+            run_id,
+            iteration,
+        )
+        reference_urls = []
+
+    if not reference_urls:
+        logger.info(
+            "No reference URLs found in report run=%s iteration=%s (content length=%d)",
+            run_id,
+            iteration,
+            len(report.markdown_content or ""),
+        )
+    sources = (
+        db.query(Source)
+        .filter(Source.run_id == run_id)
+        .order_by(Source.retrieved_at.asc(), Source.id.asc())
+        .all()
+    )
     sources_by_url: dict[str, list[Source]] = {}
     for source in sources:
         sources_by_url.setdefault(source.url, []).append(source)
@@ -47,13 +115,34 @@ def get_report_citations(run_id: str, iteration: int | None = None, db: Session 
     for item in evidence_items:
         evidence_by_source_id.setdefault(item.source_id, []).append(item)
 
-    analyses = db.query(Analysis).filter(Analysis.run_id == run_id).all()
+    analyses = (
+        db.query(Analysis)
+        .filter(Analysis.run_id == run_id)
+        .options(joinedload(Analysis.competitor))
+        .all()
+    )
     analysis_refs_by_evidence_id = _analysis_refs_by_evidence_id(analyses)
 
     citation_items = []
+    url_source_index: dict[str, int] = {}
+    source_by_ref_id: dict[int, Source] = {}
+    for s in sources:
+        ref_id = (
+            s.reference_id
+            if s.reference_id is not None
+            else _extract_ref_id(s.metadata_json)
+        )
+        if ref_id and ref_id not in source_by_ref_id:
+            source_by_ref_id[ref_id] = s
+
     for reference_id, url in reference_urls:
-        matching_sources = sources_by_url.get(url, [])
-        source = matching_sources.pop(0) if matching_sources else None
+        if url:
+            matching_sources = sources_by_url.get(url, [])
+            idx = url_source_index.get(url, 0)
+            source = matching_sources[idx] if idx < len(matching_sources) else None
+            url_source_index[url] = idx + 1
+        else:
+            source = source_by_ref_id.get(reference_id)
         if source is None:
             continue
         evidence_for_source = evidence_by_source_id.get(source.id, [])
@@ -64,7 +153,9 @@ def get_report_citations(run_id: str, iteration: int | None = None, db: Session 
                 if existing is None:
                     analysis_refs[ref.id] = ref
                     continue
-                existing.claim_types[:] = sorted(set(existing.claim_types + ref.claim_types))
+                existing.claim_types[:] = sorted(
+                    set(existing.claim_types + ref.claim_types)
+                )
         citation_items.append(
             CitationMapItem(
                 reference_id=reference_id,
@@ -76,11 +167,17 @@ def get_report_citations(run_id: str, iteration: int | None = None, db: Session 
     return citation_items
 
 
-def _get_report_version(db: Session, run_id: str, iteration: int | None) -> Report | None:
+def _get_report_version(
+    db: Session, run_id: str, iteration: int | None
+) -> Report | None:
     query = db.query(Report).filter(Report.run_id == run_id)
     if iteration is not None:
         return query.filter(Report.iteration == iteration).first()
-    return query.order_by(Report.iteration.desc()).first()
+    return (
+        query.filter(Report.is_qa_intermediate.is_(False))
+        .order_by(Report.iteration.desc())
+        .first()
+    )
 
 
 def _extract_reference_urls(markdown_content: str) -> list[tuple[int, str]]:
@@ -88,11 +185,23 @@ def _extract_reference_urls(markdown_content: str) -> list[tuple[int, str]]:
         r"\n*##\s*(?:(?:\d+|[一二三四五六七八九十]+)[\.、]\s*)?(?:参考来源|参考文献|References)\s*\n(?P<section>[\s\S]*)$",
         markdown_content.strip(),
     )
-    if not reference_section_match:
-        return []
-    section = reference_section_match.group("section")
-    matches = re.findall(r"^\s*\d+\.\s+\[\[(\d+)\]\]\((https?://[^)\s]+)\)", section, flags=re.MULTILINE)
-    return [(int(reference_id), url) for reference_id, url in matches]
+    if reference_section_match:
+        section = reference_section_match.group("section")
+        matches = re.findall(
+            r"^\s*\d+\.\s+\[\[(\d+)\]\]\((https?://[^)\s]+)\)",
+            section,
+            flags=re.MULTILINE,
+        )
+        if matches:
+            return [(int(reference_id), url) for reference_id, url in matches]
+
+    body = markdown_content.strip()
+    if reference_section_match:
+        body = body[: reference_section_match.start()].strip()
+    body_ids = sorted(
+        {int(a or b) for a, b in re.findall(r"\[{2}(\d+)\]{2}|\[(\d+)\]", body)}
+    )
+    return [(rid, "") for rid in body_ids]
 
 
 CLAIM_DEFINITIONS: list[tuple[str, str]] = [
@@ -127,12 +236,32 @@ ANALYSIS_FIELD_MAP: dict[str, str] = {
 
 
 @router.get("/citation-bundle", response_model=list[CitationBundleCompetitor])
-def get_report_citation_bundle(run_id: str, db: Session = Depends(get_db)):
+def get_report_citation_bundle(
+    run_id: str, iteration: int | None = None, db: Session = Depends(get_db)
+):
     if db.get(Run, run_id) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found.")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Run not found."
+        )
+
+    competitor_names_filter: set[str] | None = None
+    if iteration is not None:
+        report = _get_report_version(db, run_id, iteration)
+        if report is not None and report.competitor_names_json:
+            try:
+                competitor_names_filter = set(json.loads(report.competitor_names_json))
+            except (json.JSONDecodeError, TypeError):
+                pass
 
     sources = db.query(Source).filter(Source.run_id == run_id).all()
-    source_ref_by_id = {s.id: _extract_ref_id(s.metadata_json) for s in sources}
+    source_ref_by_id = {
+        s.id: (
+            s.reference_id
+            if s.reference_id is not None
+            else _extract_ref_id(s.metadata_json)
+        )
+        for s in sources
+    }
     source_by_id = {s.id: s for s in sources}
 
     evidence_items = db.query(Evidence).filter(Evidence.run_id == run_id).all()
@@ -140,11 +269,26 @@ def get_report_citation_bundle(run_id: str, db: Session = Depends(get_db)):
     for item in evidence_items:
         evidence_by_competitor.setdefault(item.related_product, []).append(item)
 
-    analyses = db.query(Analysis).filter(Analysis.run_id == run_id).order_by(Analysis.created_at.asc()).all()
+    analyses = (
+        db.query(Analysis)
+        .filter(Analysis.run_id == run_id)
+        .options(joinedload(Analysis.competitor))
+        .order_by(Analysis.created_at.asc())
+        .all()
+    )
+    if competitor_names_filter is not None:
+        analyses = [
+            a
+            for a in analyses
+            if (a.competitor.name if a.competitor else a.competitor_id)
+            in competitor_names_filter
+        ]
 
     result: list[CitationBundleCompetitor] = []
     for analysis in analyses:
-        competitor_name = analysis.competitor.name if analysis.competitor else analysis.competitor_id
+        competitor_name = (
+            analysis.competitor.name if analysis.competitor else analysis.competitor_id
+        )
         competitor_evidence = evidence_by_competitor.get(competitor_name, [])
 
         claims: list[CitationBundleClaim] = []
@@ -154,7 +298,11 @@ def get_report_citation_bundle(run_id: str, db: Session = Depends(get_db)):
 
             preferred_dims = CLAIM_DIMENSION_MAP.get(claim_type, set())
             if preferred_dims:
-                matched = [e for e in competitor_evidence if e.related_dimension in preferred_dims]
+                matched = [
+                    e
+                    for e in competitor_evidence
+                    if e.related_dimension in preferred_dims
+                ]
             else:
                 matched = []
             if not matched:
@@ -176,7 +324,11 @@ def get_report_citation_bundle(run_id: str, db: Session = Depends(get_db)):
                     )
                 )
 
-            claims.append(CitationBundleClaim(claim_type=claim_type, label=label, text=text, evidence=ev_refs))
+            claims.append(
+                CitationBundleClaim(
+                    claim_type=claim_type, label=label, text=text, evidence=ev_refs
+                )
+            )
 
         claims.extend(
             _custom_focus_claims(
@@ -187,12 +339,21 @@ def get_report_citation_bundle(run_id: str, db: Session = Depends(get_db)):
                 competitor_evidence,
             )
         )
-        result.append(CitationBundleCompetitor(competitor_id=analysis.competitor_id, competitor_name=competitor_name, analysis_iteration=analysis.analysis_iteration, claims=claims))
+        result.append(
+            CitationBundleCompetitor(
+                competitor_id=analysis.competitor_id,
+                competitor_name=competitor_name,
+                analysis_iteration=analysis.analysis_iteration,
+                claims=claims,
+            )
+        )
 
     return result
 
 
-def _analysis_refs_by_evidence_id(analyses: list[Analysis]) -> dict[str, list[CitationAnalysisRef]]:
+def _analysis_refs_by_evidence_id(
+    analyses: list[Analysis],
+) -> dict[str, list[CitationAnalysisRef]]:
     refs: dict[str, list[CitationAnalysisRef]] = {}
     for analysis in analyses:
         evidence_ids = _json_list(analysis.evidence_ids_json)
@@ -247,9 +408,17 @@ def _custom_focus_claims(
         if not label:
             continue
         evidence_ids = _json_list(item.get("evidence_ids"))
-        matched = [evidence_by_id[evidence_id] for evidence_id in evidence_ids if evidence_id in evidence_by_id]
+        matched = [
+            evidence_by_id[evidence_id]
+            for evidence_id in evidence_ids
+            if evidence_id in evidence_by_id
+        ]
         if not matched:
-            matched = [evidence for evidence in fallback_evidence if label in evidence.related_dimension]
+            matched = [
+                evidence
+                for evidence in fallback_evidence
+                if label in evidence.related_dimension
+            ]
         ev_refs = []
         for evidence in matched[:4]:
             source = source_by_id.get(evidence.source_id)

@@ -14,6 +14,8 @@ class SearchResult:
 class SearchProvider(Protocol):
     name: str
 
-    def search(self, query: str, *, limit: int = 5) -> list[SearchResult]:
+    def search(
+        self, query: str, *, limit: int = 5, include_raw_content: bool = True
+    ) -> list[SearchResult]:
         """Return search results for a query."""
         ...
