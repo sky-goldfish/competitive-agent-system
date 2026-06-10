@@ -104,6 +104,34 @@ export type Source = {
   retrieved_at: string;
 };
 
+export type KnowledgeItem = {
+  id: string;
+  product_name: string;
+  dimension: string;
+  claim: string;
+  summary: string;
+  confidence: number;
+  source_type: string;
+  source_title: string | null;
+  source_url: string | null;
+  run_id: string | null;
+  evidence_id: string | null;
+  metadata_json: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type KnowledgeRebuildResult = {
+  run_id: string;
+  created_count: number;
+  updated_count: number;
+  skipped_count: number;
+};
+
+export type KnowledgeClearResult = {
+  deleted_count: number;
+};
+
 export type Report = {
   id: string;
   run_id: string;

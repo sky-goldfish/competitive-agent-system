@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Moon, Search, ShieldCheck, SlidersHorizontal, Sun } from 'lucide-react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { Database, Moon, Search, ShieldCheck, SlidersHorizontal, Sun, Trash2 } from 'lucide-react';
+import { clearKnowledgeItems } from '../lib/api';
 
 const analysisItems = [
   { icon: Search, label: '竞品发现范围', value: '相似产品 + 替代方案' },
@@ -8,10 +10,23 @@ const analysisItems = [
 ];
 
 export default function SettingsPage() {
-  const [activeSection, setActiveSection] = useState<'analysis' | 'appearance'>('analysis');
+  const queryClient = useQueryClient();
+  const [activeSection, setActiveSection] = useState<'analysis' | 'knowledge' | 'appearance'>('analysis');
   const [theme, setTheme] = useState<'light' | 'dark'>(() => (
     localStorage.getItem('appearance-theme') === 'dark' ? 'dark' : 'light'
   ));
+  const [knowledgeMessage, setKnowledgeMessage] = useState<string | null>(null);
+
+  const clearKnowledgeMutation = useMutation({
+    mutationFn: clearKnowledgeItems,
+    onSuccess: (result) => {
+      setKnowledgeMessage(`已清空知识库，删除 ${result.deleted_count} 条知识。`);
+      queryClient.invalidateQueries({ queryKey: ['knowledge-items'] });
+    },
+    onError: (error) => {
+      setKnowledgeMessage(error instanceof Error ? error.message : '清空知识库失败。');
+    },
+  });
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -32,6 +47,13 @@ export default function SettingsPage() {
             onClick={() => setActiveSection('analysis')}
           >
             分析偏好配置
+          </button>
+          <button
+            type="button"
+            className={activeSection === 'knowledge' ? 'active' : ''}
+            onClick={() => setActiveSection('knowledge')}
+          >
+            知识库
           </button>
           <button
             type="button"
@@ -67,6 +89,41 @@ export default function SettingsPage() {
                   );
                 })}
               </div>
+            </section>
+          ) : activeSection === 'knowledge' ? (
+            <section className="settings-panel">
+              <header className="settings-header">
+                <span>知识库</span>
+                <h1>管理沉淀知识</h1>
+                <p>清空知识库只会删除已沉淀的知识点，不会删除历史任务、来源证据或报告。</p>
+              </header>
+
+              <div className="knowledge-settings-card">
+                <div className="appearance-card-main">
+                  <span className="settings-row-icon">
+                    <Database size={17} />
+                  </span>
+                  <div>
+                    <strong>清空知识库</strong>
+                    <span>用于重新构建历史知识，或清理演示数据。新的分析完成后仍会自动沉淀。</span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="settings-danger-action"
+                  disabled={clearKnowledgeMutation.isPending}
+                  onClick={() => {
+                    if (window.confirm('确定要清空知识库吗？历史任务和报告不会删除，但已沉淀知识会被移除。')) {
+                      setKnowledgeMessage(null);
+                      clearKnowledgeMutation.mutate();
+                    }
+                  }}
+                >
+                  <Trash2 size={16} />
+                  {clearKnowledgeMutation.isPending ? '清空中' : '清空知识库'}
+                </button>
+              </div>
+              {knowledgeMessage ? <p className="settings-feedback">{knowledgeMessage}</p> : null}
             </section>
           ) : (
             <section className="settings-panel">

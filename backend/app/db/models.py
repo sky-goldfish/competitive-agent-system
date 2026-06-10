@@ -55,6 +55,9 @@ class Run(Base):
     evidence_items: Mapped[list["Evidence"]] = relationship(
         back_populates="run", cascade="all, delete-orphan"
     )
+    knowledge_items: Mapped[list["KnowledgeItem"]] = relationship(
+        back_populates="run", cascade="all, delete-orphan"
+    )
     analyses: Mapped[list["Analysis"]] = relationship(
         back_populates="run", cascade="all, delete-orphan"
     )
@@ -185,6 +188,34 @@ class Evidence(Base):
 
     run: Mapped[Run] = relationship(back_populates="evidence_items")
     source: Mapped[Source] = relationship(back_populates="evidence_items")
+
+
+class KnowledgeItem(Base):
+    __tablename__ = "knowledge_items"
+    __table_args__ = (UniqueConstraint("evidence_id"),)
+
+    id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: new_id("know")
+    )
+    product_name: Mapped[str] = mapped_column(String)
+    dimension: Mapped[str] = mapped_column(String)
+    claim: Mapped[str] = mapped_column(Text)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    confidence: Mapped[float] = mapped_column(Float, default=0.8)
+    source_type: Mapped[str] = mapped_column(String, default="unknown")
+    source_title: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), nullable=True)
+    evidence_id: Mapped[str | None] = mapped_column(
+        ForeignKey("evidence_items.id"), nullable=True
+    )
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    run: Mapped[Run | None] = relationship(back_populates="knowledge_items")
 
 
 class Analysis(Base):

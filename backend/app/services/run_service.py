@@ -35,6 +35,7 @@ from app.providers.llm.mock import MockLLMProvider
 from app.providers.search.factory import get_search_provider
 from app.providers.search.mock import MockSearchProvider
 from app.services import call_tracer
+from app.services.knowledge_service import upsert_from_evidence
 
 
 VALID_RUN_STATUSES = frozenset(
@@ -1016,6 +1017,7 @@ def execute_report_run(run_id: str) -> None:
         _set_run_status(run, "completed", "completed")
         run.completed_at = datetime.utcnow()
         db.commit()
+        _promote_run_knowledge(db, run_id)
         should_process_queued_revisions = True
     except QueuedRevisionPending:
         run = db.get(Run, run_id)
@@ -1023,6 +1025,7 @@ def execute_report_run(run_id: str) -> None:
             _set_run_status(run, "completed", "completed")
             run.completed_at = datetime.utcnow()
             db.commit()
+            _promote_run_knowledge(db, run_id)
             should_process_queued_revisions = True
     except Exception as exc:
         db.rollback()
@@ -1045,6 +1048,24 @@ def execute_report_run(run_id: str) -> None:
         from app.services.chat_service import process_queued_revisions
 
         process_queued_revisions(run_id)
+
+
+def _promote_run_knowledge(db: Session, run_id: str) -> None:
+    try:
+        result = upsert_from_evidence(db, run_id)
+        logger.info(
+            "Promoted run %s evidence into knowledge store "
+            "(created=%d, updated=%d, skipped=%d)",
+            run_id,
+            result.created_count,
+            result.updated_count,
+            result.skipped_count,
+        )
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "Failed to promote run %s evidence into knowledge store", run_id
+        )
 
 
 def _merge_reference_id(metadata_json: str | None, reference_id: object) -> str | None:

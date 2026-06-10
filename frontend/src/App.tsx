@@ -1,8 +1,9 @@
 import { Component, useEffect, useState, type ErrorInfo, type ReactNode } from 'react';
 import { Link, NavLink, Route, Routes, useLocation } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { Menu, PanelLeftClose, Pin, Plus, Settings, Trash2 } from 'lucide-react';
+import { Database, Menu, PanelLeftClose, Pin, Plus, Settings, Trash2 } from 'lucide-react';
 import HistoryPage from './pages/HistoryPage';
+import KnowledgePage from './pages/KnowledgePage';
 import NewAnalysisPage from './pages/NewAnalysisPage';
 import ReportPage from './pages/ReportPage';
 import ObservabilityPage from './pages/ObservabilityPage';
@@ -115,6 +116,10 @@ function AppSidebar() {
                 <Settings size={18} />
                 <span>设置</span>
               </Link>
+              <Link className="sidebar-action" to="/knowledge" onClick={() => setDrawerOpen(false)}>
+                <Database size={18} />
+                <span>知识库</span>
+              </Link>
             </div>
 
             <div className="history-list-wrap">
@@ -214,6 +219,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<NewAnalysisPage />} />
             <Route path="/history" element={<HistoryPage />} />
+            <Route path="/knowledge" element={<KnowledgePage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/runs/:runId" element={<RunDetailPage />} />
             <Route path="/runs/:runId/report" element={<ReportPage />} />

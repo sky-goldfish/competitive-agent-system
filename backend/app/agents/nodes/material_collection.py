@@ -1,3 +1,4 @@
+import json
 import logging
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -8,6 +9,7 @@ from app.agents.state import AgentState
 from app.db.models import new_id
 from app.providers.search.base import SearchProvider
 from app.services import call_tracer
+from app.services.knowledge_service import retrieve_for_material_collection
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +163,34 @@ def material_collection_node(
         }
     competitors = state.get("selected_competitors", [])
     qa_retry_queries = state.get("qa_retry_queries")
+    initial_sources = state.get("sources", [])
+    initial_evidence = state.get("evidence", [])
+    if competitors and not qa_retry_queries:
+        knowledge_sources, knowledge_evidence = retrieve_for_material_collection(
+            state.get("run_id", ""),
+            competitors,
+            requirement,
+            dimensions=ANALYSIS_DIMENSIONS,
+        )
+        initial_sources, initial_evidence = _merge_knowledge_context(
+            initial_sources, initial_evidence, knowledge_sources, knowledge_evidence
+        )
+        _emit(
+            progress,
+            "knowledge_retrieval",
+            "检索历史知识库并注入可复用证据",
+            {
+                "source_count": len(knowledge_sources),
+                "evidence_count": len(knowledge_evidence),
+                "matched_products": sorted(
+                    {
+                        item.get("related_product")
+                        for item in knowledge_evidence
+                        if item.get("related_product")
+                    }
+                ),
+            },
+        )
 
     if qa_retry_queries:
         product_queries = _build_retry_product_queries(
@@ -170,8 +200,8 @@ def material_collection_node(
         product_queries = _plan_material_queries(
             competitors,
             requirement,
-            state.get("evidence", []),
-            state.get("sources", []),
+            initial_evidence,
+            initial_sources,
         )
     quarts = [quart for item in product_queries for quart in item["queries"]]
     product_types = sorted({quart["product_type"] for quart in quarts})
@@ -213,8 +243,8 @@ def material_collection_node(
         },
     )
 
-    existing_sources = state.get("sources", [])
-    existing_evidence = state.get("evidence", [])
+    existing_sources = initial_sources
+    existing_evidence = initial_evidence
     is_retry = bool(qa_retry_queries)
     if is_retry and len(existing_sources) > 120:
         ranked = sorted(
@@ -405,6 +435,93 @@ def _emit(
 ) -> None:
     if progress is not None:
         progress(stage, message, metadata)
+
+
+def _merge_knowledge_context(
+    existing_sources: list[dict],
+    existing_evidence: list[dict],
+    knowledge_sources: list[dict],
+    knowledge_evidence: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    if not knowledge_sources and not knowledge_evidence:
+        return list(existing_sources), list(existing_evidence)
+
+    sources = list(existing_sources)
+    evidence = list(existing_evidence)
+    source_key_to_ref: dict[tuple[str, str], int] = {}
+    seen_source_keys: set[tuple[str, str]] = set()
+    max_ref_id = 0
+    for source in sources:
+        key = (str(source.get("competitor_id") or ""), str(source.get("url") or ""))
+        if key[1]:
+            seen_source_keys.add(key)
+            ref_id = _safe_int(source.get("reference_id"))
+            if ref_id:
+                source_key_to_ref[key] = ref_id
+                max_ref_id = max(max_ref_id, ref_id)
+
+    old_ref_to_new: dict[int, int] = {}
+    for source in knowledge_sources:
+        key = (str(source.get("competitor_id") or ""), str(source.get("url") or ""))
+        old_ref_id = _safe_int(source.get("reference_id"))
+        if key in seen_source_keys:
+            if old_ref_id and key in source_key_to_ref:
+                old_ref_to_new[old_ref_id] = source_key_to_ref[key]
+            continue
+        max_ref_id += 1
+        merged = {**source, "reference_id": max_ref_id}
+        merged["metadata_json"] = _rewrite_metadata_reference_id(
+            merged.get("metadata_json"), max_ref_id
+        )
+        sources.append(merged)
+        seen_source_keys.add(key)
+        source_key_to_ref[key] = max_ref_id
+        if old_ref_id:
+            old_ref_to_new[old_ref_id] = max_ref_id
+
+    seen_evidence_keys = {
+        (
+            item.get("competitor_id"),
+            item.get("related_dimension"),
+            item.get("source_url"),
+            item.get("quote"),
+        )
+        for item in evidence
+    }
+    for item in knowledge_evidence:
+        key = (
+            item.get("competitor_id"),
+            item.get("related_dimension"),
+            item.get("source_url"),
+            item.get("quote"),
+        )
+        if key in seen_evidence_keys:
+            continue
+        old_ref_id = _safe_int(item.get("reference_id"))
+        ref_id = old_ref_to_new.get(old_ref_id, old_ref_id)
+        evidence.append({**item, "reference_id": ref_id})
+        seen_evidence_keys.add(key)
+    return sources, evidence
+
+
+def _rewrite_metadata_reference_id(metadata_json: object, reference_id: int) -> str:
+    metadata = {}
+    if isinstance(metadata_json, str) and metadata_json:
+        try:
+            parsed = json.loads(metadata_json)
+        except json.JSONDecodeError:
+            parsed = {}
+        if isinstance(parsed, dict):
+            metadata = parsed
+    metadata["reference_id"] = reference_id
+    return json.dumps(metadata, ensure_ascii=False)
+
+
+def _safe_int(value: object) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _plan_material_queries(

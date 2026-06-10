@@ -178,6 +178,23 @@ def _ensure_compatible_schema() -> None:
                         ") WHERE reference_id IS NULL"
                     )
                 )
+    if "knowledge_items" in inspector.get_table_names():
+        knowledge_columns = {
+            column["name"] for column in inspector.get_columns("knowledge_items")
+        }
+        with engine.begin() as connection:
+            if "source_title" not in knowledge_columns:
+                connection.execute(
+                    text("ALTER TABLE knowledge_items ADD COLUMN source_title VARCHAR")
+                )
+            if "source_url" not in knowledge_columns:
+                connection.execute(
+                    text("ALTER TABLE knowledge_items ADD COLUMN source_url VARCHAR")
+                )
+            if "metadata_json" not in knowledge_columns:
+                connection.execute(
+                    text("ALTER TABLE knowledge_items ADD COLUMN metadata_json TEXT")
+                )
 
 
 def _sqlite_columns(connection, table_name: str) -> set[str]:

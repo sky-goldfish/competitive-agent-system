@@ -1,4 +1,4 @@
-import type { Analysis, CallTrace, ChatMessage, ChatResponse, CitationBundleCompetitor, CitationMapItem, Competitor, CustomCompetitorInput, Evidence, ObservabilityData, QAResult, Report, Revision, RevisionTrace, Run, Source, Trace } from './types';
+import type { Analysis, CallTrace, ChatMessage, ChatResponse, CitationBundleCompetitor, CitationMapItem, Competitor, CustomCompetitorInput, Evidence, KnowledgeClearResult, KnowledgeItem, KnowledgeRebuildResult, ObservabilityData, QAResult, Report, Revision, RevisionTrace, Run, Source, Trace } from './types';
 
 const API_BASE = '/api';
 
@@ -97,6 +97,33 @@ export function getReportCitationBundle(runId: string, iteration?: number): Prom
 
 export function getEvidence(runId: string): Promise<Evidence[]> {
   return request<Evidence[]>(`/runs/${runId}/evidence`);
+}
+
+export type KnowledgeSearchInput = {
+  q?: string;
+  productName?: string;
+  dimension?: string;
+  limit?: number;
+};
+
+export function getKnowledgeItems(input: KnowledgeSearchInput = {}): Promise<KnowledgeItem[]> {
+  const params = new URLSearchParams();
+  if (input.q?.trim()) params.set('q', input.q.trim());
+  if (input.productName?.trim()) params.set('product_name', input.productName.trim());
+  if (input.dimension?.trim()) params.set('dimension', input.dimension.trim());
+  if (input.limit) params.set('limit', String(input.limit));
+  const query = params.toString();
+  return request<KnowledgeItem[]>(`/knowledge/items${query ? `?${query}` : ''}`);
+}
+
+export function rebuildKnowledgeFromRun(runId: string): Promise<KnowledgeRebuildResult> {
+  return request<KnowledgeRebuildResult>(`/knowledge/rebuild-from-run/${runId}`, {
+    method: 'POST',
+  });
+}
+
+export function clearKnowledgeItems(): Promise<KnowledgeClearResult> {
+  return request<KnowledgeClearResult>('/knowledge/items', { method: 'DELETE' });
 }
 
 export function getAnalyses(runId: string): Promise<Analysis[]> {
