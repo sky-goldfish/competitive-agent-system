@@ -968,7 +968,7 @@ JSON schema:
     ) -> dict[str, Any]:
         fallback = self.fallback.analyze_competitor(competitor, evidence)
         evidence_summary = "\n".join(
-            f"- evidence_id={e.get('id', '')}；维度={e.get('related_dimension', '未知')}；"
+            f"- [{e.get('reference_id', '?')}] 维度={e.get('related_dimension', '未知')}；"
             f"来源类型={e.get('source_type', '未知')}；置信度={e.get('confidence', 0)}；"
             f"来源={e.get('source_url', '')}；摘要={e.get('summary', '')[:300]}"
             for e in evidence[:12]
@@ -1023,11 +1023,11 @@ JSON schema:
       "focus_key": "必须来自动态关注点 Schema 的 key",
       "label": "必须来自动态关注点 Schema 的 label",
       "verdict": "围绕该关注点的结构化结论；如果证据不足，写'证据中未涉及'",
-      "evidence_ids": ["支撑该结论的 evidence_id，必须来自已采集证据"],
+      "evidence_ids": ["支撑该结论的证据号 [N]，必须来自已采集证据"],
       "confidence": 0.0
     }}
   ],
-  "evidence_ids_json": ["引用的 evidence_id，必须来自已采集证据中的 evidence_id"],
+  "evidence_ids_json": ["引用的证据号 [N]，必须来自已采集证据"],
   "relationship_type": "direct/indirect/substitute 之一。direct=直接竞品，indirect=间接竞品，substitute=替代方案",
   "relationship_reason": "简要说明为什么是该竞争类型，它竞争的是什么需求或场景，基于证据",
   "overlap_dimensions": [
@@ -1042,6 +1042,23 @@ JSON schema:
         result = self._json_chat(prompt, fallback)
         if result is fallback:
             return fallback
+        # Convert LLM-facing reference_id back to internal ev_xxx UUIDs for storage.
+        ref_to_ev: dict[str, str] = {}
+        for e in evidence:
+            ref_id = e.get("reference_id")
+            ev_id = e.get("id")
+            if ref_id is not None and ev_id:
+                ref_to_ev[str(ref_id)] = ev_id
+        eids = result.get("evidence_ids_json")
+        if isinstance(eids, list):
+            result["evidence_ids_json"] = [ref_to_ev.get(str(v), v) for v in eids]
+        cfa = result.get("custom_focus_analysis_json")
+        if isinstance(cfa, list):
+            for item in cfa:
+                if isinstance(item, dict):
+                    item_eids = item.get("evidence_ids")
+                    if isinstance(item_eids, list):
+                        item["evidence_ids"] = [ref_to_ev.get(str(v), v) for v in item_eids]
         for key in [
             "target_users",
             "core_features_json",
@@ -1120,15 +1137,7 @@ JSON schema:
     ) -> dict[str, Any]:
         fallback = self.fallback.qa_check_report(analyses, evidence)
         capped_analyses = analyses[:15]
-        capped_evidence = sorted(
-            evidence,
-            key=lambda e: float(
-                e.get("confidence", 0)
-                if isinstance(e.get("confidence"), (int, float))
-                else 0
-            ),
-            reverse=True,
-        )[:30]
+        capped_evidence = evidence
         analyses_summary = "\n".join(
             _format_analysis_for_qa(a)
             for a in capped_analyses
@@ -1157,6 +1166,23 @@ JSON schema:
 4. **coverage_gaps（覆盖缺口）**：每个竞品的 4 个核心维度（产品定位、核心功能、价格与商业模式、用户评价与痛点）证据是否充足（建议≥3 条）？
 5. **cross_competitor_consistency（跨竞品一致性）**：各竞品分析深度和信息量是否一致？是否有的竞品分析非常详尽、有的非常简略？
 6. **factual_plausibility（事实合理性）**：分析内容是否有明显不合理的陈述？例如与已知事实矛盾、逻辑不通等。
+
+## 评分锚点
+
+请按以下锚点校准分数，避免“发现严重问题但仍给高分”：
+
+- 0.90-1.00：证据充分、字段完整、引用准确，仅有非常轻微可忽略问题。
+- 0.70-0.89：总体可用，存在少量 minor 问题，但不影响主要结论。
+- 0.50-0.69：存在 major 问题，例如关键字段空泛、部分竞品证据不足、引用需要明显修正。
+- 0.20-0.49：存在 critical 问题，例如某竞品几乎没有证据、核心结论缺少支撑、引用大面积无效。
+- 0.00-0.19：结构化分析基本不可用，缺少主要内容或明显幻觉。
+
+硬性上限规则：
+- 若某维度存在 critical issue，该维度分数不得高于 0.35。
+- 若 citation_accuracy 或 schema_completeness 存在 major issue，该维度分数不得高于 0.60。
+- 若其他维度存在 major issue，该维度分数不得高于 0.65。
+- 若某维度仅存在 minor issue，该维度分数不得高于 0.80。
+- coverage_gaps 中单个竞品公开证据少于 3 条时，至少应生成 major issue；为 0 条时应生成 critical issue。
 
 输出严格 JSON，不要输出 Markdown 代码块，不要输出 schema 外字段。
 JSON schema:
@@ -1220,15 +1246,7 @@ JSON schema:
         )
         issues_json = json.dumps(open_issues, ensure_ascii=False)
         capped_analyses = analyses[:15]
-        capped_evidence = sorted(
-            evidence,
-            key=lambda e: float(
-                e.get("confidence", 0)
-                if isinstance(e.get("confidence"), (int, float))
-                else 0
-            ),
-            reverse=True,
-        )[:30]
+        capped_evidence = evidence
         analyses_summary = "\n".join(
             _format_analysis_for_qa(a)
             for a in capped_analyses

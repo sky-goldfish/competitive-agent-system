@@ -23,6 +23,7 @@ from app.db.models import (
 )
 from app.db.session import SessionLocal
 from app.agents.nodes.report_generation import _build_citation_bundle
+from app.services.analysis_service import latest_analyses_by_competitor
 from app.providers.llm.factory import get_llm_provider
 from app.providers.search.factory import get_search_provider
 
@@ -54,7 +55,7 @@ def _get_run_context(db: Session, run_id: str) -> dict[str, Any]:
     if latest_report is None:
         raise ChatError("报告尚未生成，暂不能进行对话修改。")
 
-    analyses = db.query(Analysis).filter(Analysis.run_id == run_id).all()
+    analyses = latest_analyses_by_competitor(db, run_id)
     evidence_items = db.query(Evidence).filter(Evidence.run_id == run_id).all()
     sources = db.query(Source).filter(Source.run_id == run_id).all()
     competitors = (
@@ -836,7 +837,6 @@ def _handle_report_redo(
 
     _commit_with_retry(db)
 
-    analyses = ctx["analyses"]
     evidence_items = db.query(Evidence).filter(Evidence.run_id == report.run_id).all()
 
     affected_comp_names = {rq.get("competitor_name") for rq in retry_queries}
@@ -846,8 +846,6 @@ def _handle_report_redo(
 
     # We no longer delete old analyses to preserve history.
     # New analyses will be created with a higher iteration number.
-
-    analyses = db.query(Analysis).filter(Analysis.run_id == report.run_id).all()
 
     for competitor in competitors:
         if competitor.id not in affected_competitor_ids:
@@ -1251,27 +1249,7 @@ def _analysis_list(
                     str(evidence_id)
                 )
 
-    # Fetch only analyses for currently selected competitors
-    analyses = (
-        db.query(Analysis)
-        .outerjoin(Competitor, Analysis.competitor_id == Competitor.id)
-        .filter(
-            Analysis.run_id == run_id,
-            (Competitor.selected.is_(True)) | (Competitor.id.is_(None)),
-        )
-        .options(joinedload(Analysis.competitor))
-        .all()
-    )
-
-    # If multiple iterations exist for the same competitor, pick the latest one
-    latest_by_competitor: dict[str, Analysis] = {}
-    for item in analyses:
-        key = item.competitor_id or item.competitor_name or item.id
-        existing = latest_by_competitor.get(key)
-        if not existing or item.analysis_iteration > existing.analysis_iteration:
-            latest_by_competitor[key] = item
-
-    analyses = list(latest_by_competitor.values())
+    analyses = latest_analyses_by_competitor(db, run_id)
     competitor_by_id: dict[str, Competitor] = {}
     if not analyses:
         return []

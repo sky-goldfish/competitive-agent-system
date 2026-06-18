@@ -24,6 +24,7 @@ const dimensionOrder = [
 
 const decisionLabels: Record<string, string> = {
   pass: '通过',
+  pass_with_quality_warning: '质量预警通过',
   retry_collection: '重新采集',
   retry_analysis: '重新分析',
 };
@@ -315,7 +316,7 @@ function DecisionBadge({ decision, hasRetryQueries, queries }: { decision: strin
         onClick={() => hasRetryQueries && setShowQueries(true)}
         title={hasRetryQueries ? '点击查看重新采集关键词' : undefined}
       >
-        {decision === 'pass' ? <CheckCircle2 size={13} /> : decision === 'retry_collection' ? <RefreshCw size={13} /> : <XCircle size={13} />}
+        {decision === 'pass' ? <CheckCircle2 size={13} /> : decision === 'pass_with_quality_warning' ? <AlertTriangle size={13} /> : decision === 'retry_collection' ? <RefreshCw size={13} /> : <XCircle size={13} />}
         {decisionLabels[decision] ?? decision}
         {hasRetryQueries ? <Search size={12} style={{ marginLeft: 2 }} /> : null}
       </span>
@@ -327,6 +328,7 @@ function DecisionBadge({ decision, hasRetryQueries, queries }: { decision: strin
 }
 
 function QAIssueItem({ issue }: { issue: QAIssue }) {
+  const isRuleBased = issue.id?.startsWith('det_');
   return (
     <div className={`qa-issue qa-severity-${issue.severity}`}>
       <div className="qa-issue-header">
@@ -335,6 +337,9 @@ function QAIssueItem({ issue }: { issue: QAIssue }) {
         {issue.competitor_name && issue.competitor_name !== 'report' && issue.competitor_name !== 'system' && (
           <span className="qa-competitor-badge">{issue.competitor_name}</span>
         )}
+        <span className={`qa-source-badge ${isRuleBased ? 'rule' : 'llm'}`}>
+          {isRuleBased ? '规则' : 'LLM'}
+        </span>
       </div>
       <p className="qa-issue-desc">{issue.description}</p>
       {issue.fix_suggestion && <p className="qa-issue-fix">{issue.fix_suggestion}</p>}

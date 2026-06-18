@@ -31,6 +31,8 @@ class QAResultResponse(BaseModel):
     dimension_scores: dict[str, float] = Field(default_factory=dict)
     decision: str
     check_phase: str = "full_check"
+    forced_pass: bool = False
+    quality_warning: bool = False
     issues: list[QAIssueResponse]
     issue_checklist: list[QAIssueResponse] = Field(default_factory=list)
     retry_instructions: str | None = None
@@ -82,6 +84,14 @@ class QAResultResponse(BaseModel):
             },
             decision=qa_result.decision,
             check_phase=getattr(qa_result, "check_phase", None) or "full_check",
+            forced_pass=bool(
+                getattr(qa_result, "forced_pass", False)
+                or qa_result.decision == "pass_with_quality_warning"
+            ),
+            quality_warning=bool(
+                getattr(qa_result, "quality_warning", False)
+                or qa_result.decision == "pass_with_quality_warning"
+            ),
             issues=[QAIssueResponse(**i) for i in issues_list if isinstance(i, dict)],
             issue_checklist=[QAIssueResponse(**i) for i in checklist_list if isinstance(i, dict)],
             retry_instructions=qa_result.retry_instructions,

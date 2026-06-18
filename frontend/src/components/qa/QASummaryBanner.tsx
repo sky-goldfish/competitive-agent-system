@@ -5,6 +5,7 @@ import type { QAResult as QAResultType } from '../../lib/types';
 
 const decisionLabels: Record<string, string> = {
   pass: '质检通过',
+  pass_with_quality_warning: '质检完成（质量预警）',
   retry_collection: '经重新采集后通过',
   retry_analysis: '经重新分析后通过',
 };

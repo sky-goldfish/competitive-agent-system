@@ -569,6 +569,25 @@ def _rebuild_state_from_db(db: Session, run: Run) -> AgentState | None:
         .first()
     )
     if latest_qa:
+        qa_results = (
+            db.query(QAResult)
+            .filter(QAResult.run_id == run.id)
+            .order_by(QAResult.iteration.asc())
+            .all()
+        )
+        full_check_count = sum(
+            1 for item in qa_results if item.check_phase == "full_check"
+        )
+        last_full_check_iteration = max(
+            (item.iteration for item in qa_results if item.check_phase == "full_check"),
+            default=0,
+        )
+        issue_verification_count = sum(
+            1
+            for item in qa_results
+            if item.check_phase == "issue_verification"
+            and item.iteration > last_full_check_iteration
+        )
         state["qa_result"] = {
             "overall_score": latest_qa.overall_score,
             "dimension_scores": json.loads(latest_qa.dimension_scores_json)
@@ -582,8 +601,12 @@ def _rebuild_state_from_db(db: Session, run: Run) -> AgentState | None:
             if latest_qa.issue_checklist_json
             else [],
             "iteration": latest_qa.iteration,
+            "check_phase": latest_qa.check_phase,
+            "forced_pass": latest_qa.forced_pass,
+            "quality_warning": latest_qa.quality_warning,
         }
-        state["feedback_loop_count"] = latest_qa.iteration
+        state["feedback_loop_count"] = full_check_count
+        state["qa_issue_verification_count"] = issue_verification_count
         state["qa_issue_checklist"] = (
             json.loads(latest_qa.issue_checklist_json)
             if latest_qa.issue_checklist_json
@@ -877,6 +900,8 @@ def execute_report_run(run_id: str) -> None:
                     overall_score=qa_result.get("overall_score", 0),
                     decision=qa_result.get("decision", "pass"),
                     check_phase=qa_result.get("check_phase", "full_check"),
+                    forced_pass=bool(qa_result.get("forced_pass", False)),
+                    quality_warning=bool(qa_result.get("quality_warning", False)),
                     dimension_scores_json=json.dumps(
                         qa_result.get("dimension_scores", {}), ensure_ascii=False
                     ),
@@ -894,7 +919,7 @@ def execute_report_run(run_id: str) -> None:
             )
             run.feedback_loop_count = state.get("feedback_loop_count", 0)
             decision = qa_result.get("decision", "pass")
-            if decision == "pass":
+            if decision in {"pass", "pass_with_quality_warning"}:
                 _set_run_status(run, "running", "report_generation")
             elif decision in {
                 "retry_collection",

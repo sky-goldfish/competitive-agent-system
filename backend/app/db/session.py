@@ -130,6 +130,18 @@ def _ensure_compatible_schema() -> None:
                         "ALTER TABLE qa_results ADD COLUMN check_phase VARCHAR NOT NULL DEFAULT 'full_check'"
                     )
                 )
+            if "forced_pass" not in qa_columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE qa_results ADD COLUMN forced_pass BOOLEAN NOT NULL DEFAULT 0"
+                    )
+                )
+            if "quality_warning" not in qa_columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE qa_results ADD COLUMN quality_warning BOOLEAN NOT NULL DEFAULT 0"
+                    )
+                )
             if "dimension_scores_json" not in qa_columns:
                 connection.execute(
                     text(

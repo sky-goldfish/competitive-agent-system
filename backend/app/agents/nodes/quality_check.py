@@ -1,4 +1,5 @@
 import logging
+import json
 from typing import Any
 from uuid import uuid4
 
@@ -8,6 +9,7 @@ from app.providers.llm.base import LLMProvider
 logger = logging.getLogger(__name__)
 
 MAX_FEEDBACK_LOOPS = 3
+MAX_ISSUE_VERIFICATION_LOOPS = 2
 QA_PASS_THRESHOLD = 0.7
 QA_MIN_FORCED_PASS_SCORE = 0.5
 VALID_RETRY_SLOTS = {
@@ -30,8 +32,28 @@ DIMENSION_SCORE_WEIGHTS = {
     "factual_plausibility": 0.1,
 }
 
-_EVIDENCE_CAP = 30
 _ANALYSES_CAP = 15
+_MIN_EVIDENCE_PER_COMPETITOR = 3
+_PASS_DECISIONS = {"pass", "pass_with_quality_warning"}
+_SCHEMA_FIELDS = {
+    "positioning": "产品定位",
+    "target_users": "目标用户",
+    "core_features_json": "核心功能",
+    "pricing_summary": "定价信息",
+    "strengths_json": "优势",
+    "weaknesses_json": "劣势或痛点",
+    "opportunities_json": "机会点",
+}
+_PLACEHOLDER_MARKERS = (
+    "暂无",
+    "未涉及",
+    "无相关",
+    "待补充",
+    "占位",
+    "mock",
+    "n/a",
+    "unknown",
+)
 
 
 def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
@@ -46,85 +68,97 @@ def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
     phase = "full_check"
     retry_queries = None
     retry_instructions = None
-    feedback_count = raw_count + 1
+    feedback_count = raw_count
     forced_pass = False
     dimension_scores: dict[str, float] = {d: 0.0 for d in DIMENSION_SCORE_WEIGHTS}
     overall_score: float = 0.0
     decision = "pass"
     issues: list[dict[str, Any]] = []
 
-    # --- Fix #2: feedback_count always increments (unified counter) ---
-    # feedback_count = raw_count + 1 is now set unconditionally above
+    # feedback_loop_count tracks full checks only; issue verification has its own counter.
 
     if open_issues and not forced_pass:
         phase = "issue_verification"
-        verification_raw = llm.qa_verify_issues(
-            _cap_analyses(state.get("analyses", [])),
-            _cap_evidence(state.get("evidence", [])),
-            open_issues,
-        )
-        resolutions = _normalize_issue_resolutions(verification_raw.get("resolutions"))
-        checklist = _apply_issue_resolutions(checklist, resolutions, feedback_count)
-        open_issues = [issue for issue in checklist if issue.get("status") == "open"]
-        if open_issues:
+        if issue_verification_count >= MAX_ISSUE_VERIFICATION_LOOPS:
+            logger.info(
+                "QA: issue_verification retry limit reached (%d consecutive rounds)",
+                issue_verification_count,
+            )
             if feedback_count >= MAX_FEEDBACK_LOOPS:
                 forced_pass = True
-                decision = "pass"
                 issues = open_issues
-                dimension_scores = _previous_dimension_scores(prev_qa)
-                overall_score = (
-                    previous_score
-                    if previous_score is not None
-                    else _calculate_overall_score(dimension_scores)
+                dimension_scores, overall_score = _recalculate_scores_after_verification(
+                    prev_qa, checklist
                 )
-                if overall_score < QA_MIN_FORCED_PASS_SCORE:
-                    logger.warning(
-                        "QA: max loops reached but score %.2f < %.2f — still forcing pass with quality_warning",
-                        overall_score,
-                        QA_MIN_FORCED_PASS_SCORE,
-                    )
-                else:
-                    logger.info(
-                        "QA: forcing pass — max feedback loops (%d) reached (issue_verification)",
-                        MAX_FEEDBACK_LOOPS,
-                    )
-            elif issue_verification_count >= 2:
+                decision = _forced_pass_decision(overall_score)
                 logger.info(
-                    "QA: issue_verification retry limit reached (%d consecutive rounds) — falling through to full_check",
-                    issue_verification_count,
+                    "QA: finishing after final issue verification group at max full-check loops"
                 )
+            else:
                 open_issues = []
                 phase = "full_check"
-            else:
-                issue_verification_count += 1
+        else:
+            verification_raw = llm.qa_verify_issues(
+                _cap_analyses(state.get("analyses", [])),
+                state.get("evidence", []),
+                open_issues,
+            )
+            resolutions = _normalize_issue_resolutions(verification_raw.get("resolutions"))
+            checklist = _apply_issue_resolutions(checklist, resolutions, feedback_count)
+            next_issue_verification_count = issue_verification_count + 1
+            open_issues = [issue for issue in checklist if issue.get("status") == "open"]
+            if open_issues:
+                issue_verification_count = next_issue_verification_count
                 retry_queries = _retry_queries_from_resolutions(
                     resolutions
                 ) or _fallback_retry_queries(open_issues)
                 retry_instructions = verification_raw.get(
                     "retry_instructions"
                 ) or _retry_instructions_from_issues(open_issues)
-                decision = _derive_retry_decision(
-                    open_issues, has_new_evidence=bool(state.get("qa_retry_queries"))
-                )
+                decision = _derive_retry_decision(open_issues)
                 issues = open_issues
-                dimension_scores = _previous_dimension_scores(prev_qa)
-                overall_score = (
-                    previous_score
-                    if previous_score is not None
-                    else _calculate_overall_score(dimension_scores)
+                dimension_scores, overall_score = _recalculate_scores_after_verification(
+                    prev_qa, checklist
                 )
-        else:
-            phase = "full_check"
+                if (
+                    feedback_count >= MAX_FEEDBACK_LOOPS
+                    and issue_verification_count >= MAX_ISSUE_VERIFICATION_LOOPS
+                ):
+                    forced_pass = True
+                    decision = _forced_pass_decision(overall_score)
+                    retry_queries = None
+                    retry_instructions = None
+            else:
+                if feedback_count >= MAX_FEEDBACK_LOOPS:
+                    forced_pass = True
+                    issue_verification_count = next_issue_verification_count
+                    issues = []
+                    dimension_scores, overall_score = _recalculate_scores_after_verification(
+                        prev_qa, checklist
+                    )
+                    decision = _forced_pass_decision(overall_score)
+                    retry_queries = None
+                    retry_instructions = None
+                else:
+                    phase = "full_check"
 
     if not open_issues and not forced_pass:
+        feedback_count = raw_count + 1
         issue_verification_count = 0
         qa_raw = llm.qa_check_report(
             _cap_analyses(state.get("analyses", [])),
-            _cap_evidence(state.get("evidence", [])),
+            state.get("evidence", []),
         )
         dimension_scores = _normalize_dimension_scores(qa_raw.get("dimension_scores"))
+        llm_issues = _normalize_new_issues(qa_raw.get("issues"), feedback_count)
+        deterministic_issues = _deterministic_quality_issues(
+            state.get("analyses", []),
+            state.get("evidence", []),
+            feedback_count,
+        )
+        issues = _merge_issues(llm_issues, deterministic_issues)
+        dimension_scores = _apply_issue_score_caps(dimension_scores, issues)
         overall_score = _calculate_overall_score(dimension_scores)
-        issues = _normalize_new_issues(qa_raw.get("issues"), feedback_count)
         # --- Fix #4: mixed decision — handle both collection and analysis issues ---
         decision = _derive_decision(overall_score, dimension_scores, issues)
         checklist = _close_open_issues(checklist, feedback_count)
@@ -134,40 +168,17 @@ def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
         retry_instructions = (
             qa_raw.get("retry_instructions") if decision != "pass" else None
         )
-        if feedback_count >= MAX_FEEDBACK_LOOPS:
-            forced_pass = True
-            decision = "pass"
-            if overall_score < QA_MIN_FORCED_PASS_SCORE:
-                logger.warning(
-                    "QA: max loops reached but score %.2f < %.2f — still forcing pass with quality_warning",
-                    overall_score,
-                    QA_MIN_FORCED_PASS_SCORE,
-                )
-            else:
-                logger.info(
-                    "QA: forcing pass — max feedback loops (%d) reached (full_check)",
-                    MAX_FEEDBACK_LOOPS,
-                )
-        elif (
+        if (
             decision != "pass"
             and previous_score is not None
             and overall_score <= previous_score
+            and feedback_count < MAX_FEEDBACK_LOOPS
         ):
-            if overall_score < QA_MIN_FORCED_PASS_SCORE:
-                logger.warning(
-                    "QA: score did not improve (%.2f <= %.2f) and below threshold %.2f — continuing retry",
-                    overall_score,
-                    previous_score,
-                    QA_MIN_FORCED_PASS_SCORE,
-                )
-            else:
-                forced_pass = True
-                decision = "pass"
-                logger.info(
-                    "QA: forcing pass — score did not improve (%.2f <= %.2f) but above min threshold",
-                    overall_score,
-                    previous_score,
-                )
+            logger.info(
+                "QA: score did not improve (%.2f <= %.2f); continuing within retry budget",
+                overall_score,
+                previous_score,
+            )
     elif forced_pass:
         pass
 
@@ -205,7 +216,7 @@ def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
         "check_phase": phase,
         "iteration": feedback_count,
         "forced_pass": forced_pass,
-        "quality_warning": forced_pass and overall_score < QA_MIN_FORCED_PASS_SCORE,
+        "quality_warning": decision == "pass_with_quality_warning",
         "previous_score": previous_score,
     }
 
@@ -254,7 +265,7 @@ def qa_route(state: AgentState) -> str:
         return "retry_analysis"
     if decision == "retry_collection_and_analysis":
         return "retry_collection_and_analysis"
-    if decision != "pass":
+    if decision not in _PASS_DECISIONS:
         logger.warning("Unknown QA decision '%s', treating as end", decision)
     return "end"
 
@@ -264,6 +275,10 @@ def _derive_decision(
     dimension_scores: dict[str, float],
     issues: list[dict[str, Any]],
 ) -> str:
+    if overall_score >= 0.85 and issues and all(
+        issue.get("severity") == "minor" for issue in issues
+    ):
+        return "pass"
     has_collection_issue = any(
         issue.get("dimension") in COLLECTION_DIMENSIONS for issue in issues
     )
@@ -276,6 +291,8 @@ def _derive_decision(
         return "retry_collection_and_analysis"
     if has_collection_issue:
         return "retry_collection"
+    if _has_blocking_analysis_issue(issues):
+        return "retry_analysis"
     all_dimensions_pass = all(
         score >= QA_PASS_THRESHOLD for score in dimension_scores.values()
     )
@@ -288,9 +305,7 @@ def _derive_decision(
     return "retry_collection"
 
 
-def _derive_retry_decision(
-    issues: list[dict[str, Any]], *, has_new_evidence: bool = False
-) -> str:
+def _derive_retry_decision(issues: list[dict[str, Any]]) -> str:
     has_collection_issue = any(
         issue.get("dimension") in COLLECTION_DIMENSIONS for issue in issues
     )
@@ -626,6 +641,220 @@ def _identify_retry_analyses(
     )
 
 
+def _deterministic_quality_issues(
+    analyses: list[dict[str, Any]], evidence: list[dict[str, Any]], iteration: int
+) -> list[dict[str, Any]]:
+    """Apply cheap deterministic checks that should not depend on LLM judgment."""
+    issues: list[dict[str, Any]] = []
+    evidence_ids = {str(e.get("id")) for e in evidence if e.get("id")}
+    evidence_count_by_competitor: dict[str, int] = {}
+    evidence_count_by_name: dict[str, int] = {}
+    for item in evidence:
+        cid = str(item.get("competitor_id") or "")
+        name = str(item.get("related_product") or "")
+        if cid:
+            evidence_count_by_competitor[cid] = (
+                evidence_count_by_competitor.get(cid, 0) + 1
+            )
+        if name:
+            evidence_count_by_name[name] = evidence_count_by_name.get(name, 0) + 1
+
+    for analysis in analyses:
+        name = str(
+            analysis.get("competitor_name") or analysis.get("name") or "未知竞品"
+        )
+        cid = str(analysis.get("competitor_id") or "")
+        evidence_count = evidence_count_by_competitor.get(
+            cid, evidence_count_by_name.get(name, 0)
+        )
+        if evidence_count < _MIN_EVIDENCE_PER_COMPETITOR:
+            issues.append(
+                _make_issue(
+                    iteration=iteration,
+                    dimension="coverage_gaps",
+                    severity="critical" if evidence_count == 0 else "major",
+                    competitor_name=name,
+                    description=(
+                        f"{name} 仅有 {evidence_count} 条证据，低于"
+                        f" {_MIN_EVIDENCE_PER_COMPETITOR} 条的最低覆盖要求"
+                    ),
+                    fix_suggestion=f"补充采集 {name} 的产品定位、核心功能、定价和用户反馈证据",
+                    issue_id=f"det_coverage_{_stable_issue_token(cid or name)}",
+                )
+            )
+
+        missing_fields = [
+            label
+            for field, label in _SCHEMA_FIELDS.items()
+            if _is_empty_or_placeholder(analysis.get(field))
+        ]
+        if missing_fields:
+            issues.append(
+                _make_issue(
+                    iteration=iteration,
+                    dimension="schema_completeness",
+                    severity="major",
+                    competitor_name=name,
+                    description=f"{name} 的结构化分析字段不完整：{', '.join(missing_fields)}",
+                    fix_suggestion=f"重新分析 {name}，补齐缺失字段并避免占位文本",
+                    issue_id=f"det_schema_{_stable_issue_token(cid or name)}",
+                )
+            )
+
+        referenced_ids = _parse_evidence_ids(analysis.get("evidence_ids_json"))
+        dangling_ids = sorted(eid for eid in referenced_ids if eid not in evidence_ids)
+        if dangling_ids:
+            issues.append(
+                _make_issue(
+                    iteration=iteration,
+                    dimension="citation_accuracy",
+                    severity="major",
+                    competitor_name=name,
+                    description=(
+                        f"{name} 引用了 {len(dangling_ids)} 条不存在的证据 ID"
+                    ),
+                    fix_suggestion="重新核验 evidence_ids，移除无效引用或补齐对应证据",
+                    issue_id=f"det_citation_{_stable_issue_token(cid or name)}",
+                )
+            )
+    return issues
+
+
+def _make_issue(
+    *,
+    iteration: int,
+    dimension: str,
+    severity: str,
+    competitor_name: str,
+    description: str,
+    fix_suggestion: str,
+    issue_id: str,
+) -> dict[str, Any]:
+    return {
+        "id": issue_id,
+        "dimension": dimension,
+        "severity": _normalize_severity(severity),
+        "competitor_name": competitor_name,
+        "description": description,
+        "fix_suggestion": fix_suggestion,
+        "status": "open",
+        "first_seen_iteration": iteration,
+        "last_seen_iteration": iteration,
+        "resolved_iteration": None,
+        "resolution_reason": None,
+    }
+
+
+def _merge_issues(
+    primary: list[dict[str, Any]], secondary: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for issue in [*primary, *secondary]:
+        key = (
+            str(issue.get("dimension") or ""),
+            str(issue.get("competitor_name") or ""),
+            _normalize_issue_text(str(issue.get("description") or "")),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(issue)
+    return merged
+
+
+def _apply_issue_score_caps(
+    dimension_scores: dict[str, float], issues: list[dict[str, Any]]
+) -> dict[str, float]:
+    adjusted = dict(dimension_scores)
+    caps: dict[str, float] = {}
+    for issue in issues:
+        dimension = issue.get("dimension")
+        if dimension not in DIMENSION_SCORE_WEIGHTS:
+            continue
+        cap = _issue_score_cap(issue)
+        caps[dimension] = min(caps.get(dimension, 1.0), cap)
+    for dimension, cap in caps.items():
+        adjusted[dimension] = max(0.0, min(adjusted.get(dimension, 0.0), cap))
+    return adjusted
+
+
+def _issue_score_cap(issue: dict[str, Any]) -> float:
+    severity = issue.get("severity")
+    dimension = issue.get("dimension")
+    if severity == "critical":
+        return 0.35
+    if severity == "major":
+        if dimension in {"citation_accuracy", "schema_completeness"}:
+            return 0.6
+        return 0.65
+    if severity == "minor":
+        return 0.8
+    return 1.0
+
+
+def _has_blocking_analysis_issue(issues: list[dict[str, Any]]) -> bool:
+    return any(
+        issue.get("dimension") not in COLLECTION_DIMENSIONS
+        and issue.get("competitor_name") not in {"system", None}
+        and issue.get("severity") in {"critical", "major"}
+        for issue in issues
+    )
+
+
+def _forced_pass_decision(overall_score: float) -> str:
+    if overall_score < QA_MIN_FORCED_PASS_SCORE:
+        return "pass_with_quality_warning"
+    return "pass"
+
+
+def _parse_evidence_ids(raw_ids: Any) -> set[str]:
+    if isinstance(raw_ids, str):
+        try:
+            parsed = json.loads(raw_ids)
+        except (TypeError, ValueError):
+            parsed = []
+    else:
+        parsed = raw_ids
+    if not isinstance(parsed, list):
+        return set()
+    return {str(item) for item in parsed if item}
+
+
+def _is_empty_or_placeholder(value: Any) -> bool:
+    if isinstance(value, list):
+        return len([item for item in value if not _is_empty_or_placeholder(item)]) == 0
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return True
+        parsed = _try_parse_json_list(text)
+        if parsed is not None:
+            return _is_empty_or_placeholder(parsed)
+        lowered = text.lower()
+        return any(marker in lowered for marker in _PLACEHOLDER_MARKERS)
+    return value is None
+
+
+def _try_parse_json_list(value: str) -> list[Any] | None:
+    if not value.startswith("["):
+        return None
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, list) else None
+
+
+def _normalize_issue_text(value: str) -> str:
+    return " ".join(value.strip().lower().split())
+
+
+def _stable_issue_token(value: str) -> str:
+    safe = "".join(ch.lower() if ch.isalnum() else "_" for ch in value.strip())
+    return safe[:40] or uuid4().hex[:12]
+
+
 def _normalize_dimension_scores(raw_scores: Any) -> dict[str, float]:
     if not isinstance(raw_scores, dict):
         return {dimension: 0.0 for dimension in DIMENSION_SCORE_WEIGHTS}
@@ -650,22 +879,28 @@ def _previous_dimension_scores(prev_qa: Any) -> dict[str, float]:
     return {dimension: 0.0 for dimension in DIMENSION_SCORE_WEIGHTS}
 
 
+def _recalculate_scores_after_verification(
+    prev_qa: Any,
+    checklist: list[dict[str, Any]],
+) -> tuple[dict[str, float], float]:
+    """Recalculate dimension and overall scores based on remaining open issues.
+
+    After issue verification resolves some issues, lift caps on dimensions
+    that no longer have open issues so the score reflects the improvement.
+    """
+    dimension_scores = _previous_dimension_scores(prev_qa)
+    open_issues = [i for i in checklist if i.get("status") == "open"]
+    dimension_scores = _apply_issue_score_caps(dimension_scores, open_issues)
+    overall_score = _calculate_overall_score(dimension_scores)
+    return dimension_scores, overall_score
+
+
 def _calculate_overall_score(dimension_scores: dict[str, float]) -> float:
     total = sum(
         dimension_scores.get(dimension, 0.0) * weight
         for dimension, weight in DIMENSION_SCORE_WEIGHTS.items()
     )
     return round(min(1.0, max(0.0, total)), 2)
-
-
-def _cap_evidence(
-    evidence: list[dict[str, Any]], cap: int = _EVIDENCE_CAP
-) -> list[dict[str, Any]]:
-    if len(evidence) <= cap:
-        return evidence
-    return sorted(evidence, key=lambda e: float(e.get("confidence", 0)), reverse=True)[
-        :cap
-    ]
 
 
 def _cap_analyses(

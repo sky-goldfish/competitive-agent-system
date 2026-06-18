@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import logging
+from typing import Any
 
 from app.agents.state import AgentState
 from app.db.models import new_id
@@ -87,10 +88,21 @@ def structured_analysis_node(state: AgentState, llm: LLMProvider) -> AgentState:
         )
         analysis["id"] = new_id("ana")
         analysis["analysis_iteration"] = state.get("feedback_loop_count", 0)
-        analysis["evidence_ids_json"] = json.dumps(
-            [item["id"] for item in competitor_evidence if item.get("id")],
-            ensure_ascii=False,
-        )
+        # Preserve LLM-returned evidence_ids_json when valid; only fall back to full
+        # evidence set when the LLM didn't provide one.
+        llm_evidence_ids = _parse_json_list(analysis.get("evidence_ids_json"))
+        valid_ev_ids = {item.get("id") for item in competitor_evidence if item.get("id")}
+        if llm_evidence_ids and all(
+            str(eid) in valid_ev_ids for eid in llm_evidence_ids
+        ):
+            # LLM returned valid evidence IDs — keep them as-is (already ev_xxx after
+            # the ref_id→ev_id conversion in the provider layer).
+            pass
+        else:
+            analysis["evidence_ids_json"] = json.dumps(
+                [item["id"] for item in competitor_evidence if item.get("id")],
+                ensure_ascii=False,
+            )
         return {
             **analysis,
             "competitor_id": competitor["id"],
@@ -210,3 +222,16 @@ def _bounded_confidence(value: object) -> float:
     if score > 1:
         score = score / 100
     return min(1.0, max(0.0, score))
+
+
+def _parse_json_list(value: Any) -> list[str]:
+    """Parse a JSON string or list into a flat list of strings."""
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return []
+        return [str(item) for item in parsed] if isinstance(parsed, list) else []
+    return []

@@ -295,6 +295,8 @@ class QAResult(Base):
     overall_score: Mapped[float] = mapped_column(Float, default=0.0)
     decision: Mapped[str] = mapped_column(String, default="pass")
     check_phase: Mapped[str] = mapped_column(String, default="full_check")
+    forced_pass: Mapped[bool] = mapped_column(Boolean, default=False)
+    quality_warning: Mapped[bool] = mapped_column(Boolean, default=False)
     dimension_scores_json: Mapped[str] = mapped_column(Text, default="{}")
     issues_json: Mapped[str] = mapped_column(Text, default="[]")
     issue_checklist_json: Mapped[str] = mapped_column(Text, default="[]")

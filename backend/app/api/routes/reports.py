@@ -3,11 +3,12 @@ import logging
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session
 
 from app.schemas.analysis import parse_focus_analysis_json
 from app.db.models import Analysis, Evidence, Report, Run, Source
 from app.db.session import get_db
+from app.services.analysis_service import latest_analyses_by_competitor
 from app.schemas.report import (
     CitationAnalysisRef,
     CitationBundleClaim,
@@ -115,12 +116,7 @@ def get_report_citations(
     for item in evidence_items:
         evidence_by_source_id.setdefault(item.source_id, []).append(item)
 
-    analyses = (
-        db.query(Analysis)
-        .filter(Analysis.run_id == run_id)
-        .options(joinedload(Analysis.competitor))
-        .all()
-    )
+    analyses = latest_analyses_by_competitor(db, run_id)
     analysis_refs_by_evidence_id = _analysis_refs_by_evidence_id(analyses)
 
     citation_items = []
@@ -269,20 +265,11 @@ def get_report_citation_bundle(
     for item in evidence_items:
         evidence_by_competitor.setdefault(item.related_product, []).append(item)
 
-    analyses = (
-        db.query(Analysis)
-        .filter(Analysis.run_id == run_id)
-        .options(joinedload(Analysis.competitor))
-        .order_by(Analysis.created_at.asc())
-        .all()
+    analyses = latest_analyses_by_competitor(
+        db,
+        run_id,
+        competitor_names_filter=competitor_names_filter,
     )
-    if competitor_names_filter is not None:
-        analyses = [
-            a
-            for a in analyses
-            if (a.competitor.name if a.competitor else a.competitor_id)
-            in competitor_names_filter
-        ]
 
     result: list[CitationBundleCompetitor] = []
     for analysis in analyses:

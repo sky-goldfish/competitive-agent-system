@@ -1,8 +1,10 @@
 import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { ArrowLeft, BarChart3, Brain, ChevronDown, ChevronUp, Clock, Loader2, Search, XCircle } from 'lucide-react';
+import { ArrowLeft, BarChart3, Brain, ChevronDown, ChevronUp, ClipboardCheck, Clock, Eye, Loader2, Search, XCircle } from 'lucide-react';
 import { getObservability } from '../lib/api';
+import QAReviewModal from '../components/qa/QAReviewModal';
+import AnalysisReviewModal from '../components/analysis/AnalysisReviewModal';
 import type { CallTrace, ObservabilityStage } from '../lib/types';
 
 const stageLabels: Record<string, string> = {
@@ -33,6 +35,8 @@ export default function ObservabilityPage() {
   const data = obsQuery.data;
   const [selectedStage, setSelectedStage] = useState<string | null>(null);
   const [expandedCalls, setExpandedCalls] = useState<Set<string>>(new Set());
+  const [showQAReview, setShowQAReview] = useState(false);
+  const [showAnalysisReview, setShowAnalysisReview] = useState(false);
 
   if (obsQuery.isLoading) return <p className="loading">加载中...</p>;
   if (obsQuery.isError || !data) return <p className="error-text">加载失败。</p>;
@@ -154,7 +158,29 @@ export default function ObservabilityPage() {
           {selectedStageData ? (
             <>
               <div className="obs-detail-header">
-                <h3>{stageLabels[selectedStageData.stage] ?? selectedStageData.stage}</h3>
+                <div className="obs-detail-header-row">
+                  <h3>{stageLabels[selectedStageData.stage] ?? selectedStageData.stage}</h3>
+                  {selectedStageData.stage === 'quality_check' && (
+                    <button
+                      type="button"
+                      className="obs-qa-review-btn"
+                      onClick={() => setShowQAReview(true)}
+                    >
+                      <ClipboardCheck size={14} />
+                      查看质检详情
+                    </button>
+                  )}
+                  {selectedStageData.stage === 'structured_analysis' && (
+                    <button
+                      type="button"
+                      className="obs-qa-review-btn"
+                      onClick={() => setShowAnalysisReview(true)}
+                    >
+                      <Eye size={14} />
+                      查看分析详情
+                    </button>
+                  )}
+                </div>
                 <span className="obs-detail-summary">
                   {formatDuration(selectedStageData.duration_ms)} · {formatTokens(selectedStageData.total_tokens)} tokens · {selectedStageData.calls.length} 次调用
                 </span>
@@ -182,6 +208,13 @@ export default function ObservabilityPage() {
           )}
         </section>
       </div>
+
+      {showQAReview && (
+        <QAReviewModal runId={id} onClose={() => setShowQAReview(false)} />
+      )}
+      {showAnalysisReview && (
+        <AnalysisReviewModal runId={id} onClose={() => setShowAnalysisReview(false)} />
+      )}
     </div>
   );
 }
