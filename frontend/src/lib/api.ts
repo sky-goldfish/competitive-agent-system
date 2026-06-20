@@ -126,8 +126,9 @@ export function clearKnowledgeItems(): Promise<KnowledgeClearResult> {
   return request<KnowledgeClearResult>('/knowledge/items', { method: 'DELETE' });
 }
 
-export function getAnalyses(runId: string): Promise<Analysis[]> {
-  return request<Analysis[]>(`/runs/${runId}/analyses`);
+export function getAnalyses(runId: string, includeHistory = false): Promise<Analysis[]> {
+  const params = includeHistory ? '?include_history=true' : '';
+  return request<Analysis[]>(`/runs/${runId}/analyses${params}`);
 }
 
 export function getQAResults(runId: string): Promise<QAResult[]> {

@@ -653,26 +653,47 @@ def execute_report_run(run_id: str) -> None:
             raise InvalidRunStateError(f"Run not found: {run_id}")
 
         if stage == "material_collection":
-            existing_source_urls = {
-                s.url
-                for s in db.query(Source.url).filter(Source.run_id == run_id).all()
+            existing_source_keys = {
+                (s.competitor_id or "", s.url)
+                for s in db.query(Source.competitor_id, Source.url)
+                .filter(Source.run_id == run_id)
+                .all()
             }
             existing_evidence_ids = {
                 e.id
                 for e in db.query(Evidence.id).filter(Evidence.run_id == run_id).all()
             }
-            existing_evidence_quotes: dict[str, str] = {}
+            existing_evidence_keys: dict[tuple[str, str, str, str], str] = {}
             for e in (
-                db.query(Evidence.id, Evidence.quote)
+                db.query(
+                    Evidence.id,
+                    Evidence.quote,
+                    Evidence.related_product,
+                    Evidence.related_dimension,
+                    Source.url,
+                )
+                .join(Source, Source.id == Evidence.source_id)
                 .filter(Evidence.run_id == run_id, Evidence.quote != "")
                 .all()
             ):
-                existing_evidence_quotes[e.quote] = e.id
+                existing_evidence_keys[
+                    (
+                        e.related_product or "",
+                        e.related_dimension or "",
+                        e.url or "",
+                        e.quote or "",
+                    )
+                ] = e.id
             for item in state["sources"]:
-                if item.get("url") in existing_source_urls:
+                source_key = (item.get("competitor_id") or "", item.get("url"))
+                if source_key in existing_source_keys:
                     source = (
                         db.query(Source)
-                        .filter(Source.run_id == run_id, Source.url == item["url"])
+                        .filter(
+                            Source.run_id == run_id,
+                            Source.competitor_id == item.get("competitor_id"),
+                            Source.url == item["url"],
+                        )
                         .first()
                     )
                     if source:
@@ -698,6 +719,7 @@ def execute_report_run(run_id: str) -> None:
                 source = Source(run_id=run_id, **source_data)
                 db.add(source)
                 db.flush()
+                existing_source_keys.add(source_key)
                 source_by_key[_source_key_for_source(source_data)] = source
                 if item.get("competitor_id") and item.get("url"):
                     source_by_competitor_url[
@@ -711,20 +733,27 @@ def execute_report_run(run_id: str) -> None:
                     persisted_evidence.append(item)
                     continue
                 item_quote = item.get("quote", "")
-                if item_quote and item_quote in existing_evidence_quotes:
-                    existing_ev_id = existing_evidence_quotes[item_quote]
+                evidence_key = (
+                    item.get("related_product") or "",
+                    item.get("related_dimension") or "",
+                    item.get("source_url") or "",
+                    item_quote or "",
+                )
+                if item_quote and evidence_key in existing_evidence_keys:
+                    existing_ev_id = existing_evidence_keys[evidence_key]
                     persisted_evidence.append({**item, "id": existing_ev_id})
                     continue
                 source = _source_for_evidence(
-                    item, source_by_key, source_by_competitor_url, source_by_url
+                    item, source_by_key, source_by_competitor_url, source_by_url, db, run_id
                 )
                 if source is None and item.get("source_url"):
-                    source = (
-                        db.query(Source)
-                        .filter(
-                            Source.run_id == run_id, Source.url == item["source_url"]
-                        )
-                        .first()
+                    source = _source_for_evidence(
+                        item,
+                        source_by_key,
+                        source_by_competitor_url,
+                        source_by_url,
+                        db,
+                        run_id,
                     )
                     if source:
                         source_by_url.setdefault(item["source_url"], source)
@@ -749,10 +778,7 @@ def execute_report_run(run_id: str) -> None:
                         "source_type",
                     }
                 }
-                if (
-                    "reference_id" not in evidence_data
-                    and source.reference_id is not None
-                ):
+                if evidence_data.get("reference_id") is None and source.reference_id is not None:
                     evidence_data["reference_id"] = source.reference_id
                 evidence = Evidence(run_id=run_id, source_id=source.id, **evidence_data)
                 db.add(evidence)
@@ -887,12 +913,26 @@ def execute_report_run(run_id: str) -> None:
             db.commit()
         elif stage == "quality_check":
             qa_result = state.get("qa_result", {})
+            previous_qa = (
+                db.query(QAResult)
+                .filter(QAResult.run_id == run_id)
+                .order_by(QAResult.iteration.desc())
+                .first()
+            )
             qa_iteration = (
                 db.query(func.max(QAResult.iteration))
                 .filter(QAResult.run_id == run_id)
                 .scalar()
             )
             qa_iteration = (qa_iteration if qa_iteration is not None else 0) + 1
+            issues = qa_result.get("issues", [])
+            issue_checklist = qa_result.get("issue_checklist", [])
+            issue_checklist = _stamp_issue_transition_iterations(
+                issue_checklist,
+                previous_qa.issue_checklist_json if previous_qa else None,
+                qa_iteration,
+            )
+            issues = _sync_issue_statuses_from_checklist(issues, issue_checklist)
             db.add(
                 QAResult(
                     run_id=run_id,
@@ -905,12 +945,8 @@ def execute_report_run(run_id: str) -> None:
                     dimension_scores_json=json.dumps(
                         qa_result.get("dimension_scores", {}), ensure_ascii=False
                     ),
-                    issues_json=json.dumps(
-                        qa_result.get("issues", []), ensure_ascii=False
-                    ),
-                    issue_checklist_json=json.dumps(
-                        qa_result.get("issue_checklist", []), ensure_ascii=False
-                    ),
+                    issues_json=json.dumps(issues, ensure_ascii=False),
+                    issue_checklist_json=json.dumps(issue_checklist, ensure_ascii=False),
                     retry_instructions=qa_result.get("retry_instructions"),
                     retry_queries_json=json.dumps(
                         state.get("qa_retry_queries", []), ensure_ascii=False
@@ -1104,6 +1140,62 @@ def _merge_reference_id(metadata_json: str | None, reference_id: object) -> str 
     return json.dumps(metadata, ensure_ascii=False)
 
 
+def _stamp_issue_transition_iterations(
+    checklist: object,
+    previous_checklist_json: str | None,
+    qa_iteration: int,
+) -> list[dict]:
+    current = [dict(item) for item in checklist if isinstance(item, dict)] if isinstance(checklist, list) else []
+    try:
+        previous_raw = json.loads(previous_checklist_json) if previous_checklist_json else []
+    except (json.JSONDecodeError, TypeError):
+        previous_raw = []
+    previous_by_id = {
+        str(item.get("id")): item
+        for item in previous_raw
+        if isinstance(item, dict) and item.get("id")
+    }
+    for item in current:
+        issue_id = str(item.get("id") or "")
+        previous = previous_by_id.get(issue_id)
+        previous_status = previous.get("status") if previous else None
+        status = item.get("status")
+        if status == "resolved":
+            if previous_status != "resolved":
+                item["resolved_iteration"] = qa_iteration
+                item["last_seen_iteration"] = qa_iteration
+            elif item.get("resolved_iteration") is None:
+                item["resolved_iteration"] = previous.get("resolved_iteration") if previous else qa_iteration
+        elif status in {"open", "unresolved"} and previous_status != status:
+            item["last_seen_iteration"] = qa_iteration
+    return current
+
+
+def _sync_issue_statuses_from_checklist(
+    issues: object, checklist: list[dict]
+) -> list[dict]:
+    current = [dict(item) for item in issues if isinstance(item, dict)] if isinstance(issues, list) else []
+    by_id = {
+        str(item.get("id")): item
+        for item in checklist
+        if isinstance(item, dict) and item.get("id")
+    }
+    for item in current:
+        issue_id = str(item.get("id") or "")
+        checklist_item = by_id.get(issue_id)
+        if not checklist_item:
+            continue
+        for key in (
+            "status",
+            "last_seen_iteration",
+            "resolved_iteration",
+            "resolution_reason",
+        ):
+            if key in checklist_item:
+                item[key] = checklist_item.get(key)
+    return current
+
+
 def _trace_input(stage: str, state: AgentState) -> dict:
     if stage == "requirement_understanding":
         return {"user_requirement": state.get("user_requirement")}
@@ -1138,15 +1230,40 @@ def _source_for_evidence(
     source_by_key: dict[str, Source],
     source_by_competitor_url: dict[str, Source],
     source_by_url: dict[str, Source],
+    db: Session,
+    run_id: str,
 ) -> Source | None:
     source_url = evidence.get("source_url")
-    return (
-        source_by_key.get(_source_key_for_evidence(evidence))
-        or source_by_competitor_url.get(
-            _competitor_url_key(evidence.get("competitor_id"), source_url)
-        )
-        or source_by_url.get(source_url)
+    source = source_by_key.get(_source_key_for_evidence(evidence))
+    if source is not None:
+        return source
+    source = source_by_competitor_url.get(
+        _competitor_url_key(evidence.get("competitor_id"), source_url)
     )
+    if source is not None:
+        return source
+    if not source_url:
+        return None
+    candidates = (
+        db.query(Source)
+        .filter(Source.run_id == run_id, Source.url == source_url)
+        .all()
+    )
+    competitor_id = evidence.get("competitor_id")
+    for candidate in candidates:
+        if competitor_id and candidate.competitor_id == competitor_id:
+            return candidate
+    unowned = [candidate for candidate in candidates if candidate.competitor_id is None]
+    if len(unowned) == 1:
+        return unowned[0]
+    if len(candidates) == 1:
+        return candidates[0]
+    fallback = source_by_url.get(source_url)
+    if fallback is not None and (
+        fallback.competitor_id is None or fallback.competitor_id == competitor_id
+    ):
+        return fallback
+    return None
 
 
 def _source_key_for_source(source: dict) -> str:

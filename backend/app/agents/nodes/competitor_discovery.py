@@ -652,7 +652,6 @@ def _focus_query_terms(requirement: dict) -> list[str]:
     focuses = []
     if isinstance(profile, dict):
         focuses.extend(profile.get("explicit_focuses") or [])
-        focuses.extend(profile.get("inferred_focuses") or [])
     terms = []
     for focus in focuses:
         if not isinstance(focus, dict):

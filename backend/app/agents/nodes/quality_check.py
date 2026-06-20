@@ -35,6 +35,8 @@ DIMENSION_SCORE_WEIGHTS = {
 _ANALYSES_CAP = 15
 _MIN_EVIDENCE_PER_COMPETITOR = 3
 _PASS_DECISIONS = {"pass", "pass_with_quality_warning"}
+_OPEN_STATUSES = {"open"}
+_NOT_RESOLVED_STATUSES = {"open", "unresolved"}
 _SCHEMA_FIELDS = {
     "positioning": "产品定位",
     "target_users": "目标用户",
@@ -43,6 +45,18 @@ _SCHEMA_FIELDS = {
     "strengths_json": "优势",
     "weaknesses_json": "劣势或痛点",
     "opportunities_json": "机会点",
+}
+_ISSUE_FIELD_HINTS = {
+    "定位": "positioning",
+    "目标用户": "target_users",
+    "核心功能": "core_features_json",
+    "功能": "core_features_json",
+    "价格": "pricing_summary",
+    "定价": "pricing_summary",
+    "优势": "strengths_json",
+    "劣势": "weaknesses_json",
+    "痛点": "weaknesses_json",
+    "机会": "opportunities_json",
 }
 _PLACEHOLDER_MARKERS = (
     "暂无",
@@ -57,6 +71,7 @@ _PLACEHOLDER_MARKERS = (
 
 
 def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
+    current_analyses = _latest_analyses_by_competitor(state.get("analyses", []))
     raw_count = state.get("feedback_loop_count", 0)
     issue_verification_count = state.get("qa_issue_verification_count", 0)
     previous_score = None
@@ -64,7 +79,8 @@ def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
     if prev_qa and isinstance(prev_qa, dict):
         previous_score = _coerce_score(prev_qa.get("overall_score"))
     checklist = _normalize_checklist(state.get("qa_issue_checklist", []))
-    open_issues = [issue for issue in checklist if issue.get("status") == "open"]
+    open_issues = _open_issues(checklist)
+    unresolved_terminal_issues = _terminal_unresolved_issues(checklist)
     phase = "full_check"
     retry_queries = None
     retry_instructions = None
@@ -86,11 +102,13 @@ def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
             )
             if feedback_count >= MAX_FEEDBACK_LOOPS:
                 forced_pass = True
-                issues = open_issues
+                checklist = _close_open_issues(checklist, feedback_count)
+                open_issues = _open_issues(checklist)
+                issues = _terminal_unresolved_issues(checklist)
                 dimension_scores, overall_score = _recalculate_scores_after_verification(
                     prev_qa, checklist
                 )
-                decision = _forced_pass_decision(overall_score)
+                decision = _forced_pass_decision(overall_score, checklist)
                 logger.info(
                     "QA: finishing after final issue verification group at max full-check loops"
                 )
@@ -99,14 +117,20 @@ def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
                 phase = "full_check"
         else:
             verification_raw = llm.qa_verify_issues(
-                _cap_analyses(state.get("analyses", [])),
+                _cap_analyses(current_analyses),
                 state.get("evidence", []),
                 open_issues,
             )
             resolutions = _normalize_issue_resolutions(verification_raw.get("resolutions"))
-            checklist = _apply_issue_resolutions(checklist, resolutions, feedback_count)
+            checklist = _apply_issue_resolutions(
+                checklist,
+                resolutions,
+                feedback_count,
+                current_analyses,
+                state.get("evidence", []),
+            )
             next_issue_verification_count = issue_verification_count + 1
-            open_issues = [issue for issue in checklist if issue.get("status") == "open"]
+            open_issues = _open_issues(checklist)
             if open_issues:
                 issue_verification_count = next_issue_verification_count
                 retry_queries = _retry_queries_from_resolutions(
@@ -125,7 +149,10 @@ def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
                     and issue_verification_count >= MAX_ISSUE_VERIFICATION_LOOPS
                 ):
                     forced_pass = True
-                    decision = _forced_pass_decision(overall_score)
+                    checklist = _close_open_issues(checklist, feedback_count)
+                    open_issues = _open_issues(checklist)
+                    issues = _terminal_unresolved_issues(checklist)
+                    decision = _forced_pass_decision(overall_score, checklist)
                     retry_queries = None
                     retry_instructions = None
             else:
@@ -136,23 +163,35 @@ def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
                     dimension_scores, overall_score = _recalculate_scores_after_verification(
                         prev_qa, checklist
                     )
-                    decision = _forced_pass_decision(overall_score)
+                    decision = _forced_pass_decision(overall_score, checklist)
                     retry_queries = None
                     retry_instructions = None
                 else:
                     phase = "full_check"
 
+    if (
+        not open_issues
+        and unresolved_terminal_issues
+        and raw_count >= MAX_FEEDBACK_LOOPS
+        and not forced_pass
+    ):
+        forced_pass = True
+        issues = unresolved_terminal_issues
+        dimension_scores, overall_score = _recalculate_scores_after_verification(
+            prev_qa, checklist
+        )
+        decision = _forced_pass_decision(overall_score, checklist)
     if not open_issues and not forced_pass:
         feedback_count = raw_count + 1
         issue_verification_count = 0
         qa_raw = llm.qa_check_report(
-            _cap_analyses(state.get("analyses", [])),
+            _cap_analyses(current_analyses),
             state.get("evidence", []),
         )
         dimension_scores = _normalize_dimension_scores(qa_raw.get("dimension_scores"))
         llm_issues = _normalize_new_issues(qa_raw.get("issues"), feedback_count)
         deterministic_issues = _deterministic_quality_issues(
-            state.get("analyses", []),
+            current_analyses,
             state.get("evidence", []),
             feedback_count,
         )
@@ -185,16 +224,22 @@ def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
     retry_guidance_map = None
     retry_analysis_ids = None
     retry_analysis_guidance = None
+    repair_tasks = None
+    bad_evidence_ids = None
     if decision == "retry_collection":
         retry_queries = _normalize_retry_queries(
             retry_queries
         ) or _fallback_retry_queries(issues)
         retry_guidance_map = _build_retry_guidance_map(issues)
         retry_analysis_guidance = retry_instructions
+        repair_tasks = _build_repair_tasks(issues, current_analyses)
+        bad_evidence_ids = _identify_bad_evidence_ids(issues, state.get("evidence", []))
     elif decision == "retry_analysis":
         retry_guidance_map = _build_retry_guidance_map(issues)
-        retry_analysis_ids = _identify_retry_analyses(issues, state.get("analyses", []))
+        retry_analysis_ids = _identify_retry_analyses(issues, current_analyses)
         retry_analysis_guidance = retry_instructions
+        repair_tasks = _build_repair_tasks(issues, current_analyses)
+        bad_evidence_ids = _identify_bad_evidence_ids(issues, state.get("evidence", []))
     elif decision == "retry_collection_and_analysis":
         retry_queries = _normalize_retry_queries(
             retry_queries
@@ -202,21 +247,31 @@ def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
         retry_guidance_map = _build_retry_guidance_map(issues)
         retry_analysis_ids = _identify_retry_analyses(
             [i for i in issues if i.get("dimension") not in COLLECTION_DIMENSIONS],
-            state.get("analyses", []),
+            current_analyses,
         )
         retry_analysis_guidance = retry_instructions
+        repair_tasks = _build_repair_tasks(issues, current_analyses)
+        bad_evidence_ids = _identify_bad_evidence_ids(issues, state.get("evidence", []))
+
+    quality_warning = (
+        decision == "pass_with_quality_warning"
+        or forced_pass
+        or _has_unresolved_blocking_issues(checklist)
+        or any(score < QA_PASS_THRESHOLD for score in dimension_scores.values())
+    )
+    final_issues = _merge_issue_records(issues, _visible_unresolved_issues(checklist))
 
     qa_result: dict[str, Any] = {
         "overall_score": overall_score,
         "dimension_scores": dimension_scores,
         "decision": decision,
         "retry_instructions": retry_instructions,
-        "issues": issues,
+        "issues": final_issues,
         "issue_checklist": checklist,
         "check_phase": phase,
         "iteration": feedback_count,
         "forced_pass": forced_pass,
-        "quality_warning": decision == "pass_with_quality_warning",
+        "quality_warning": quality_warning,
         "previous_score": previous_score,
     }
 
@@ -241,6 +296,8 @@ def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
         "qa_retry_queries",
         "qa_retry_analysis_ids",
         "qa_analysis_guidance",
+        "qa_repair_tasks",
+        "qa_bad_evidence_ids",
     ):
         new_state.pop(stale_key, None)
     if retry_guidance_map is not None:
@@ -251,6 +308,10 @@ def quality_check_node(state: AgentState, llm: LLMProvider) -> AgentState:
         new_state["qa_retry_analysis_ids"] = retry_analysis_ids
     if retry_analysis_guidance is not None:
         new_state["qa_analysis_guidance"] = retry_analysis_guidance
+    if repair_tasks is not None:
+        new_state["qa_repair_tasks"] = repair_tasks
+    if bad_evidence_ids is not None:
+        new_state["qa_bad_evidence_ids"] = bad_evidence_ids
     return new_state  # type: ignore[return-value]
 
 
@@ -408,16 +469,39 @@ def _normalize_issue_resolutions(raw_resolutions: Any) -> list[dict[str, Any]]:
 
 
 def _apply_issue_resolutions(
-    checklist: list[dict[str, Any]], resolutions: list[dict[str, Any]], iteration: int
+    checklist: list[dict[str, Any]],
+    resolutions: list[dict[str, Any]],
+    iteration: int,
+    analyses: list[dict[str, Any]] | None = None,
+    evidence: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     resolution_by_id = {item["issue_id"]: item for item in resolutions}
     updated = []
     for issue in checklist:
-        if issue.get("status") != "open":
+        if issue.get("status") not in _OPEN_STATUSES:
             updated.append(issue)
             continue
         resolution = resolution_by_id.get(str(issue.get("id")))
-        if resolution and resolution["status"] == "resolved":
+        accepted, rejection_reason = _accept_issue_resolution(
+            issue,
+            resolution,
+            analyses or [],
+            evidence or [],
+        )
+        if _coverage_issue_has_sufficient_evidence(issue, evidence or []):
+            updated.append(
+                {
+                    **issue,
+                    "status": "resolved",
+                    "last_seen_iteration": iteration,
+                    "resolved_iteration": iteration,
+                    "resolution_reason": (
+                        "系统复核确认：采集证据库已满足覆盖要求；"
+                        "结构化分析允许选择部分代表性证据"
+                    ),
+                }
+            )
+        elif resolution and resolution["status"] == "resolved" and accepted:
             updated.append(
                 {
                     **issue,
@@ -434,11 +518,28 @@ def _apply_issue_resolutions(
                     **issue,
                     "status": "open",
                     "last_seen_iteration": iteration,
-                    "resolution_reason": (resolution or {}).get("resolution_reason")
+                    "resolution_reason": rejection_reason
+                    or (resolution or {}).get("resolution_reason")
                     or issue.get("resolution_reason"),
                 }
             )
     return updated
+
+
+def _coverage_issue_has_sufficient_evidence(
+    issue: dict[str, Any], evidence: list[dict[str, Any]]
+) -> bool:
+    if issue.get("dimension") != "coverage_gaps":
+        return False
+    competitor_name = str(issue.get("competitor_name") or "")
+    if not competitor_name:
+        return False
+    required_dimensions = _coverage_dimensions_for_issue(issue)
+    counts = _evidence_counts_for_competitor(evidence, competitor_name)
+    return all(
+        counts.get(label, 0) >= _MIN_EVIDENCE_PER_COMPETITOR
+        for label in required_dimensions
+    )
 
 
 def _close_open_issues(
@@ -447,13 +548,54 @@ def _close_open_issues(
     """Mark remaining open issues as unresolved rather than silently dropping them."""
     updated = []
     for issue in checklist:
-        if issue.get("status") == "open":
+        if issue.get("status") in _OPEN_STATUSES:
             updated.append(
                 {**issue, "status": "unresolved", "last_seen_iteration": iteration}
             )
         else:
             updated.append(issue)
     return updated
+
+
+def _open_issues(checklist: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        issue
+        for issue in checklist
+        if issue.get("status") in _OPEN_STATUSES
+    ]
+
+
+def _terminal_unresolved_issues(checklist: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [issue for issue in checklist if issue.get("status") == "unresolved"]
+
+
+def _visible_unresolved_issues(checklist: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        issue
+        for issue in checklist
+        if issue.get("status") in _NOT_RESOLVED_STATUSES
+    ]
+
+
+def _merge_issue_records(
+    primary: list[dict[str, Any]], secondary: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for issue in [*primary, *secondary]:
+        issue_id = str(issue.get("id") or "")
+        key = issue_id or "|".join(
+            [
+                str(issue.get("dimension") or ""),
+                str(issue.get("competitor_name") or ""),
+                _normalize_issue_text(str(issue.get("description") or "")),
+            ]
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(issue)
+    return merged
 
 
 def _normalize_retry_queries(raw_queries: Any) -> list[dict[str, str]]:
@@ -592,6 +734,215 @@ def _normalize_severity(value: Any) -> str:
     return severity if severity in {"critical", "major", "minor"} else "major"
 
 
+def _accept_issue_resolution(
+    issue: dict[str, Any],
+    resolution: dict[str, Any] | None,
+    analyses: list[dict[str, Any]],
+    evidence: list[dict[str, Any]],
+) -> tuple[bool, str | None]:
+    if not resolution or resolution.get("status") != "resolved":
+        return False, None
+    dimension = issue.get("dimension")
+    competitor_name = str(issue.get("competitor_name") or "")
+    analysis = _analysis_for_issue(issue, analyses)
+    checked = False
+
+    if dimension == "schema_completeness" and analysis:
+        checked = True
+        fields = _fields_for_issue(issue)
+        if not fields:
+            fields = list(_SCHEMA_FIELDS)
+        missing = [
+            _SCHEMA_FIELDS.get(field, field)
+            for field in fields
+            if _is_empty_or_placeholder(analysis.get(field))
+        ]
+        if missing:
+            return (
+                False,
+                f"系统复核未通过：字段仍为空或占位：{', '.join(missing)}",
+            )
+
+    if dimension == "citation_accuracy" and analysis:
+        checked = True
+        bad_ids = _reference_ids_requiring_removal(issue)
+        if bad_ids:
+            referenced = _analysis_reference_ids(analysis, evidence)
+            still_used = sorted(bad_ids & referenced)
+            if still_used:
+                return (
+                    False,
+                    "系统复核未通过：分析仍引用被质检标记的问题证据 "
+                    + ", ".join(f"[{ref}]" for ref in still_used),
+                )
+
+    if dimension == "coverage_gaps":
+        checked = True
+        required_dimensions = _coverage_dimensions_for_issue(issue)
+        counts = _evidence_counts_for_competitor(evidence, competitor_name)
+        weak_dimensions = [
+            label
+            for label in required_dimensions
+            if counts.get(label, 0) < _MIN_EVIDENCE_PER_COMPETITOR
+        ]
+        if weak_dimensions:
+            return (
+                False,
+                "系统复核未通过：有效证据仍不足："
+                + ", ".join(
+                    f"{label}={counts.get(label, 0)}" for label in weak_dimensions
+                ),
+            )
+        if resolution.get("status") == "resolved":
+            return True, None
+
+    if dimension == "evidence_grounding" and analysis:
+        checked = True
+        bad_ids = _reference_ids_requiring_removal(issue)
+        if bad_ids and bad_ids & _analysis_reference_ids(analysis, evidence):
+            return False, "系统复核未通过：问题证据仍在分析引用中"
+
+    reason = str(resolution.get("resolution_reason") or "").strip()
+    if not checked and _is_weak_resolution_reason(reason):
+        return False, "系统复核未通过：复核理由过于笼统，未证明原问题已解决"
+    return True, None
+
+
+def _is_weak_resolution_reason(reason: str) -> bool:
+    normalized = reason.strip()
+    if not normalized:
+        return True
+    weak_markers = (
+        "当前证据数为",
+        "引用均已核实",
+        "已核实",
+        "问题已解决",
+        "已解决",
+    )
+    return len(normalized) < 18 or normalized in weak_markers
+
+
+def _analysis_for_issue(
+    issue: dict[str, Any], analyses: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    name = str(issue.get("competitor_name") or "")
+    for analysis in _latest_analyses_by_competitor(analyses):
+        if str(analysis.get("competitor_name") or "") == name:
+            return analysis
+    return None
+
+
+def _latest_analyses_by_competitor(
+    analyses: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    latest: dict[str, dict[str, Any]] = {}
+    order: dict[str, int] = {}
+    latest_index: dict[str, int] = {}
+    for index, analysis in enumerate(analyses or []):
+        if not isinstance(analysis, dict):
+            continue
+        key = str(
+            analysis.get("competitor_id")
+            or analysis.get("competitor_name")
+            or analysis.get("id")
+            or index
+        )
+        order.setdefault(key, index)
+        existing = latest.get(key)
+        if existing is None or _analysis_sort_key(analysis, index) >= _analysis_sort_key(
+            existing, latest_index[key]
+        ):
+            latest[key] = analysis
+            latest_index[key] = index
+    return [latest[key] for key in sorted(latest, key=lambda item: order[item])]
+
+
+def _analysis_sort_key(analysis: dict[str, Any], index: int) -> tuple[int, str, int, str]:
+    return (
+        _safe_int(analysis.get("analysis_iteration")),
+        str(analysis.get("created_at") or ""),
+        index,
+        str(analysis.get("id") or ""),
+    )
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _fields_for_issue(issue: dict[str, Any]) -> list[str]:
+    text = f"{issue.get('description', '')} {issue.get('fix_suggestion', '')}"
+    result = []
+    for keyword, field in _ISSUE_FIELD_HINTS.items():
+        if keyword in text and field not in result:
+            result.append(field)
+    return result
+
+
+def _reference_ids_mentioned(issue: dict[str, Any]) -> set[int]:
+    text = f"{issue.get('description', '')} {issue.get('fix_suggestion', '')}"
+    ids: set[int] = set()
+    for token in text.replace("【", "[").replace("】", "]").split("["):
+        candidate = token.split("]", 1)[0].strip()
+        if candidate.isdigit():
+            ids.add(int(candidate))
+    return ids
+
+
+def _reference_ids_requiring_removal(issue: dict[str, Any]) -> set[int]:
+    if _is_generic_source_ref_format_issue(issue):
+        return set()
+    return _reference_ids_mentioned(issue)
+
+
+def _is_generic_source_ref_format_issue(issue: dict[str, Any]) -> bool:
+    text = f"{issue.get('description', '')} {issue.get('fix_suggestion', '')}".lower()
+    return (
+        "source_ref" in text
+        and "evidence_id" in text
+        and any(marker in text for marker in ("而非", "不是", "instead of"))
+    )
+
+
+def _analysis_reference_ids(
+    analysis: dict[str, Any], evidence: list[dict[str, Any]]
+) -> set[int]:
+    evidence_by_id = {str(item.get("id")): item for item in evidence if item.get("id")}
+    refs = set()
+    for evidence_id in _parse_evidence_ids(analysis.get("evidence_ids_json")):
+        item = evidence_by_id.get(evidence_id)
+        ref = item.get("reference_id") if item else None
+        if isinstance(ref, int):
+            refs.add(ref)
+    return refs
+
+
+def _coverage_dimensions_for_issue(issue: dict[str, Any]) -> list[str]:
+    text = f"{issue.get('description', '')} {issue.get('fix_suggestion', '')}"
+    labels = []
+    for label in ("产品定位", "核心功能", "价格与商业模式", "用户评价与痛点"):
+        if any(part in text for part in label.split("与")) or label in text:
+            labels.append(label)
+    return labels or ["产品定位", "核心功能", "价格与商业模式", "用户评价与痛点"]
+
+
+def _evidence_counts_for_competitor(
+    evidence: list[dict[str, Any]], competitor_name: str
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in evidence:
+        if str(item.get("related_product") or "") != competitor_name:
+            continue
+        dimension = str(item.get("related_dimension") or "")
+        if not dimension:
+            continue
+        counts[dimension] = counts.get(dimension, 0) + 1
+    return counts
+
+
 def _build_retry_guidance_map(issues: list[dict[str, Any]]) -> dict[str, str]:
     result: dict[str, str] = {}
     for issue in issues:
@@ -611,6 +962,70 @@ def _build_retry_guidance_map(issues: list[dict[str, Any]]) -> dict[str, str]:
                 f"- [{severity}/{dimension}] {description}；改进建议：{guidance}\n"
             )
     return result
+
+
+def _build_repair_tasks(
+    issues: list[dict[str, Any]], analyses: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    name_to_id = {
+        str(analysis.get("competitor_name") or ""): analysis.get("competitor_id")
+        for analysis in analyses
+    }
+    tasks = []
+    for issue in issues:
+        competitor_name = str(issue.get("competitor_name") or "")
+        if not competitor_name or competitor_name == "system":
+            continue
+        fields = _fields_for_issue(issue)
+        if not fields:
+            fields = _default_repair_fields(issue.get("dimension"))
+        tasks.append(
+            {
+                "issue_id": issue.get("id"),
+                "competitor_name": competitor_name,
+                "competitor_id": name_to_id.get(competitor_name),
+                "dimension": issue.get("dimension"),
+                "severity": issue.get("severity"),
+                "fields": fields,
+                "must_remove_reference_ids": sorted(
+                    _reference_ids_requiring_removal(issue)
+                ),
+                "acceptance_criteria": issue.get("fix_suggestion")
+                or issue.get("description")
+                or "",
+            }
+        )
+    return tasks
+
+
+def _default_repair_fields(dimension: Any) -> list[str]:
+    if dimension == "schema_completeness":
+        return list(_SCHEMA_FIELDS)
+    if dimension == "citation_accuracy":
+        return ["evidence_ids_json"]
+    if dimension == "coverage_gaps":
+        return ["positioning", "core_features_json", "pricing_summary", "weaknesses_json"]
+    if dimension == "cross_competitor_consistency":
+        return list(_SCHEMA_FIELDS)
+    if dimension == "factual_plausibility":
+        return ["positioning", "pricing_summary", "relationship_reason"]
+    return ["evidence_ids_json"]
+
+
+def _identify_bad_evidence_ids(
+    issues: list[dict[str, Any]], evidence: list[dict[str, Any]]
+) -> list[str]:
+    ref_ids = set()
+    for issue in issues:
+        if issue.get("dimension") in {"citation_accuracy", "evidence_grounding"}:
+            ref_ids.update(_reference_ids_requiring_removal(issue))
+    if not ref_ids:
+        return []
+    result = []
+    for item in evidence:
+        if item.get("reference_id") in ref_ids and item.get("id"):
+            result.append(str(item["id"]))
+    return sorted(set(result))
 
 
 def _identify_retry_analyses(
@@ -647,6 +1062,7 @@ def _deterministic_quality_issues(
     """Apply cheap deterministic checks that should not depend on LLM judgment."""
     issues: list[dict[str, Any]] = []
     evidence_ids = {str(e.get("id")) for e in evidence if e.get("id")}
+    evidence_by_id = {str(e.get("id")): e for e in evidence if e.get("id")}
     evidence_count_by_competitor: dict[str, int] = {}
     evidence_count_by_name: dict[str, int] = {}
     for item in evidence:
@@ -715,6 +1131,25 @@ def _deterministic_quality_issues(
                     ),
                     fix_suggestion="重新核验 evidence_ids，移除无效引用或补齐对应证据",
                     issue_id=f"det_citation_{_stable_issue_token(cid or name)}",
+                )
+            )
+        invalid_refs = [
+            eid
+            for eid in referenced_ids
+            if eid in evidence_by_id and evidence_by_id[eid].get("reference_id") is None
+        ]
+        if invalid_refs:
+            issues.append(
+                _make_issue(
+                    iteration=iteration,
+                    dimension="citation_accuracy",
+                    severity="major",
+                    competitor_name=name,
+                    description=(
+                        f"{name} 引用了 {len(invalid_refs)} 条缺少来源编号的证据"
+                    ),
+                    fix_suggestion="重新采集或修复 evidence 的 source_ref，禁止引用 source_ref 为空的证据",
+                    issue_id=f"det_null_ref_{_stable_issue_token(cid or name)}",
                 )
             )
     return issues
@@ -802,10 +1237,23 @@ def _has_blocking_analysis_issue(issues: list[dict[str, Any]]) -> bool:
     )
 
 
-def _forced_pass_decision(overall_score: float) -> str:
-    if overall_score < QA_MIN_FORCED_PASS_SCORE:
+def _forced_pass_decision(
+    overall_score: float, checklist: list[dict[str, Any]] | None = None
+) -> str:
+    if (
+        overall_score < QA_PASS_THRESHOLD
+        or _has_unresolved_blocking_issues(checklist or [])
+    ):
         return "pass_with_quality_warning"
     return "pass"
+
+
+def _has_unresolved_blocking_issues(checklist: list[dict[str, Any]]) -> bool:
+    return any(
+        issue.get("status") in _NOT_RESOLVED_STATUSES
+        and issue.get("severity") in {"critical", "major"}
+        for issue in checklist
+    )
 
 
 def _parse_evidence_ids(raw_ids: Any) -> set[str]:

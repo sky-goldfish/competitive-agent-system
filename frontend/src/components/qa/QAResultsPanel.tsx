@@ -27,6 +27,7 @@ const decisionLabels: Record<string, string> = {
   pass_with_quality_warning: '质量预警通过',
   retry_collection: '重新采集',
   retry_analysis: '重新分析',
+  retry_collection_and_analysis: '重新采集并分析',
 };
 
 const severityLabels: Record<string, string> = {
@@ -127,25 +128,26 @@ export default function QAResultsPanel({ runId }: Props) {
 }
 
 function QACurrentRound({ group }: { group: { round: QAResultType; verifications: QAResultType[] } }) {
-  const result = group.round;
+  const result = group.verifications[group.verifications.length - 1] ?? group.round;
   const scorePercent = Math.round(result.overall_score * 100);
   const scoreClass = result.overall_score >= 0.7 ? 'pass' : 'fail';
-  const hasRetryQueries = result.decision === 'retry_collection' && (result.retry_queries ?? []).length > 0;
+  const hasRetryQueries = (result.decision === 'retry_collection' || result.decision === 'retry_collection_and_analysis') && (result.retry_queries ?? []).length > 0;
+  const unresolvedIssues = (result.issue_checklist ?? []).filter((issue) => issue.status === 'open' || issue.status === 'unresolved');
 
   return (
     <div className={`qa-current-round ${scoreClass}`}>
       <div className="qa-iteration-header">
         <div className="qa-iteration-title">
-          {result.decision === 'pass' ? <ShieldCheck size={16} /> : <AlertTriangle size={16} />}
-          <strong>{roundLabel(result.iteration, 'full_check')}</strong>
+          {result.decision === 'pass' && !result.quality_warning ? <ShieldCheck size={16} /> : <AlertTriangle size={16} />}
+          <strong>{roundLabel(group.round.iteration, 'full_check')}</strong>
         </div>
         <div className={`qa-score-badge ${scoreClass}`}>{scorePercent}分</div>
       </div>
 
-      {result.quality_warning && (
+      {(result.quality_warning || result.forced_pass || unresolvedIssues.length > 0) && (
         <div className="qa-quality-warning-banner">
           <AlertTriangle size={14} />
-          <span>报告质量较低（{scorePercent}分），系统已达到重试上限自动通过，建议关注上述问题。</span>
+          <span>结构化分析质量存在风险（{scorePercent}分）{result.forced_pass ? '，系统已达到重试上限' : ''}{unresolvedIssues.length > 0 ? `，仍有 ${unresolvedIssues.length} 个问题未解决` : ''}。</span>
         </div>
       )}
 
@@ -316,7 +318,7 @@ function DecisionBadge({ decision, hasRetryQueries, queries }: { decision: strin
         onClick={() => hasRetryQueries && setShowQueries(true)}
         title={hasRetryQueries ? '点击查看重新采集关键词' : undefined}
       >
-        {decision === 'pass' ? <CheckCircle2 size={13} /> : decision === 'pass_with_quality_warning' ? <AlertTriangle size={13} /> : decision === 'retry_collection' ? <RefreshCw size={13} /> : <XCircle size={13} />}
+        {decision === 'pass' ? <CheckCircle2 size={13} /> : decision === 'pass_with_quality_warning' ? <AlertTriangle size={13} /> : decision === 'retry_collection' || decision === 'retry_collection_and_analysis' ? <RefreshCw size={13} /> : <XCircle size={13} />}
         {decisionLabels[decision] ?? decision}
         {hasRetryQueries ? <Search size={12} style={{ marginLeft: 2 }} /> : null}
       </span>

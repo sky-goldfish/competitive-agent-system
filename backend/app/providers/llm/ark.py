@@ -744,15 +744,15 @@ JSON schema:
 结构化需求：{json.dumps(requirement, ensure_ascii=False)}
 
 判断规则：
-- 如果用户明确表达了关注点，例如本地存储、隐私安全、AI 能力、价格、团队协作、迁移成本、开放 API、特定人群等，放入 explicit_focuses。
-- 如果用户没有明确表达，但领域天然暗示常见决策维度，可以放入 inferred_focuses，priority 用 medium，不要过度臆测。
+- 如果用户明确表达了关注点，例如功能对比、产品能力、本地存储、隐私安全、AI 能力、价格、团队协作、迁移成本、开放 API、特定人群等，放入 explicit_focuses。
+- 如果用户没有明确表达关注点，inferred_focuses 必须返回空数组；不要把领域常见维度推断成用户关注点。
 - 判断是否反问，不要依据文本长度，而要依据“缺少偏好是否会改变竞品选择、资料检索方向、报告排序和最终建议”。
 - 如果用户只给出一个宽泛品类或赛道，并要求做竞品分析，但没有说明决策场景或关注维度，必须设置 clarification_needed=true。典型例子：
   - “我想分析笔记软件的竞品” -> 必须反问，因为本地存储/隐私、AI 能力、团队协作、价格、迁移成本会导向不同竞品和证据。
   - “分析 AI 会议纪要工具竞品” -> 必须反问，因为转写质量、CRM 集成、数据安全、团队协作、价格会导向不同报告重点。
   - “帮我看看 CRM 工具竞品” -> 必须反问，因为销售团队规模、集成生态、价格、行业方案会改变分析口径。
 - 如果用户已经给出足够清晰的目标和侧重点，例如“重点关注笔记软件是否本地存储和隐私安全”，不要反问，直接放入 explicit_focuses。
-- 如果用户没有明确侧重点，但需求已经包含具体决策目标，例如“给 20 人销售团队选便宜的会议纪要工具”，可以不反问，并把“价格/团队落地”放入 inferred_focuses 或 explicit_focuses。
+- 如果用户没有明确侧重点，但需求已经包含具体决策目标，例如“给 20 人销售团队选便宜的会议纪要工具”，可以不反问；只有用户原文能直接支持的侧重点才能放入 explicit_focuses，否则保持空数组并在 assumptions 说明默认均衡分析口径。
 - 反问只能问 1 个问题，且要给出 4-6 个可选方向，方便用户快速回答。
 - 如果 clarification_needed=true，clarifying_question 不能为空；如果 clarification_needed=false，clarifying_question 必须为 null。
 
@@ -785,7 +785,7 @@ JSON schema:
 示例1（需要反问）：
 {{
   "explicit_focuses": [],
-  "inferred_focuses": [{{"key": "ai_capability", "label": "AI 能力", "priority": "medium", "evidence_expectation": "AI 功能对比", "query_terms": ["AI writing", "AI 编辑"]}}],
+  "inferred_focuses": [],
   "clarification_needed": true,
   "clarifying_question": "你最关注笔记软件的哪些方面？可选：本地存储与隐私、AI 能力、团队协作、价格、迁移成本、开放 API",
   "assumptions": ["用户可能关注 AI 能力"]
@@ -968,7 +968,8 @@ JSON schema:
     ) -> dict[str, Any]:
         fallback = self.fallback.analyze_competitor(competitor, evidence)
         evidence_summary = "\n".join(
-            f"- [{e.get('reference_id', '?')}] 维度={e.get('related_dimension', '未知')}；"
+            f"- evidence_id={e.get('id', '')}；source_ref=[{e.get('reference_id', '?')}]；"
+            f"维度={e.get('related_dimension', '未知')}；"
             f"来源类型={e.get('source_type', '未知')}；置信度={e.get('confidence', 0)}；"
             f"来源={e.get('source_url', '')}；摘要={e.get('summary', '')[:300]}"
             for e in evidence[:12]
@@ -997,9 +998,24 @@ JSON schema:
 
 请特别注意：上次分析存在上述问题，请务必在本次分析中改进。
 """
+        repair_tasks_section = ""
+        repair_tasks = competitor.get("_qa_repair_tasks")
+        if isinstance(repair_tasks, list) and repair_tasks:
+            repair_tasks_section = f"""
+
+【结构化修复任务——必须逐条满足】
+{json.dumps(repair_tasks, ensure_ascii=False)}
+
+要求：
+- 对 tasks 中 fields 指定的字段进行针对性修复，不要只泛泛改写。
+- must_remove_reference_ids 中列出的 source_ref 不得作为字段依据；evidence_ids_json 必须使用 evidence_id（ev_xxx），不要使用 source_ref。
+- 如果 acceptance_criteria 要求补齐价格、劣势、用户痛点等内容，必须从上方证据中提取具体事实。
+- 不要在业务字段中输出“证据中未涉及”“暂无”“unknown”等占位文本，除非该字段完全没有可用证据且没有对应修复任务。
+"""
         prompt = f"""
 你是竞品分析师 Agent。请仔细阅读以下证据材料，基于证据中的真实信息对竞品进行分析。
 不要编造证据中没有的信息。如果某个字段在证据中没有找到相关内容，请如实写"证据中未涉及"。
+结构化字段正文只写事实结论，不要内嵌 source_ref 或 evidence_id 引用，例如不要写“证据[36]”“[ev_xxx]”。证据绑定统一通过 evidence_ids_json 和 custom_focus_analysis_json.evidence_ids 表达。
 
 竞品名称：{competitor.get("name", "")}
 竞品描述：{competitor.get("description", "")[:300]}
@@ -1008,10 +1024,11 @@ JSON schema:
 {evidence_summary}
 {focus_schema_section}
 {qa_feedback_section}
+{repair_tasks_section}
 输出严格 JSON，不要输出 Markdown。
 JSON schema:
 {{
-  "positioning": "基于证据总结该产品的定位，引用具体证据内容",
+  "positioning": "基于证据总结该产品的定位，不要写引用号",
   "target_users": ["从证据中提取的目标用户"],
   "core_features_json": ["从证据中提取的核心功能"],
   "pricing_summary": "从证据中提取的定价信息，无则写'证据中未涉及'",
@@ -1023,11 +1040,11 @@ JSON schema:
       "focus_key": "必须来自动态关注点 Schema 的 key",
       "label": "必须来自动态关注点 Schema 的 label",
       "verdict": "围绕该关注点的结构化结论；如果证据不足，写'证据中未涉及'",
-      "evidence_ids": ["支撑该结论的证据号 [N]，必须来自已采集证据"],
+      "evidence_ids": ["支撑该结论的 evidence_id，必须来自已采集证据"],
       "confidence": 0.0
     }}
   ],
-  "evidence_ids_json": ["引用的证据号 [N]，必须来自已采集证据"],
+  "evidence_ids_json": ["支撑本竞品分析的 evidence_id，必须来自已采集证据"],
   "relationship_type": "direct/indirect/substitute 之一。direct=直接竞品，indirect=间接竞品，substitute=替代方案",
   "relationship_reason": "简要说明为什么是该竞争类型，它竞争的是什么需求或场景，基于证据",
   "overlap_dimensions": [
@@ -1038,6 +1055,7 @@ JSON schema:
   ]
 }}
 注意：overlap_dimensions 必须包含 2-4 个维度的具体重叠点，每个维度必须有具体说明。
+注意：如果你输出 source_ref 数字（如 36），系统会尽力转换为对应 evidence_id；但优先直接输出 evidence_id。业务字段正文仍然禁止写引用号。
 """
         result = self._json_chat(prompt, fallback)
         if result is fallback:
@@ -1051,14 +1069,18 @@ JSON schema:
                 ref_to_ev[str(ref_id)] = ev_id
         eids = result.get("evidence_ids_json")
         if isinstance(eids, list):
-            result["evidence_ids_json"] = [ref_to_ev.get(str(v), v) for v in eids]
+            result["evidence_ids_json"] = [
+                _coerce_llm_evidence_id(v, ref_to_ev) for v in eids
+            ]
         cfa = result.get("custom_focus_analysis_json")
         if isinstance(cfa, list):
             for item in cfa:
                 if isinstance(item, dict):
                     item_eids = item.get("evidence_ids")
                     if isinstance(item_eids, list):
-                        item["evidence_ids"] = [ref_to_ev.get(str(v), v) for v in item_eids]
+                        item["evidence_ids"] = [
+                            _coerce_llm_evidence_id(v, ref_to_ev) for v in item_eids
+                        ]
         for key in [
             "target_users",
             "core_features_json",
@@ -1143,7 +1165,8 @@ JSON schema:
             for a in capped_analyses
         )
         evidence_summary = "\n".join(
-            f"- [{e.get('reference_id', '?')}] 竞品={e.get('related_product', '')}；维度={e.get('related_dimension', '')}；"
+            f"- evidence_id={e.get('id', '')}；source_ref=[{e.get('reference_id', '?')}]；"
+            f"竞品={e.get('related_product', '')}；维度={e.get('related_dimension', '')}；"
             f"来源类型={e.get('source_type', '')}；置信度={e.get('confidence', 0)}；摘要={e.get('summary', '')}"
             for e in capped_evidence
         )
@@ -1153,7 +1176,7 @@ JSON schema:
 ## 结构化分析（每个竞品的完整分析数据）
 {analyses_summary}
 
-## 证据摘要（含引用号）
+## 证据摘要（含 evidence_id 与 source_ref）
 {evidence_summary}
 
 ## 质检维度
@@ -1161,9 +1184,9 @@ JSON schema:
 请从以下 6 个维度评估，每个维度打分 0.0-1.0：
 
 1. **evidence_grounding（证据支撑度）**：分析结论（定位、目标用户、功能、定价、优劣势、机会点等）是否被对应的 evidence_ids 所引用的证据支撑？是否存在幻觉内容？
-2. **citation_accuracy（引用准确性）**：每个竞品分析中 evidence_ids_json 列出的引用号是否确实指向与该竞品相关、维度匹配的证据？是否存在张冠李戴？
+2. **citation_accuracy（引用准确性）**：每个竞品分析中 evidence_ids_json 列出的 evidence_id 是否真实存在，并且指向与该竞品相关、维度匹配的证据？是否存在张冠李戴？
 3. **schema_completeness（Schema 完整度）**：每个竞品的 7 个分析字段（product positioning、target users、core features、pricing、strengths、weaknesses、opportunities）是否都有实质内容而非占位文本？
-4. **coverage_gaps（覆盖缺口）**：每个竞品的 4 个核心维度（产品定位、核心功能、价格与商业模式、用户评价与痛点）证据是否充足（建议≥3 条）？
+4. **coverage_gaps（覆盖缺口）**：已采集的证据库中，每个竞品的 4 个核心维度（产品定位、核心功能、价格与商业模式、用户评价与痛点）是否有足够可用证据。注意：coverage_gaps 只评价“证据库是否采够”，不要求结构化分析引用该维度的全部证据。
 5. **cross_competitor_consistency（跨竞品一致性）**：各竞品分析深度和信息量是否一致？是否有的竞品分析非常详尽、有的非常简略？
 6. **factual_plausibility（事实合理性）**：分析内容是否有明显不合理的陈述？例如与已知事实矛盾、逻辑不通等。
 
@@ -1182,7 +1205,16 @@ JSON schema:
 - 若 citation_accuracy 或 schema_completeness 存在 major issue，该维度分数不得高于 0.60。
 - 若其他维度存在 major issue，该维度分数不得高于 0.65。
 - 若某维度仅存在 minor issue，该维度分数不得高于 0.80。
-- coverage_gaps 中单个竞品公开证据少于 3 条时，至少应生成 major issue；为 0 条时应生成 critical issue。
+- coverage_gaps 中单个竞品某核心维度的已采集公开证据少于 3 条时，至少应生成 major issue；为 0 条时应生成 critical issue。
+- 如果证据库中某维度已采集到 ≥3 条相关证据，但结构化分析只选择引用其中 1-2 条代表性证据，不要生成 coverage_gaps issue。LLM 被允许选择部分最相关证据，不需要使用全部证据。
+- 若分析结论没有被其所选择的证据支撑，归为 evidence_grounding；若 evidence_ids_json 指向不存在、错竞品或错维度证据，归为 citation_accuracy。不要把“未引用全部可用证据”当作问题。
+
+引用语义说明：
+- evidence_id 是结构化分析 evidence_ids_json 应引用的唯一证据 ID。
+- evidence_ids_json 是分析选择使用的代表性证据列表，不要求包含该竞品/维度的全部证据。
+- 结构化字段正文不要求内嵌 evidence_id 或 source_ref；不要因为字段正文没有“证据[36]”或“ev_xxx”而生成 issue。字段正文里的 source_ref 只当普通文本线索，不能作为 citation_accuracy 的判定依据。
+- source_ref 是报告展示用来源编号，同一个 source_ref 可以对应多条 evidence，因为同一个来源可能支撑多个维度；不要仅因为 source_ref 重复就生成 issue。
+- source_ref 为 [?] 或 [None]、evidence_ids_json 中的 evidence_id 不存在、evidence_id 指向其他竞品/错误维度，才属于 citation_accuracy 问题。
 
 输出严格 JSON，不要输出 Markdown 代码块，不要输出 schema 外字段。
 JSON schema:
@@ -1252,7 +1284,8 @@ JSON schema:
             for a in capped_analyses
         )
         evidence_summary = "\n".join(
-            f"- [{e.get('reference_id', '?')}] 竞品={e.get('related_product', '')}；维度={e.get('related_dimension', '')}；"
+            f"- evidence_id={e.get('id', '')}；source_ref=[{e.get('reference_id', '?')}]；"
+            f"竞品={e.get('related_product', '')}；维度={e.get('related_dimension', '')}；"
             f"来源类型={e.get('source_type', '')}；置信度={e.get('confidence', 0)}；摘要={e.get('summary', '')}"
             for e in capped_evidence
         )
@@ -1267,6 +1300,12 @@ JSON schema:
 
 ## 证据摘要
 {evidence_summary}
+
+引用语义说明：
+- evidence_id 是结构化分析 evidence_ids_json 引用的唯一证据 ID。
+- 结构化字段正文不要求内嵌 evidence_id 或 source_ref；不要因为字段正文没有“证据[36]”或“ev_xxx”而判定未解决。字段正文里的 source_ref 只当普通文本线索，不能作为 citation_accuracy 的判定依据。
+- source_ref 是报告展示用来源编号，同一 source_ref 可对应多条 evidence；不要仅因 source_ref 重复判定未解决。
+- source_ref 为 [?] 或 [None]、evidence_ids_json 中的 evidence_id 不存在、或 evidence_id 指向其他竞品/错误维度，才是引用问题。
 
 输出严格 JSON，不要输出 Markdown 代码块，不要输出 schema 外字段。
 JSON schema:
@@ -1291,8 +1330,9 @@ JSON schema:
 规则：
 - 每个历史 issue 必须返回一条 resolution。
 - 只有在新分析/新证据已经直接覆盖原问题时，status 才能是 resolved。
-- 检查标准：对应的分析字段是否已有实质内容、证据数量是否充足、引用是否准确匹配。
-- 如果证据仍不足、字段仍空泛、引用仍无法核验，status 必须是 open。
+- 检查标准：对应的分析字段是否已有实质内容、采集证据库数量是否充足、evidence_ids_json 是否准确匹配。
+- 对 coverage_gaps：只检查证据库是否已有足够可用证据；不要要求结构化分析引用全部证据。若证据库已满足覆盖要求，即使分析只选择部分代表性证据，也可以判定 coverage_gaps resolved。
+- 如果采集证据库仍不足、字段仍空泛、引用仍无法核验，status 必须是 open。
 """
         result = self._json_chat(prompt, fallback)
         if result is fallback:
@@ -1811,10 +1851,10 @@ JSON schema:
 def _format_analysis_for_qa(a: dict[str, Any]) -> str:
     """Format a single structured analysis entry for QA prompt context.
 
-    Exposes all 7 core fields plus evidence_ids counts so the QA LLM can
+    Exposes all 7 core fields plus selected evidence_ids so the QA LLM can
     judge completeness, grounding, and citation accuracy.
     """
-    evidence_count = len(_json_list(a.get("evidence_ids_json")))
+    evidence_ids = _json_list(a.get("evidence_ids_json"))
     lines = [
         f"竞品={a.get('competitor_name', '')}",
         f"  定位: {a.get('positioning', '')}",
@@ -1824,9 +1864,23 @@ def _format_analysis_for_qa(a: dict[str, Any]) -> str:
         f"  优势: {_join_json_list_for_qa(a.get('strengths_json'))}",
         f"  劣势: {_join_json_list_for_qa(a.get('weaknesses_json'))}",
         f"  机会点: {_join_json_list_for_qa(a.get('opportunities_json'))}",
-        f"  关联证据数: {evidence_count}",
+        f"  evidence_ids_json: {json.dumps(evidence_ids[:16], ensure_ascii=False)}",
+        f"  关联证据数: {len(evidence_ids)}",
     ]
     return "\n".join(lines)
+
+
+def _coerce_llm_evidence_id(value: Any, ref_to_ev: dict[str, str]) -> str:
+    text = str(value).strip()
+    if text in ref_to_ev:
+        return ref_to_ev[text]
+    bracketed = re.fullmatch(r"\[+(\d+)\]+", text)
+    if bracketed:
+        return ref_to_ev.get(bracketed.group(1), text)
+    source_ref = re.search(r"(?:source_ref|ref|证据)\s*\[?(\d+)\]?", text, re.I)
+    if source_ref:
+        return ref_to_ev.get(source_ref.group(1), text)
+    return text
 
 
 def _join_json_list_for_qa(value: Any) -> str:

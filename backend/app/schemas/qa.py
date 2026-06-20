@@ -65,6 +65,16 @@ class QAResultResponse(BaseModel):
             checklist_list = []
         if not isinstance(checklist_list, list):
             checklist_list = []
+        has_unresolved = any(
+            isinstance(item, dict)
+            and item.get("status") in {"open", "unresolved"}
+            and item.get("severity") in {"critical", "major"}
+            for item in checklist_list
+        )
+        has_low_dimension = any(
+            isinstance(value, int | float) and float(value) < 0.7
+            for value in scores_dict.values()
+        )
         queries_raw = getattr(qa_result, "retry_queries_json", None) or "[]"
         try:
             queries_list = json.loads(queries_raw)
@@ -91,6 +101,9 @@ class QAResultResponse(BaseModel):
             quality_warning=bool(
                 getattr(qa_result, "quality_warning", False)
                 or qa_result.decision == "pass_with_quality_warning"
+                or getattr(qa_result, "forced_pass", False)
+                or has_unresolved
+                or has_low_dimension
             ),
             issues=[QAIssueResponse(**i) for i in issues_list if isinstance(i, dict)],
             issue_checklist=[QAIssueResponse(**i) for i in checklist_list if isinstance(i, dict)],

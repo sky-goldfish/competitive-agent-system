@@ -146,6 +146,76 @@ def test_report_citation_bundle_uses_latest_analysis_per_competitor():
         db.close()
 
 
+def test_latest_analysis_prefers_quality_over_later_placeholder_in_same_iteration():
+    init_db()
+    db = SessionLocal()
+    try:
+        run = Run(
+            user_requirement="测试",
+            status="completed",
+            current_stage="completed",
+            title="测试",
+            requirement_summary="测试",
+        )
+        db.add(run)
+        db.flush()
+        competitor = Competitor(
+            run_id=run.id,
+            name="Acme",
+            website="https://acme.example.com",
+            description="Acme",
+            category="direct_competitor",
+            confidence=0.9,
+            selected=True,
+            discovery_source="test",
+        )
+        db.add(competitor)
+        db.flush()
+
+        old_time = datetime.utcnow() - timedelta(minutes=5)
+        new_time = datetime.utcnow()
+        good_analysis_id = f"ana_good_{run.id}"
+        placeholder_analysis_id = f"ana_placeholder_{run.id}"
+        common = {
+            "run_id": run.id,
+            "competitor_id": competitor.id,
+            "positioning": "Acme is a workflow automation product.",
+            "target_users": '["Operations teams"]',
+            "core_features_json": '["Automation", "Integrations"]',
+            "pricing_summary": "Tiered subscription pricing.",
+            "strengths_json": '["Broad integrations"]',
+            "opportunities_json": '["Expand self-serve adoption"]',
+            "custom_focus_analysis_json": "[]",
+            "evidence_ids_json": "[]",
+            "analysis_iteration": 2,
+        }
+        db.add(
+            Analysis(
+                id=good_analysis_id,
+                weaknesses_json='["Complex setup"]',
+                created_at=old_time,
+                **common,
+            )
+        )
+        db.add(
+            Analysis(
+                id=placeholder_analysis_id,
+                weaknesses_json='["证据中未涉及明显劣势"]',
+                created_at=new_time,
+                **common,
+            )
+        )
+        db.commit()
+        run_id = run.id
+    finally:
+        db.close()
+
+    response = client.get(f"/api/runs/{run_id}/analyses")
+    assert response.status_code == 200
+    analyses = response.json()
+    assert [item["id"] for item in analyses] == [good_analysis_id]
+
+
 def test_rebuild_state_counts_full_checks_separately_from_issue_verifications():
     init_db()
     db = SessionLocal()
@@ -274,4 +344,4 @@ def test_qa_response_preserves_forced_pass_flags():
     response = QAResultResponse.from_db(qa)
 
     assert response.forced_pass is True
-    assert response.quality_warning is False
+    assert response.quality_warning is True

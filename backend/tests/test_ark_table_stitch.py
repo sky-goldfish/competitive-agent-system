@@ -7,6 +7,8 @@ from app.providers.llm.ark import (
     _fuzzy_match_competitor,
     _table_aware_stitch,
     _extract_citation_fingerprints,
+    _format_analysis_for_qa,
+    _coerce_llm_evidence_id,
 )
 
 
@@ -25,6 +27,35 @@ class TestNormalizeTableName:
 
     def test_combined(self):
         assert _normalize_table_name("**定价策略（重点关注）**") == "定价策略"
+
+
+def test_format_analysis_for_qa_exposes_evidence_ids_not_inline_citation_requirement():
+    formatted = _format_analysis_for_qa(
+        {
+            "competitor_name": "Acme",
+            "positioning": "AI development assistant without inline citations.",
+            "target_users": '["Developers"]',
+            "core_features_json": '["Completion"]',
+            "pricing_summary": "Tiered pricing.",
+            "strengths_json": '["Fast"]',
+            "weaknesses_json": '["Limited integrations"]',
+            "opportunities_json": '["Enterprise adoption"]',
+            "evidence_ids_json": '["ev_1", "ev_2"]',
+        }
+    )
+
+    assert 'evidence_ids_json: ["ev_1", "ev_2"]' in formatted
+    assert "关联证据数: 2" in formatted
+
+
+def test_coerce_llm_evidence_id_accepts_legacy_source_ref_shapes():
+    ref_to_ev = {"36": "ev_36", "7": "ev_7"}
+
+    assert _coerce_llm_evidence_id("ev_native", ref_to_ev) == "ev_native"
+    assert _coerce_llm_evidence_id(36, ref_to_ev) == "ev_36"
+    assert _coerce_llm_evidence_id("[36]", ref_to_ev) == "ev_36"
+    assert _coerce_llm_evidence_id("source_ref [7]", ref_to_ev) == "ev_7"
+    assert _coerce_llm_evidence_id("证据[7]", ref_to_ev) == "ev_7"
 
 
 class TestParseTableGrid:

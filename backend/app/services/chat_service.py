@@ -1435,9 +1435,7 @@ def _active_focus_items(requirement: dict) -> list[dict]:
     if not isinstance(profile, dict):
         return []
     items = []
-    for f in (profile.get("explicit_focuses") or []) + (
-        profile.get("inferred_focuses") or []
-    ):
+    for f in profile.get("explicit_focuses") or []:
         if isinstance(f, dict) and f.get("label"):
             items.append(f)
     return items[:6]

@@ -196,6 +196,13 @@ class MockLLMProvider(LLMProvider):
         explicit_focuses = []
         focus_specs = [
             (
+                "product_features",
+                ["功能", "能力对比", "feature", "features", "capability"],
+                "产品功能与能力对比",
+                "优先查找官方功能页、帮助中心和产品文档中关于核心功能、差异化能力和限制条件的证据。",
+                ["features", "capabilities", "功能", "能力对比", "产品功能"],
+            ),
+            (
                 "local_storage",
                 ["本地", "离线", "local", "offline", "local-first", "local first"],
                 "本地存储/离线可用",
@@ -262,33 +269,12 @@ class MockLLMProvider(LLMProvider):
                     }
                 )
 
-        inferred_focuses = []
-        domain_text = f"{requirement.get('domain', '')} {requirement.get('possible_market_category', '')}"
-        if not explicit_focuses and any(
-            keyword in domain_text for keyword in ["会议", "协作", "办公"]
-        ):
-            inferred_focuses.append(
-                {
-                    "key": "workflow_integration",
-                    "label": "工作流集成与团队落地",
-                    "priority": "medium",
-                    "evidence_expectation": "关注集成、权限、团队空间和实际工作流落地证据。",
-                    "query_terms": [
-                        "integrations",
-                        "workflow",
-                        "team",
-                        "集成",
-                        "团队协作",
-                    ],
-                }
-            )
-
         needs_clarification = not explicit_focuses and _should_mock_ask_clarification(
             user_requirement, requirement
         )
         return {
             "explicit_focuses": explicit_focuses,
-            "inferred_focuses": inferred_focuses,
+            "inferred_focuses": [],
             "clarification_needed": needs_clarification,
             "clarifying_question": _clarifying_question(requirement)
             if needs_clarification

@@ -164,15 +164,16 @@ function RetryQueriesSection({ queries }: { queries: QARetryQuery[] }) {
 }
 
 function FullCheckTab({ group }: { group: RoundGroup }) {
-  const r = group.round;
+  const r = group.verifications[group.verifications.length - 1] ?? group.round;
   const scorePct = Math.round(r.overall_score * 100);
   const cls = r.overall_score >= 0.7 ? 'pass' : 'fail';
+  const unresolvedIssues = (r.issue_checklist ?? []).filter((issue) => issue.status === 'open' || issue.status === 'unresolved');
 
   return (
     <div className="qa-modal-round-body">
       <div className="qa-modal-round-summary">
         <div className="qa-modal-round-summary-left">
-          {r.decision === 'pass' || r.decision === 'pass_with_quality_warning'
+          {r.decision === 'pass' && !r.quality_warning
             ? <ShieldCheck size={18} className={cls} />
             : <AlertTriangle size={18} className={cls} />}
           <strong>全面检查</strong>
@@ -180,7 +181,7 @@ function FullCheckTab({ group }: { group: RoundGroup }) {
           <span className={`qa-modal-decision qa-modal-decision-${r.decision}`}>
             {r.decision === 'pass' ? <CheckCircle2 size={13} />
               : r.decision === 'pass_with_quality_warning' ? <AlertTriangle size={13} />
-              : r.decision === 'retry_collection' || r.decision === 'retry_analysis' ? <RefreshCw size={13} />
+              : r.decision === 'retry_collection' || r.decision === 'retry_analysis' || r.decision === 'retry_collection_and_analysis' ? <RefreshCw size={13} />
               : <XCircle size={13} />}
             {decisionLabels[r.decision] ?? r.decision}
           </span>
@@ -192,10 +193,10 @@ function FullCheckTab({ group }: { group: RoundGroup }) {
         )}
       </div>
 
-      {r.quality_warning && (
+      {(r.quality_warning || r.forced_pass || unresolvedIssues.length > 0) && (
         <div className="qa-modal-warning">
           <AlertTriangle size={13} />
-          报告质量较低（{scorePct}分），系统已达到重试上限自动通过。
+          结构化分析质量存在风险（{scorePct}分）{r.forced_pass ? '，系统已达到重试上限' : ''}{unresolvedIssues.length > 0 ? `，仍有 ${unresolvedIssues.length} 个问题未解决` : ''}。
         </div>
       )}
 
@@ -273,6 +274,7 @@ function ChecklistTab({ groups }: { groups: RoundGroup[] }) {
   for (const g of groups) {
     const items = (g.round.issue_checklist ?? []).slice();
     for (const v of g.verifications) {
+      items.push(...(v.issue_checklist ?? []));
       for (const issue of v.issues) {
         if (issue.status && issue.id && !items.find((i) => i.id === issue.id)) {
           items.push(issue);

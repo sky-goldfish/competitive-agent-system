@@ -260,7 +260,6 @@ def material_collection_node(
         for s in existing_sources
         if s.get("url")
     }
-    seen_bare_urls = {s.get("url") for s in existing_sources if s.get("url")}
     collection_iteration = state.get("feedback_loop_count", 0)
 
     def _safe_ref_id(s: dict) -> int:
@@ -313,12 +312,8 @@ def material_collection_node(
                         source_key = f"{competitor.get('id', '')}::{result.url}"
                         source_type = ranked_result["source_type"]
                         credibility_score = ranked_result["credibility_score"]
-                        if (
-                            source_key not in seen_urls
-                            and result.url not in seen_bare_urls
-                        ):
+                        if source_key not in seen_urls:
                             seen_urls.add(source_key)
-                            seen_bare_urls.add(result.url)
                             ref_id = _next_ref_id
                             _next_ref_id += 1
                             source_title = result.title
@@ -887,9 +882,7 @@ def _focus_items(requirement: dict) -> list[dict]:
     if not isinstance(profile, dict):
         return []
     items = []
-    for focus in (profile.get("explicit_focuses") or []) + (
-        profile.get("inferred_focuses") or []
-    ):
+    for focus in profile.get("explicit_focuses") or []:
         if isinstance(focus, dict) and focus.get("label"):
             items.append(focus)
     return items[:4]

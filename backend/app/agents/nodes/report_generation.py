@@ -9,8 +9,12 @@ from app.schemas.analysis import parse_focus_analysis_json
 def report_generation_node(state: AgentState, llm: LLMProvider) -> AgentState:
     sources = state.get("sources", [])
     analyses = state.get("analyses", [])
-    citation_bundle = _build_citation_bundle(analyses, state.get("evidence", []))
     focus_dimensions = _extract_focus_dimensions(state.get("requirement", {}))
+    citation_bundle = _build_citation_bundle(
+        analyses,
+        state.get("evidence", []),
+        focus_dimensions,
+    )
     report = llm.generate_report(
         {
             "title": state.get("requirement", {}).get("domain", "竞品分析任务"),
@@ -27,9 +31,12 @@ def report_generation_node(state: AgentState, llm: LLMProvider) -> AgentState:
 
 
 def _build_citation_bundle(
-    analyses: list[dict[str, Any]], evidence: list[dict[str, Any]]
+    analyses: list[dict[str, Any]],
+    evidence: list[dict[str, Any]],
+    focus_dimensions: list[dict[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     evidence_by_id = {item.get("id"): item for item in evidence if item.get("id")}
+    allowed_focuses = _focus_dimension_allowlist(focus_dimensions or [])
     bundle = []
 
     for analysis in analyses:
@@ -125,7 +132,11 @@ def _build_citation_bundle(
                     ),
                 ]
                 + _custom_focus_claims(
-                    analysis, evidence_by_id, linked_evidence, comp_evidence
+                    analysis,
+                    evidence_by_id,
+                    linked_evidence,
+                    comp_evidence,
+                    allowed_focuses,
                 ),
             }
         )
@@ -217,12 +228,21 @@ def _custom_focus_claims(
     evidence_by_id: dict[Any, dict[str, Any]],
     fallback_evidence: list[dict[str, Any]],
     comp_evidence: list[dict[str, Any]],
+    allowed_focuses: dict[str, dict[str, str]],
 ) -> list[dict[str, Any]]:
+    if not allowed_focuses:
+        return []
     claims = []
     for item in parse_focus_analysis_json(analysis.get("custom_focus_analysis_json")):
+        key = str(item.get("focus_key") or item.get("key") or "").strip()
         label = str(item.get("label") or "").strip()
-        if not label:
+        focus_dimension = allowed_focuses.get(f"key:{key}") or allowed_focuses.get(
+            f"label:{label}"
+        )
+        if not focus_dimension:
             continue
+        focus_key = focus_dimension["key"]
+        label = focus_dimension["label"]
         evidence_ids = _json_list(item.get("evidence_ids"))
         matched = [
             evidence_by_id[evidence_id]
@@ -260,7 +280,7 @@ def _custom_focus_claims(
         allowed_ids = sorted({ref for ref in seen_ref_ids if isinstance(ref, int)})
         claims.append(
             {
-                "claim_type": f"focus:{item.get('focus_key') or len(claims) + 1}",
+                "claim_type": f"focus:{focus_key or len(claims) + 1}",
                 "label": label,
                 "text": str(item.get("verdict") or "证据中未涉及"),
                 "evidence": deduped_refs,
@@ -268,6 +288,24 @@ def _custom_focus_claims(
             }
         )
     return claims
+
+
+def _focus_dimension_allowlist(
+    focus_dimensions: list[dict[str, str]]
+) -> dict[str, dict[str, str]]:
+    allowed: dict[str, dict[str, str]] = {}
+    for item in focus_dimensions:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip()
+        label = str(item.get("label") or "").strip()
+        if not label:
+            continue
+        normalized = {"key": key, "label": label}
+        if key:
+            allowed[f"key:{key}"] = normalized
+        allowed[f"label:{label}"] = normalized
+    return allowed
 
 
 def _json_list(value: Any) -> list[str]:
@@ -287,7 +325,7 @@ def _join_json_list(value: Any) -> str:
 
 
 def _extract_focus_dimensions(requirement: dict) -> list[dict[str, str]]:
-    """Extract ordered dimension list from focus profile for table headers."""
+    """Extract ordered user-explicit focus dimensions for table headers."""
     profile = (
         requirement.get("focus_profile")
         if isinstance(requirement.get("focus_profile"), dict)
@@ -296,9 +334,7 @@ def _extract_focus_dimensions(requirement: dict) -> list[dict[str, str]]:
     if not isinstance(profile, dict):
         return []
     items = []
-    for f in (profile.get("explicit_focuses") or []) + (
-        profile.get("inferred_focuses") or []
-    ):
+    for f in profile.get("explicit_focuses") or []:
         if isinstance(f, dict) and f.get("label"):
             items.append(
                 {
