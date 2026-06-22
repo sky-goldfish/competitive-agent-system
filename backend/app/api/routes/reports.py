@@ -5,6 +5,12 @@ import re
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.agents.evidence_policy import (
+    CLAIM_DIMENSION_MAP,
+    CLAIM_FIELD_MAP,
+    parse_field_evidence_ids,
+    parse_item_evidence_bindings,
+)
 from app.schemas.analysis import parse_focus_analysis_json
 from app.db.models import Analysis, Evidence, Report, Run, Source
 from app.db.session import get_db
@@ -210,25 +216,7 @@ CLAIM_DEFINITIONS: list[tuple[str, str]] = [
     ("opportunities", "机会点"),
 ]
 
-CLAIM_DIMENSION_MAP: dict[str, set[str]] = {
-    "positioning": {"产品定位"},
-    "target_users": {"产品定位", "用户评价与痛点"},
-    "core_features": {"核心功能"},
-    "pricing": {"价格与商业模式"},
-    "strengths": {"产品定位", "核心功能"},
-    "weaknesses": {"用户评价与痛点"},
-    "opportunities": set(),
-}
-
-ANALYSIS_FIELD_MAP: dict[str, str] = {
-    "positioning": "positioning",
-    "target_users": "target_users",
-    "core_features": "core_features_json",
-    "pricing": "pricing_summary",
-    "strengths": "strengths_json",
-    "weaknesses": "weaknesses_json",
-    "opportunities": "opportunities_json",
-}
+ANALYSIS_FIELD_MAP: dict[str, str] = CLAIM_FIELD_MAP
 
 
 @router.get("/citation-bundle", response_model=list[CitationBundleCompetitor])
@@ -277,23 +265,48 @@ def get_report_citation_bundle(
             analysis.competitor.name if analysis.competitor else analysis.competitor_id
         )
         competitor_evidence = evidence_by_competitor.get(competitor_name, [])
+        evidence_by_id = {item.id: item for item in evidence_items}
+        field_evidence_ids = parse_field_evidence_ids(
+            _json_dict(analysis.field_evidence_ids_json)
+        )
+        item_evidence_bindings = parse_item_evidence_bindings(
+            _json_dict(analysis.item_evidence_bindings_json)
+        )
 
         claims: list[CitationBundleClaim] = []
         for claim_type, label in CLAIM_DEFINITIONS:
             field = ANALYSIS_FIELD_MAP[claim_type]
             text = _analysis_field_text(analysis, field)
 
-            preferred_dims = CLAIM_DIMENSION_MAP.get(claim_type, set())
-            if preferred_dims:
-                matched = [
-                    e
-                    for e in competitor_evidence
-                    if e.related_dimension in preferred_dims
-                ]
+            item_bound = []
+            for row in item_evidence_bindings.get(field, []):
+                for evidence_id in row.get("evidence_ids") or []:
+                    if evidence_id in evidence_by_id:
+                        item_bound.append(evidence_by_id[evidence_id])
+            field_bound = [
+                evidence_by_id[evidence_id]
+                for evidence_id in field_evidence_ids.get(field, [])
+                if evidence_id in evidence_by_id
+            ]
+            if item_bound:
+                matched = _dedupe_evidence_models(item_bound)
+            elif field_bound:
+                matched = field_bound
             else:
-                matched = []
+                preferred_dims = CLAIM_DIMENSION_MAP.get(claim_type, set())
+                if preferred_dims:
+                    matched = [
+                        e
+                        for e in competitor_evidence
+                        if e.related_dimension in preferred_dims
+                    ]
+                else:
+                    matched = []
             if not matched:
-                matched = competitor_evidence
+                matched = [
+                    evidence
+                    for evidence in competitor_evidence
+                ]
 
             ev_refs: list[CitationBundleEvidenceRef] = []
             for e in matched[:4]:
@@ -343,7 +356,7 @@ def _analysis_refs_by_evidence_id(
 ) -> dict[str, list[CitationAnalysisRef]]:
     refs: dict[str, list[CitationAnalysisRef]] = {}
     for analysis in analyses:
-        evidence_ids = _json_list(analysis.evidence_ids_json)
+        evidence_ids = _all_analysis_evidence_ids(analysis)
         claim_types = _claim_types_for_analysis(analysis)
         competitor_name = analysis.competitor.name if analysis.competitor else ""
         for evidence_id in evidence_ids:
@@ -356,6 +369,29 @@ def _analysis_refs_by_evidence_id(
                 )
             )
     return refs
+
+
+def _all_analysis_evidence_ids(analysis: Analysis) -> list[str]:
+    result: list[str] = []
+    for evidence_id in _json_list(analysis.evidence_ids_json):
+        if evidence_id not in result:
+            result.append(evidence_id)
+    field_evidence_ids = parse_field_evidence_ids(
+        _json_dict(analysis.field_evidence_ids_json)
+    )
+    for ids in field_evidence_ids.values():
+        for evidence_id in ids:
+            if evidence_id not in result:
+                result.append(evidence_id)
+    item_evidence_bindings = parse_item_evidence_bindings(
+        _json_dict(analysis.item_evidence_bindings_json)
+    )
+    for rows in item_evidence_bindings.values():
+        for row in rows:
+            for evidence_id in row.get("evidence_ids") or []:
+                if evidence_id not in result:
+                    result.append(evidence_id)
+    return result
 
 
 def _claim_types_for_analysis(analysis: Analysis) -> list[str]:
@@ -443,6 +479,29 @@ def _json_list(value: object) -> list[str]:
     except (json.JSONDecodeError, TypeError):
         return []
     return [str(item) for item in parsed] if isinstance(parsed, list) else []
+
+
+def _json_dict(value: object) -> dict:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _dedupe_evidence_models(items: list[Evidence]) -> list[Evidence]:
+    result: list[Evidence] = []
+    seen: set[str] = set()
+    for item in items:
+        if item.id in seen:
+            continue
+        seen.add(item.id)
+        result.append(item)
+    return result
 
 
 def _analysis_field_text(analysis: Analysis, field: str) -> str:

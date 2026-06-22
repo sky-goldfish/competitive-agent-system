@@ -144,6 +144,14 @@ def _set_run_status(run: Run, status: str, stage: str | None = None) -> None:
         run.current_stage = _validate_stage(stage)
 
 
+def _report_record_fields(report_data: dict) -> dict[str, str]:
+    return {
+        "title": str(report_data.get("title") or "竞品分析报告"),
+        "markdown_content": str(report_data.get("markdown_content") or ""),
+        "summary": str(report_data.get("summary") or ""),
+    }
+
+
 def get_run_or_raise(db: Session, run_id: str) -> Run:
     run = db.get(Run, run_id)
     if run is None:
@@ -814,25 +822,50 @@ def execute_report_run(run_id: str) -> None:
                             run_id,
                         )
                         continue
-                    db.add(
-                        Analysis(
-                            id=item.get("id"),
-                            run_id=run_id,
-                            competitor_id=cid,
-                            positioning=item.get("positioning", ""),
-                            target_users=item.get("target_users", "[]"),
-                            core_features_json=item.get("core_features_json", "[]"),
-                            pricing_summary=item.get("pricing_summary", ""),
-                            strengths_json=item.get("strengths_json", "[]"),
-                            weaknesses_json=item.get("weaknesses_json", "[]"),
-                            opportunities_json=item.get("opportunities_json", "[]"),
-                            custom_focus_analysis_json=item.get(
-                                "custom_focus_analysis_json", "[]"
-                            ),
-                            evidence_ids_json=item.get("evidence_ids_json", "[]"),
-                            analysis_iteration=item.get("analysis_iteration", 0),
+                    analysis_iteration = item.get("analysis_iteration", 0)
+                    same_round = (
+                        db.query(Analysis)
+                        .filter(
+                            Analysis.run_id == run_id,
+                            Analysis.competitor_id == cid,
+                            Analysis.analysis_iteration == analysis_iteration,
                         )
+                        .order_by(Analysis.created_at.desc(), Analysis.id.desc())
+                        .first()
                     )
+                    if same_round is not None:
+                        for key, value in item.items():
+                            if key not in ("id", "run_id", "competitor_id") and hasattr(
+                                same_round, key
+                            ):
+                                setattr(same_round, key, value)
+                        existing = same_round
+                    else:
+                        db.add(
+                            Analysis(
+                                id=item.get("id"),
+                                run_id=run_id,
+                                competitor_id=cid,
+                                positioning=item.get("positioning", ""),
+                                target_users=item.get("target_users", "[]"),
+                                core_features_json=item.get("core_features_json", "[]"),
+                                pricing_summary=item.get("pricing_summary", ""),
+                                strengths_json=item.get("strengths_json", "[]"),
+                                weaknesses_json=item.get("weaknesses_json", "[]"),
+                                opportunities_json=item.get("opportunities_json", "[]"),
+                                custom_focus_analysis_json=item.get(
+                                    "custom_focus_analysis_json", "[]"
+                                ),
+                                field_evidence_ids_json=item.get(
+                                    "field_evidence_ids_json", "{}"
+                                ),
+                                item_evidence_bindings_json=item.get(
+                                    "item_evidence_bindings_json", "{}"
+                                ),
+                                evidence_ids_json=item.get("evidence_ids_json", "[]"),
+                                analysis_iteration=analysis_iteration,
+                            )
+                        )
                 # 更新竞品的关系信息
                 competitor = db.get(Competitor, item["competitor_id"])
                 if competitor:
@@ -850,7 +883,7 @@ def execute_report_run(run_id: str) -> None:
             db.commit()
         elif stage == "report_generation":
             feedback_count = state.get("feedback_loop_count", 0)
-            report_data = state["report"]
+            report_data = _report_record_fields(state["report"])
             if feedback_count > 0:
                 latest_report = (
                     db.query(Report)

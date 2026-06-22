@@ -600,6 +600,30 @@ class MockLLMProvider(LLMProvider):
             for item in evidence
         ]
         focus_analysis = _mock_focus_analysis(competitor.get("_focus_schema"), evidence)
+        field_evidence_ids = {
+            field: evidence_ids[:2]
+            for field in (
+                "positioning",
+                "target_users",
+                "core_features_json",
+                "pricing_summary",
+                "strengths_json",
+                "weaknesses_json",
+                "opportunities_json",
+            )
+            if evidence_ids
+        }
+        item_bindings = {
+            field: [
+                {
+                    "item_index": 0,
+                    "claim": "mock claim",
+                    "evidence_ids": ids[:2],
+                    "match_reason": "mock evidence binding",
+                }
+            ]
+            for field, ids in field_evidence_ids.items()
+        }
         return {
             "positioning": f"{name} 面向目标用户提供较完整的相关工作流，强调效率提升和团队协作。",
             "target_users": json.dumps(
@@ -623,7 +647,77 @@ class MockLLMProvider(LLMProvider):
             "custom_focus_analysis_json": json.dumps(
                 focus_analysis, ensure_ascii=False
             ),
+            "field_evidence_ids_json": json.dumps(
+                field_evidence_ids, ensure_ascii=False
+            ),
+            "item_evidence_bindings_json": json.dumps(
+                item_bindings, ensure_ascii=False
+            ),
             "evidence_ids_json": json.dumps(evidence_ids, ensure_ascii=False),
+        }
+
+    def extract_evidence_from_source(
+        self,
+        source: dict[str, Any],
+        query_item: dict[str, Any],
+        competitor: dict[str, Any],
+        requirement: dict[str, Any],
+    ) -> dict[str, Any]:
+        content = str(source.get("raw_content") or source.get("snippet") or "")
+        title = str(source.get("title") or "")
+        haystack = f"{title} {content}".lower()
+        name = str(competitor.get("name") or "")
+        dimension = str(query_item.get("dimension") or "")
+        source_relevance = 0.75
+        if name and name.lower() not in haystack:
+            source_relevance = 0.55
+        if source.get("source_type") == "unknown":
+            source_relevance = min(source_relevance, 0.45)
+        if source_relevance < 0.5:
+            return {
+                "source_relevance": source_relevance,
+                "source_relevance_reason": "来源与竞品或目标维度相关性不足",
+                "evidence": [],
+            }
+        summary = content[:260] or title
+        sentiment = "neutral"
+        role = "background"
+        if "评价" in dimension or "痛点" in dimension:
+            negative_markers = ("bad", "worse", "complaint", "problem", "expensive", "差", "抱怨", "限制")
+            sentiment = "negative" if any(m in haystack for m in negative_markers) else "positive"
+            role = "user_complaint" if sentiment == "negative" else "user_praise"
+        elif "功能" in dimension:
+            role = "feature"
+        elif "价格" in dimension:
+            role = "pricing"
+        elif "竞争" in dimension:
+            role = "competition"
+        elif "定位" in dimension:
+            role = "positioning"
+        return {
+            "source_relevance": source_relevance,
+            "source_relevance_reason": "Mock 基于标题和摘要判断来源可用于目标维度",
+            "evidence": [
+                {
+                    "related_product": name,
+                    "related_dimension": dimension,
+                    "claim": summary[:180],
+                    "quote": content[:500] or title[:500],
+                    "summary": summary,
+                    "supports_dimension": True,
+                    "sentiment": sentiment,
+                    "evidence_role": role,
+                    "support_type": "direct",
+                    "relevance_score": source_relevance,
+                    "confidence": min(
+                        0.9,
+                        max(
+                            0.5,
+                            float(source.get("credibility_score") or 0.7) - 0.05,
+                        ),
+                    ),
+                }
+            ],
         }
 
     def generate_report(

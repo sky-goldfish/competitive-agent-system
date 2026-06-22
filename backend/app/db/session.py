@@ -98,6 +98,18 @@ def _ensure_compatible_schema() -> None:
                         "ALTER TABLE analyses ADD COLUMN custom_focus_analysis_json TEXT NOT NULL DEFAULT '[]'"
                     )
                 )
+            if "field_evidence_ids_json" not in analysis_columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE analyses ADD COLUMN field_evidence_ids_json TEXT NOT NULL DEFAULT '{}'"
+                    )
+                )
+            if "item_evidence_bindings_json" not in analysis_columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE analyses ADD COLUMN item_evidence_bindings_json TEXT NOT NULL DEFAULT '{}'"
+                    )
+                )
     if "reports" in inspector.get_table_names():
         report_columns = {column["name"] for column in inspector.get_columns("reports")}
         with engine.begin() as connection:
@@ -188,6 +200,54 @@ def _ensure_compatible_schema() -> None:
                         "  SELECT json_extract(s.metadata_json, '$.reference_id') "
                         "  FROM sources s WHERE s.id = evidence_items.source_id"
                         ") WHERE reference_id IS NULL"
+                    )
+                )
+            if "support_type" not in evidence_columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE evidence_items ADD COLUMN support_type VARCHAR NOT NULL DEFAULT 'direct'"
+                    )
+                )
+            if "claim" not in evidence_columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE evidence_items ADD COLUMN claim TEXT NOT NULL DEFAULT ''"
+                    )
+                )
+                connection.execute(
+                    text(
+                        "UPDATE evidence_items SET claim = summary "
+                        "WHERE (claim IS NULL OR claim = '') AND summary IS NOT NULL"
+                    )
+                )
+            if "sentiment" not in evidence_columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE evidence_items ADD COLUMN sentiment VARCHAR NOT NULL DEFAULT 'neutral'"
+                    )
+                )
+            if "evidence_role" not in evidence_columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE evidence_items ADD COLUMN evidence_role VARCHAR NOT NULL DEFAULT 'background'"
+                    )
+                )
+            if "relevance_score" not in evidence_columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE evidence_items ADD COLUMN relevance_score FLOAT NOT NULL DEFAULT 0.8"
+                    )
+                )
+            if "source_credibility" not in evidence_columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE evidence_items ADD COLUMN source_credibility FLOAT NOT NULL DEFAULT 0.8"
+                    )
+                )
+            if "extraction_method" not in evidence_columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE evidence_items ADD COLUMN extraction_method VARCHAR NOT NULL DEFAULT 'legacy_search_snippet'"
                     )
                 )
     if "knowledge_items" in inspector.get_table_names():

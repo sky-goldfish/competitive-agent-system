@@ -1,6 +1,13 @@
 import json
 from typing import Any
 
+from app.agents.evidence_policy import (
+    CLAIM_DIMENSION_MAP,
+    CLAIM_FIELD_MAP,
+    dimension_matches_any,
+    parse_field_evidence_ids,
+    parse_item_evidence_bindings,
+)
 from app.agents.state import AgentState
 from app.providers.llm.base import LLMProvider
 from app.schemas.analysis import parse_focus_analysis_json
@@ -44,6 +51,12 @@ def _build_citation_bundle(
         comp_name = analysis.get("competitor_name")
 
         evidence_ids = _json_list(analysis.get("evidence_ids_json"))
+        field_evidence_ids = parse_field_evidence_ids(
+            _json_dict(analysis.get("field_evidence_ids_json"))
+        )
+        item_evidence_bindings = parse_item_evidence_bindings(
+            _json_dict(analysis.get("item_evidence_bindings_json"))
+        )
         linked_evidence = [
             evidence_by_id[item] for item in evidence_ids if item in evidence_by_id
         ]
@@ -58,7 +71,25 @@ def _build_citation_bundle(
         if not linked_evidence:
             linked_evidence = comp_evidence
 
-        def evidence_for_claim(preferred_dimensions: set[str]) -> list[dict[str, Any]]:
+        def evidence_for_claim(
+            claim_type: str, preferred_dimensions: set[str]
+        ) -> list[dict[str, Any]]:
+            field = CLAIM_FIELD_MAP.get(claim_type)
+            if field:
+                item_linked = []
+                for row in item_evidence_bindings.get(field, []):
+                    for evidence_id in row.get("evidence_ids") or []:
+                        if evidence_id in evidence_by_id:
+                            item_linked.append(evidence_by_id[evidence_id])
+                if item_linked:
+                    return _dedupe_evidence(item_linked)
+                field_linked = [
+                    evidence_by_id[evidence_id]
+                    for evidence_id in field_evidence_ids.get(field, [])
+                    if evidence_id in evidence_by_id
+                ]
+                if field_linked:
+                    return field_linked
             if not linked_evidence:
                 return []
             dim_matched = [
@@ -92,43 +123,43 @@ def _build_citation_bundle(
                         "positioning",
                         "产品定位",
                         analysis.get("positioning", ""),
-                        evidence_for_claim({"产品定位"}),
+                        evidence_for_claim("positioning", CLAIM_DIMENSION_MAP["positioning"]),
                     ),
                     _claim(
                         "target_users",
                         "目标用户",
                         _join_json_list(analysis.get("target_users")),
-                        evidence_for_claim({"产品定位", "用户评价与痛点"}),
+                        evidence_for_claim("target_users", CLAIM_DIMENSION_MAP["target_users"]),
                     ),
                     _claim(
                         "core_features",
                         "核心功能",
                         _join_json_list(analysis.get("core_features_json")),
-                        evidence_for_claim({"核心功能"}),
+                        evidence_for_claim("core_features", CLAIM_DIMENSION_MAP["core_features"]),
                     ),
                     _claim(
                         "pricing",
                         "定价策略",
                         analysis.get("pricing_summary", ""),
-                        evidence_for_claim({"价格与商业模式"}),
+                        evidence_for_claim("pricing", CLAIM_DIMENSION_MAP["pricing"]),
                     ),
                     _claim(
                         "strengths",
                         "优势",
                         _join_json_list(analysis.get("strengths_json")),
-                        evidence_for_claim({"产品定位", "核心功能"}),
+                        evidence_for_claim("strengths", CLAIM_DIMENSION_MAP["strengths"]),
                     ),
                     _claim(
                         "weaknesses",
                         "劣势或痛点",
                         _join_json_list(analysis.get("weaknesses_json")),
-                        evidence_for_claim({"用户评价与痛点"}),
+                        evidence_for_claim("weaknesses", CLAIM_DIMENSION_MAP["weaknesses"]),
                     ),
                     _claim(
                         "opportunities",
                         "机会点",
                         _join_json_list(analysis.get("opportunities_json")),
-                        evidence_for_claim(set()),
+                        evidence_for_claim("opportunities", CLAIM_DIMENSION_MAP["opportunities"]),
                     ),
                 ]
                 + _custom_focus_claims(
@@ -143,37 +174,19 @@ def _build_citation_bundle(
     return bundle
 
 
-_DIMENSION_ALIASES: dict[str, set[str]] = {
-    "产品定位": {"产品定位", "定位", "市场定位", "产品定位与目标用户"},
-    "核心功能": {"核心功能", "功能", "产品功能", "功能特性", "核心能力"},
-    "价格与商业模式": {
-        "价格与商业模式",
-        "定价策略",
-        "价格",
-        "定价",
-        "商业模式",
-        "收费模式",
-    },
-    "用户评价与痛点": {"用户评价与痛点", "用户评价", "痛点", "用户反馈", "口碑"},
-    "市场信号": {"市场信号", "市场趋势", "市场动态"},
-    "风险与机会": {"风险与机会", "风险", "机会", "风险与机遇"},
-}
+def _dedupe_evidence(evidence_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in evidence_list:
+        evidence_id = str(item.get("id") or "")
+        if evidence_id and evidence_id not in seen:
+            seen.add(evidence_id)
+            result.append(item)
+    return result
 
 
 def _dimension_matches_any(dimension: str, preferred: set[str]) -> bool:
-    if not dimension or not preferred:
-        return False
-    dim_stripped = dimension.strip()
-    for pref in preferred:
-        if dim_stripped == pref:
-            return True
-        aliases = _DIMENSION_ALIASES.get(pref, set())
-        if dim_stripped in aliases:
-            return True
-        for alias in aliases:
-            if alias in dim_stripped or dim_stripped in alias:
-                return True
-    return False
+    return dimension_matches_any(dimension, preferred)
 
 
 def _claim(
@@ -318,6 +331,18 @@ def _json_list(value: Any) -> list[str]:
     except json.JSONDecodeError:
         return []
     return [str(item) for item in parsed] if isinstance(parsed, list) else []
+
+
+def _json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _join_json_list(value: Any) -> str:

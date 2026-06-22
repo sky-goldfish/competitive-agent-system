@@ -65,6 +65,420 @@ def evidence_items():
     ]
 
 
+def test_repair_tasks_force_explicit_and_field_dimension_evidence_ids():
+    evidence = [
+        {
+            "id": "ev_old",
+            "competitor_id": "comp_1",
+            "related_product": "Acme",
+            "related_dimension": "产品定位",
+            "reference_id": 1,
+            "confidence": 0.9,
+            "relevance_score": 0.9,
+            "support_type": "direct",
+        },
+        {
+            "id": "ev_pain",
+            "competitor_id": "comp_1",
+            "related_product": "Acme",
+            "related_dimension": "用户评价与痛点",
+            "reference_id": 2,
+            "confidence": 0.92,
+            "relevance_score": 0.95,
+            "support_type": "direct",
+        },
+        {
+            "id": "ev_feature",
+            "competitor_id": "comp_1",
+            "related_product": "Acme",
+            "related_dimension": "核心功能",
+            "reference_id": 3,
+            "confidence": 0.91,
+            "relevance_score": 0.93,
+            "support_type": "direct",
+        },
+    ]
+
+    result = structured_analysis_node(
+        {
+            "selected_competitors": [competitor()],
+            "evidence": evidence,
+            "feedback_loop_count": 2,
+            "qa_retry_analysis_ids": ["comp_1"],
+            "qa_repair_tasks": [
+                {
+                    "issue_id": "qai_weakness",
+                    "competitor_id": "comp_1",
+                    "competitor_name": "Acme",
+                    "fields": ["weaknesses_json", "core_features_json"],
+                    "acceptance_criteria": (
+                        "劣势必须引用 ev_pain；核心功能必须使用核心功能证据。"
+                    ),
+                }
+            ],
+        },
+        FakeAnalysisLLM(
+            complete_analysis(
+                id="ana_repaired",
+                weaknesses_json=json.dumps(["用户反馈配置复杂"]),
+                core_features_json=json.dumps(["自动化工作流"]),
+                evidence_ids_json=json.dumps(["ev_old"]),
+            )
+        ),
+    )
+
+    ids = set(json.loads(result["analyses"][0]["evidence_ids_json"]))
+    assert {"ev_old", "ev_pain", "ev_feature"} <= ids
+    field_ids = json.loads(result["analyses"][0]["field_evidence_ids_json"])
+    assert "ev_pain" in field_ids["weaknesses_json"]
+    assert "ev_feature" in field_ids["core_features_json"]
+
+
+def test_repair_task_evidence_ids_are_not_truncated_by_stale_long_list():
+    evidence = [
+        {
+            "id": f"ev_old_{idx}",
+            "competitor_id": "comp_1",
+            "related_product": "Acme",
+            "related_dimension": "产品定位",
+            "reference_id": idx,
+            "confidence": 0.7,
+        }
+        for idx in range(20)
+    ]
+    evidence.append(
+        {
+            "id": "ev_required",
+            "competitor_id": "comp_1",
+            "related_product": "Acme",
+            "related_dimension": "用户评价与痛点",
+            "reference_id": 99,
+            "confidence": 0.95,
+            "relevance_score": 0.95,
+            "support_type": "direct",
+        }
+    )
+
+    result = structured_analysis_node(
+        {
+            "selected_competitors": [competitor()],
+            "evidence": evidence,
+            "feedback_loop_count": 2,
+            "qa_retry_analysis_ids": ["comp_1"],
+            "qa_repair_tasks": [
+                {
+                    "issue_id": "qai_weakness",
+                    "competitor_id": "comp_1",
+                    "competitor_name": "Acme",
+                    "fields": ["weaknesses_json"],
+                    "acceptance_criteria": "劣势必须引用 ev_required。",
+                }
+            ],
+        },
+        FakeAnalysisLLM(
+            complete_analysis(
+                id="ana_repaired",
+                weaknesses_json=json.dumps(["用户反馈配置复杂"]),
+                evidence_ids_json=json.dumps([f"ev_old_{idx}" for idx in range(20)]),
+            )
+        ),
+    )
+
+    ids = json.loads(result["analyses"][0]["evidence_ids_json"])
+    assert ids[0] == "ev_required"
+    assert "ev_required" in ids
+    assert len(ids) == 16
+
+
+def test_citation_bundle_prefers_field_evidence_binding_for_claim():
+    analysis = complete_analysis(
+        field_evidence_ids_json=json.dumps(
+            {"weaknesses_json": ["ev_pain"]}, ensure_ascii=False
+        ),
+        evidence_ids_json=json.dumps(["ev_feature"], ensure_ascii=False),
+    )
+    evidence = [
+        {
+            "id": "ev_feature",
+            "competitor_id": "comp_1",
+            "related_product": "Acme",
+            "related_dimension": "核心功能",
+            "reference_id": 1,
+            "confidence": 0.9,
+        },
+        {
+            "id": "ev_pain",
+            "competitor_id": "comp_1",
+            "related_product": "Acme",
+            "related_dimension": "用户评价与痛点",
+            "reference_id": 2,
+            "confidence": 0.9,
+        },
+    ]
+
+    bundle = _build_citation_bundle([analysis], evidence, [])
+    weakness_claim = next(
+        claim for claim in bundle[0]["claims"] if claim["claim_type"] == "weaknesses"
+    )
+
+    assert weakness_claim["evidence"][0]["source_reference_id"] == 2
+
+
+def test_repair_tasks_remove_bad_evidence_ids_from_bindings_and_fields():
+    evidence = [
+        {
+            "id": "ev_positive",
+            "competitor_id": "comp_1",
+            "related_product": "Acme",
+            "related_dimension": "用户评价与痛点",
+            "reference_id": 1,
+            "confidence": 0.9,
+        },
+        {
+            "id": "ev_negative",
+            "competitor_id": "comp_1",
+            "related_product": "Acme",
+            "related_dimension": "用户评价与痛点",
+            "reference_id": 2,
+            "confidence": 0.9,
+            "relevance_score": 0.9,
+            "support_type": "direct",
+        },
+    ]
+
+    result = structured_analysis_node(
+        {
+            "selected_competitors": [competitor()],
+            "evidence": evidence,
+            "feedback_loop_count": 2,
+            "qa_retry_analysis_ids": ["comp_1"],
+            "qa_repair_tasks": [
+                {
+                    "issue_id": "qai_bad_ev",
+                    "competitor_id": "comp_1",
+                    "competitor_name": "Acme",
+                    "fields": ["weaknesses_json"],
+                    "must_remove_evidence_ids": ["ev_positive"],
+                    "acceptance_criteria": "移除不能支撑劣势的正面评价证据。",
+                }
+            ],
+        },
+        FakeAnalysisLLM(
+            complete_analysis(
+                id="ana_repaired",
+                weaknesses_json=json.dumps(
+                    ["定价引发用户不满（证据ev_negative）"], ensure_ascii=False
+                ),
+                field_evidence_ids_json=json.dumps(
+                    {"weaknesses_json": ["ev_positive", "ev_negative"]},
+                    ensure_ascii=False,
+                ),
+                evidence_ids_json=json.dumps(["ev_positive", "ev_negative"]),
+            )
+        ),
+    )
+
+    analysis = result["analyses"][0]
+    ids = json.loads(analysis["evidence_ids_json"])
+    field_ids = json.loads(analysis["field_evidence_ids_json"])
+    weaknesses = json.loads(analysis["weaknesses_json"])
+
+    assert "ev_positive" not in ids
+    assert "ev_positive" not in field_ids["weaknesses_json"]
+    assert "ev_negative" in field_ids["weaknesses_json"]
+    assert all("ev_" not in item for item in weaknesses)
+
+
+def test_repair_tasks_required_evidence_ids_override_stale_bindings():
+    evidence = [
+        {
+            "id": "ev_pricing",
+            "competitor_id": "comp_1",
+            "related_product": "Acme",
+            "related_dimension": "价格与商业模式",
+            "reference_id": 1,
+            "confidence": 0.9,
+        },
+        {
+            "id": "ev_positioning",
+            "competitor_id": "comp_1",
+            "related_product": "Acme",
+            "related_dimension": "产品定位",
+            "reference_id": 2,
+            "confidence": 0.95,
+            "relevance_score": 0.95,
+            "support_type": "direct",
+        },
+    ]
+
+    result = structured_analysis_node(
+        {
+            "selected_competitors": [competitor()],
+            "evidence": evidence,
+            "feedback_loop_count": 2,
+            "qa_retry_analysis_ids": ["comp_1"],
+            "qa_repair_tasks": [
+                {
+                    "issue_id": "qai_positioning_weakness",
+                    "competitor_id": "comp_1",
+                    "competitor_name": "Acme",
+                    "fields": ["weaknesses_json"],
+                    "required_evidence_ids": ["ev_positioning"],
+                    "forbidden_evidence_ids": ["ev_pricing"],
+                    "claim": "产品定位缺乏差异化",
+                    "acceptance_criteria": "劣势必须引用定位证据。",
+                }
+            ],
+        },
+        FakeAnalysisLLM(
+            complete_analysis(
+                id="ana_repaired",
+                weaknesses_json=json.dumps(["产品定位缺乏差异化"], ensure_ascii=False),
+                field_evidence_ids_json=json.dumps(
+                    {"weaknesses_json": ["ev_pricing"]}, ensure_ascii=False
+                ),
+                evidence_ids_json=json.dumps(["ev_pricing"]),
+            )
+        ),
+    )
+
+    analysis = result["analyses"][0]
+    field_ids = json.loads(analysis["field_evidence_ids_json"])
+    item_bindings = json.loads(analysis["item_evidence_bindings_json"])
+
+    assert field_ids["weaknesses_json"] == ["ev_positioning"]
+    assert item_bindings["weaknesses_json"][0]["evidence_ids"] == ["ev_positioning"]
+
+
+def test_field_evidence_merges_repaired_ids_when_item_binding_has_wrong_dimension():
+    evidence = [
+        {
+            "id": "ev_competition",
+            "competitor_id": "comp_1",
+            "related_product": "Acme",
+            "related_dimension": "竞争关系",
+            "reference_id": 1,
+            "confidence": 0.8,
+            "support_type": "direct",
+        },
+        {
+            "id": "ev_positioning",
+            "competitor_id": "comp_1",
+            "related_product": "Acme",
+            "related_dimension": "产品定位",
+            "reference_id": 2,
+            "confidence": 0.95,
+            "relevance_score": 0.95,
+            "support_type": "direct",
+        },
+    ]
+
+    result = structured_analysis_node(
+        {
+            "selected_competitors": [competitor()],
+            "evidence": evidence,
+            "feedback_loop_count": 2,
+            "qa_retry_analysis_ids": ["comp_1"],
+        },
+        FakeAnalysisLLM(
+            complete_analysis(
+                id="ana_repaired",
+                positioning="Acme is positioned as an AI coding agent.",
+                evidence_ids_json=json.dumps(["ev_competition"]),
+                field_evidence_ids_json=json.dumps(
+                    {"positioning": ["ev_competition"]}, ensure_ascii=False
+                ),
+                item_evidence_bindings_json=json.dumps(
+                    {
+                        "positioning": [
+                            {
+                                "item_index": 0,
+                                "claim": "Acme is positioned as an AI coding agent.",
+                                "evidence_ids": ["ev_competition"],
+                                "match_reason": "LLM chose a competition signal.",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        ),
+    )
+
+    field_ids = json.loads(result["analyses"][0]["field_evidence_ids_json"])
+    assert "ev_positioning" in field_ids["positioning"]
+
+
+def test_item_evidence_repair_uses_item_index_not_row_position():
+    evidence = [
+        {
+            "id": "ev_first",
+            "competitor_id": "comp_1",
+            "related_product": "Acme",
+            "related_dimension": "用户评价与痛点",
+            "reference_id": 1,
+            "confidence": 0.9,
+            "relevance_score": 0.9,
+            "support_type": "direct",
+            "sentiment": "negative",
+            "claim": "Users report complex setup.",
+        },
+        {
+            "id": "ev_second",
+            "competitor_id": "comp_1",
+            "related_product": "Acme",
+            "related_dimension": "用户评价与痛点",
+            "reference_id": 2,
+            "confidence": 0.95,
+            "relevance_score": 0.95,
+            "support_type": "direct",
+            "sentiment": "negative",
+            "claim": "Users report unstable integrations.",
+        },
+    ]
+
+    result = structured_analysis_node(
+        {
+            "selected_competitors": [competitor()],
+            "evidence": evidence,
+            "feedback_loop_count": 2,
+            "qa_retry_analysis_ids": ["comp_1"],
+        },
+        FakeAnalysisLLM(
+            complete_analysis(
+                id="ana_repaired",
+                weaknesses_json=json.dumps(
+                    [
+                        "Users report complex setup",
+                        "Users report unstable integrations",
+                    ],
+                    ensure_ascii=False,
+                ),
+                evidence_ids_json=json.dumps(["ev_first", "ev_second"]),
+                item_evidence_bindings_json=json.dumps(
+                    {
+                        "weaknesses_json": [
+                            {
+                                "item_index": 1,
+                                "claim": "Users report unstable integrations",
+                                "evidence_ids": ["ev_second"],
+                                "match_reason": "Existing row for item 1.",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        ),
+    )
+
+    rows = json.loads(result["analyses"][0]["item_evidence_bindings_json"])[
+        "weaknesses_json"
+    ]
+    row_by_index = {row["item_index"]: row for row in rows}
+    assert "ev_second" in row_by_index[1]["evidence_ids"]
+
+
 def requirement_with_focuses():
     return {
         "focus_profile": {

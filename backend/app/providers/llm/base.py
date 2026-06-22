@@ -35,6 +35,16 @@ class LLMProvider(Protocol):
         """Create structured competitor analysis."""
         ...
 
+    def extract_evidence_from_source(
+        self,
+        source: dict[str, Any],
+        query_item: dict[str, Any],
+        competitor: dict[str, Any],
+        requirement: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Extract 0..N structured evidence items from one source."""
+        ...
+
     def generate_report(
         self,
         run: dict[str, Any],

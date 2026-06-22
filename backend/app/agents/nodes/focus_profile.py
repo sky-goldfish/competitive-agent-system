@@ -19,9 +19,10 @@ def focus_profile_node(state: AgentState, llm: LLMProvider) -> AgentState:
 
     raw_result = llm.extract_focus_profile(state["user_requirement"], requirement)
     focus_profile = normalize_focus_profile(raw_result)
+    user_text = (state.get("user_requirement") or "").strip()
+    focus_profile = _ground_focus_profile_in_user_text(focus_profile, user_text)
 
     if not focus_profile.get("clarification_needed"):
-        user_text = (state.get("user_requirement") or "").strip()
         if _is_vague_requirement(user_text) and not focus_profile.get(
             "explicit_focuses"
         ):
@@ -79,6 +80,83 @@ def normalize_focus_profile(raw: dict[str, Any] | None) -> dict[str, Any]:
         "clarifying_question": question,
         "assumptions": _string_list(profile.get("assumptions")),
     }
+
+
+def _ground_focus_profile_in_user_text(
+    profile: dict[str, Any], user_text: str
+) -> dict[str, Any]:
+    if not profile.get("explicit_focuses"):
+        return profile
+    grounded = [
+        focus
+        for focus in profile.get("explicit_focuses") or []
+        if _focus_is_grounded_in_user_text(focus, user_text)
+    ]
+    if len(grounded) == len(profile.get("explicit_focuses") or []):
+        return profile
+    assumptions = list(profile.get("assumptions") or [])
+    assumptions.append("已忽略未在用户原始输入中明确出现的默认分析维度。")
+    return {
+        **profile,
+        "explicit_focuses": grounded,
+        "assumptions": assumptions,
+    }
+
+
+def _focus_is_grounded_in_user_text(focus: dict[str, Any], user_text: str) -> bool:
+    normalized_text = _normalize_text(user_text)
+    if not normalized_text:
+        return False
+    candidates = _focus_grounding_terms(focus)
+    return any(term and term in normalized_text for term in candidates)
+
+
+def _focus_grounding_terms(focus: dict[str, Any]) -> set[str]:
+    raw_values = [
+        focus.get("key"),
+        focus.get("label"),
+        *(focus.get("query_terms") if isinstance(focus.get("query_terms"), list) else []),
+    ]
+    terms: set[str] = set()
+    for value in raw_values:
+        text = _normalize_text(str(value or ""))
+        if not text:
+            continue
+        terms.add(text)
+        terms.update(part for part in text.replace("_", " ").split() if len(part) >= 2)
+
+    label = str(focus.get("label") or "")
+    key = str(focus.get("key") or "").lower()
+    alias_map = {
+        "功能": {"功能", "能力", "特性", "feature", "features", "capability"},
+        "性能": {"性能", "速度", "准确率", "延迟", "benchmark", "performance"},
+        "体验": {"体验", "易用", "交互", "学习曲线", "ux", "experience"},
+        "架构": {"架构", "技术架构", "模型架构", "推理", "插件", "architecture"},
+        "定价": {"价格", "定价", "收费", "套餐", "预算", "pricing", "price", "cost"},
+        "隐私": {"隐私", "安全", "加密", "合规", "privacy", "security"},
+        "本地": {"本地", "离线", "local", "offline", "localfirst"},
+        "协作": {"协作", "团队", "共享", "多人", "collaboration", "team"},
+        "代码质量": {"代码质量", "准确性", "代码生成质量", "多语言", "debug", "调试"},
+    }
+    combined = f"{label} {key}"
+    for marker, aliases in alias_map.items():
+        if marker in combined or marker in key:
+            terms.update(_normalize_text(alias) for alias in aliases)
+    return {term for term in terms if term}
+
+
+def _normalize_text(value: str) -> str:
+    return (
+        value.lower()
+        .replace(" ", "")
+        .replace("-", "")
+        .replace("_", "")
+        .replace("/", "")
+        .replace("（", "")
+        .replace("）", "")
+        .replace("(", "")
+        .replace(")", "")
+    )
 
 
 def _focus_list(value: object) -> list[dict[str, Any]]:

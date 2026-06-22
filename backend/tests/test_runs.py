@@ -9,6 +9,7 @@ from app.db.session import SessionLocal, init_db
 from app.main import app
 from app.providers.llm.mock import MockLLMProvider
 from app.providers.search.mock import MockSearchProvider
+from app.services.run_service import _report_record_fields
 
 
 client = TestClient(app)
@@ -32,6 +33,24 @@ def _wait_for_status(run_id: str, expected: str, *, attempts: int = 20):
     raise AssertionError(
         f"Run {run_id} did not reach {expected}. Current status: {run['status']}"
     )
+
+
+def test_report_record_fields_drops_runtime_metadata():
+    fields = _report_record_fields(
+        {
+            "title": "Report",
+            "markdown_content": "# Report",
+            "summary": "Summary",
+            "field_evidence_ids": {"weaknesses_json": ["ev_1"]},
+            "citation_bundle": [],
+        }
+    )
+
+    assert fields == {
+        "title": "Report",
+        "markdown_content": "# Report",
+        "summary": "Summary",
+    }
 
 
 def test_run_lifecycle():

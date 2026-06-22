@@ -5,8 +5,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 from urllib.parse import urlparse
 
+from app.agents.evidence_policy import normalize_evidence_role, normalize_sentiment
 from app.agents.state import AgentState
 from app.db.models import new_id
+from app.providers.llm.base import LLMProvider
 from app.providers.search.base import SearchProvider
 from app.services import call_tracer
 from app.services.knowledge_service import retrieve_for_material_collection
@@ -146,10 +148,15 @@ DIMENSION_SOURCE_BONUS = {
         "professional_review",
     },
 }
+EVIDENCE_EXTRACTION_WORKERS = 4
+EVIDENCE_EXTRACTION_TIMEOUT_SECONDS = 180
 
 
 def material_collection_node(
-    state: AgentState, search: SearchProvider, progress: ProgressCallback | None = None
+    state: AgentState,
+    search: SearchProvider,
+    llm: LLMProvider | None = None,
+    progress: ProgressCallback | None = None,
 ) -> AgentState:
     requirement = state.get("requirement", {})
     if state.get("target_understanding"):
@@ -273,6 +280,7 @@ def material_collection_node(
     for product_query in product_queries:
         competitor = product_query["competitor"]
         product_source_count = 0
+        extraction_jobs: list[dict[str, Any]] = []
 
         def _search_one_dimension(query_item: dict, trace_ctx: dict | None) -> list[dict]:
             call_tracer.set_worker_trace_context(trace_ctx)
@@ -358,23 +366,23 @@ def material_collection_node(
                                 ),
                                 result.title,
                             )
-                        evidence.append(
+                        source_for_extraction = {
+                            "competitor_id": competitor["id"],
+                            "title": source_title,
+                            "url": result.url,
+                            "snippet": result.snippet,
+                            "source_type": source_type,
+                            "provider": search.name,
+                            "raw_content": result.raw_content,
+                            "credibility_score": credibility_score,
+                            "reference_id": ref_id,
+                        }
+                        extraction_jobs.append(
                             {
-                                "id": new_id("ev"),
-                                "competitor_id": competitor["id"],
-                                "related_product": competitor["name"],
-                                "related_dimension": query_item.get("dimension", ""),
-                                "quote": (result.raw_content or result.snippet)[:800],
-                                "summary": _evidence_summary(
-                                    query_item, result.snippet
-                                ),
-                                "confidence": min(
-                                    0.95, max(0.5, credibility_score - 0.04)
-                                ),
-                                "source_url": result.url,
-                                "source_title": source_title,
-                                "reference_id": ref_id,
-                                "source_type": source_type,
+                                "source": source_for_extraction,
+                                "query_item": query_item,
+                                "competitor": competitor,
+                                "credibility_score": credibility_score,
                             }
                         )
             except TimeoutError:
@@ -382,6 +390,11 @@ def material_collection_node(
                     "material_collection as_completed timed out for competitor %s",
                     competitor.get("name", "?"),
                 )
+        evidence.extend(
+            _extract_evidence_jobs_concurrently(
+                llm, extraction_jobs, requirement, trace_ctx
+            )
+        )
         _emit(
             progress,
             "source_search",
@@ -420,6 +433,238 @@ def material_collection_node(
         "evidence": evidence,
         "coverage_report": coverage_report,
     }
+
+
+def _extract_evidence_jobs_concurrently(
+    llm: LLMProvider | None,
+    jobs: list[dict[str, Any]],
+    requirement: dict,
+    trace_ctx: dict | None = None,
+) -> list[dict]:
+    if not jobs:
+        return []
+
+    def run_job(job: dict[str, Any]) -> list[dict]:
+        call_tracer.set_worker_trace_context(trace_ctx)
+        source = job["source"]
+        query_item = job["query_item"]
+        competitor = job["competitor"]
+        credibility_score = job["credibility_score"]
+        extracted = _extract_evidence_items(
+            llm,
+            source,
+            query_item,
+            competitor,
+            requirement,
+        )
+        if extracted is None:
+            return [
+                _fallback_evidence_item(
+                    source,
+                    query_item,
+                    competitor,
+                    credibility_score,
+                )
+            ]
+        return extracted
+
+    if len(jobs) == 1:
+        return run_job(jobs[0])
+
+    evidence: list[dict] = []
+    with ThreadPoolExecutor(
+        max_workers=min(EVIDENCE_EXTRACTION_WORKERS, len(jobs))
+    ) as executor:
+        futures = {executor.submit(run_job, job): job for job in jobs}
+        try:
+            for future in as_completed(
+                futures, timeout=EVIDENCE_EXTRACTION_TIMEOUT_SECONDS
+            ):
+                try:
+                    evidence.extend(future.result())
+                except Exception:
+                    job = futures[future]
+                    logger.warning(
+                        "Evidence extraction worker failed for %s",
+                        job.get("source", {}).get("url"),
+                        exc_info=True,
+                    )
+                    evidence.append(
+                        _fallback_evidence_item(
+                            job["source"],
+                            job["query_item"],
+                            job["competitor"],
+                            job["credibility_score"],
+                        )
+                    )
+        except TimeoutError:
+            logger.warning("Evidence extraction timed out for %d jobs", len(jobs))
+            for future, job in futures.items():
+                if future.done():
+                    continue
+                future.cancel()
+                evidence.append(
+                    _fallback_evidence_item(
+                        job["source"],
+                        job["query_item"],
+                        job["competitor"],
+                        job["credibility_score"],
+                    )
+                )
+    return evidence
+
+
+def _extract_evidence_items(
+    llm: LLMProvider | None,
+    source: dict[str, Any],
+    query_item: dict,
+    competitor: dict,
+    requirement: dict,
+) -> list[dict] | None:
+    if llm is None:
+        return None
+    try:
+        result = llm.extract_evidence_from_source(
+            source, query_item, competitor, requirement
+        )
+    except Exception:
+        logger.warning(
+            "Evidence extraction failed for %s", source.get("url"), exc_info=True
+        )
+        return None
+    items = result.get("evidence") if isinstance(result, dict) else None
+    if not isinstance(items, list):
+        return None
+    source_relevance = _bounded_float(
+        result.get("source_relevance") if isinstance(result, dict) else None,
+        default=0.0,
+    )
+    normalized = []
+    for item in items[:4]:
+        normalized_item = _normalize_extracted_evidence(
+            item,
+            source,
+            query_item,
+            competitor,
+            source_relevance,
+        )
+        if normalized_item is not None:
+            normalized.append(normalized_item)
+    return normalized
+
+
+def _normalize_extracted_evidence(
+    item: object,
+    source: dict,
+    query_item: dict,
+    competitor: dict,
+    source_relevance: float,
+) -> dict | None:
+    if not isinstance(item, dict):
+        return None
+    supports_dimension = item.get("supports_dimension")
+    if supports_dimension is False:
+        return None
+    support_type = _normalize_support_type(item.get("support_type"))
+    dimension = _normalize_evidence_dimension(
+        str(item.get("related_dimension") or query_item.get("dimension") or "")
+    )
+    quote = str(item.get("quote") or "").strip()
+    claim = str(item.get("claim") or item.get("summary") or "").strip()
+    summary = str(item.get("summary") or claim).strip()
+    if not quote and not summary:
+        return None
+    evidence_confidence = _bounded_float(item.get("confidence"), default=source_relevance)
+    source_credibility = _bounded_float(source.get("credibility_score"), default=0.6)
+    relevance = _bounded_float(item.get("relevance_score"), default=source_relevance)
+    if support_type == "background" and relevance < 0.85:
+        return None
+    confidence = min(
+        0.95,
+        max(0.0, evidence_confidence * 0.45 + source_credibility * 0.35 + relevance * 0.2),
+    )
+    if confidence < 0.5:
+        return None
+    return {
+        "id": new_id("ev"),
+        "competitor_id": competitor["id"],
+        "related_product": str(item.get("related_product") or competitor["name"]),
+        "related_dimension": dimension,
+        "claim": claim[:800],
+        "quote": (quote or summary)[:800],
+        "summary": summary[:800],
+        "confidence": confidence,
+        "sentiment": normalize_sentiment(item.get("sentiment")),
+        "evidence_role": normalize_evidence_role(item.get("evidence_role")),
+        "support_type": support_type,
+        "relevance_score": relevance,
+        "source_credibility": source_credibility,
+        "extraction_method": "llm_extraction",
+        "source_url": source.get("url"),
+        "source_title": source.get("title"),
+        "reference_id": source.get("reference_id"),
+        "source_type": source.get("source_type"),
+    }
+
+
+def _fallback_evidence_item(
+    source: dict,
+    query_item: dict,
+    competitor: dict,
+    credibility_score: float,
+) -> dict:
+    return {
+        "id": new_id("ev"),
+        "competitor_id": competitor["id"],
+        "related_product": competitor["name"],
+        "related_dimension": query_item.get("dimension", ""),
+        "claim": _evidence_summary(query_item, source.get("snippet") or ""),
+        "quote": (source.get("raw_content") or source.get("snippet") or "")[:800],
+        "summary": _evidence_summary(query_item, source.get("snippet") or ""),
+        "confidence": min(0.65, max(0.45, credibility_score - 0.16)),
+        "sentiment": "neutral",
+        "evidence_role": "background",
+        "support_type": "indirect",
+        "relevance_score": min(0.65, max(0.45, credibility_score - 0.16)),
+        "source_credibility": _bounded_float(credibility_score, default=0.5),
+        "extraction_method": "fallback_search_snippet",
+        "source_url": source.get("url"),
+        "source_title": source.get("title"),
+        "reference_id": source.get("reference_id"),
+        "source_type": source.get("source_type"),
+    }
+
+
+def _normalize_evidence_dimension(value: str) -> str:
+    normalized = value.strip()
+    allowed = set(ANALYSIS_DIMENSIONS) | {"竞争关系"}
+    if normalized in allowed or normalized.startswith("个性化关注点："):
+        return normalized
+    for label in allowed:
+        if label in normalized or normalized in label:
+            return label
+    return normalized or "产品定位"
+
+
+def _normalize_support_type(value: object) -> str:
+    support_type = str(value or "direct").strip().lower()
+    if support_type in {"direct", "直接"}:
+        return "direct"
+    if support_type in {"indirect", "间接"}:
+        return "indirect"
+    if support_type in {"background", "背景"}:
+        return "background"
+    return "direct"
+
+
+def _bounded_float(value: object, *, default: float) -> float:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return default
+    if score > 1:
+        score = score / 100
+    return min(1.0, max(0.0, score))
 
 
 def _emit(
@@ -819,6 +1064,7 @@ def _build_retrieval_quart(
     return {
         "competitor_id": competitor["id"],
         "competitor_name": name,
+        "competitor_website": competitor.get("website"),
         "product_type": product_type,
         "competitor_type": competitor_type,
         "relation_claim": relationship_model["relation_claim"],
@@ -852,6 +1098,7 @@ def _build_focus_quart(
     return {
         "competitor_id": competitor["id"],
         "competitor_name": name,
+        "competitor_website": competitor.get("website"),
         "product_type": product_type,
         "competitor_type": competitor_type,
         "relation_claim": relationship_model["relation_claim"],
@@ -1120,6 +1367,7 @@ def _classify_and_rank_results(
             result.snippet,
             requirement,
             query_item.get("dimension", ""),
+            query_item,
         )
         dimension_bonus = (
             0.08
@@ -1173,14 +1421,19 @@ def _relationship_match_bonus(result: object, query_item: dict) -> float:
 
 
 def _classify_source(
-    url: str, title: str, snippet: str, requirement: dict, dimension: str
+    url: str,
+    title: str,
+    snippet: str,
+    requirement: dict,
+    dimension: str,
+    query_item: dict | None = None,
 ) -> tuple[str, float, str]:
     lowered = f"{url} {title} {snippet}".lower()
     domain = urlparse(url).netloc.lower()
     source_type = (
         _classify_commodity_source(domain, lowered)
         if _is_commodity_domain(requirement)
-        else _classify_saas_source(domain, lowered)
+        else _classify_saas_source(domain, lowered, query_item or {})
     )
     if source_type == "unknown":
         source_type = _classify_common_source(domain, lowered)
@@ -1234,7 +1487,7 @@ def _classify_commodity_source(domain: str, lowered: str) -> str:
     return "unknown"
 
 
-def _classify_saas_source(domain: str, lowered: str) -> str:
+def _classify_saas_source(domain: str, lowered: str, query_item: dict) -> str:
     if any(
         item in domain
         for item in ["g2.com", "capterra.com", "producthunt.com", "trustradius.com"]
@@ -1250,7 +1503,14 @@ def _classify_saas_source(domain: str, lowered: str) -> str:
         for item in ["x.com", "twitter.com", "linkedin.com", "youtube.com"]
     ):
         return "social_review_post"
-    if _looks_official_domain(domain):
+    if _looks_like_forum_or_community(domain, lowered):
+        return "community_discussion"
+    is_official = (
+        _is_official_source_domain(domain, query_item)
+        if _official_domains_for_query(query_item)
+        else _looks_official_domain(domain)
+    )
+    if is_official:
         if any(
             item in lowered for item in ["pricing", "price", "plans", "定价", "价格"]
         ):
@@ -1258,9 +1518,27 @@ def _classify_saas_source(domain: str, lowered: str) -> str:
         if any(
             item in lowered
             for item in ["docs", "help", "support", "developer", "文档", "帮助中心"]
-        ):
+        ) or _looks_like_docs_domain_or_path(domain, lowered):
             return "official_docs"
         return "official_site"
+    if any(item in lowered for item in ["pricing", "price", "plans", "定价", "价格"]):
+        return "professional_review"
+    if any(
+        item in lowered
+        for item in [
+            "review",
+            "comparison",
+            "alternatives",
+            "alternative",
+            "vs ",
+            "对比",
+            "测评",
+            "评测",
+            "指南",
+            "guide",
+        ]
+    ):
+        return "professional_review"
     return "unknown"
 
 
@@ -1275,6 +1553,78 @@ def _classify_common_source(domain: str, lowered: str) -> str:
 def _is_commodity_domain(requirement: dict) -> bool:
     text = f"{requirement.get('domain', '')} {requirement.get('summary', '')} {requirement.get('query', '')}".lower()
     return any(marker.lower() in text for marker in COMMODITY_MARKERS)
+
+
+def _is_official_source_domain(domain: str, query_item: dict) -> bool:
+    if not domain:
+        return False
+    official_domains = _official_domains_for_query(query_item)
+    return any(_domain_matches(domain, official) for official in official_domains)
+
+
+def _official_domains_for_query(query_item: dict) -> set[str]:
+    domains = set()
+    website_domain = urlparse(str(query_item.get("competitor_website") or "")).netloc
+    if website_domain:
+        domains.add(website_domain.lower())
+    product_name = str(query_item.get("competitor_name") or "").lower()
+    known_domains = {
+        "github copilot": {
+            "github.com",
+            "docs.github.com",
+            "github.blog",
+            "learn.microsoft.com",
+            "azure.microsoft.com",
+        },
+        "cursor": {"cursor.com"},
+        "claude code": {
+            "anthropic.com",
+            "claude.ai",
+            "code.claude.com",
+            "docs.anthropic.com",
+        },
+        "windsurf": {"windsurf.com", "codeium.com", "devin.ai"},
+        "gemini code assist": {
+            "cloud.google.com",
+            "developers.google.com",
+            "developers.googleblog.com",
+            "blog.google",
+        },
+    }
+    for product, product_domains in known_domains.items():
+        if product in product_name:
+            domains.update(product_domains)
+    return domains
+
+
+def _domain_matches(domain: str, official_domain: str) -> bool:
+    domain = domain.lower().removeprefix("www.")
+    official_domain = official_domain.lower().removeprefix("www.")
+    return domain == official_domain or domain.endswith(f".{official_domain}")
+
+
+def _looks_like_docs_domain_or_path(domain: str, lowered: str) -> bool:
+    return (
+        domain.startswith("docs.")
+        or domain.startswith("developers.")
+        or "learn.microsoft.com" in domain
+        or "/docs/" in lowered
+        or "/documentation" in lowered
+    )
+
+
+def _looks_like_forum_or_community(domain: str, lowered: str) -> bool:
+    return (
+        domain.startswith("forum.")
+        or domain.startswith("forums.")
+        or domain.startswith("community.")
+        or domain.startswith("discuss.")
+        or "/forum/" in lowered
+        or "/forums/" in lowered
+        or "/community/" in lowered
+        or "/discussion/" in lowered
+        or "community forum" in lowered
+    )
 
 
 def _looks_official_domain(domain: str) -> bool:

@@ -94,7 +94,7 @@ def build_report_generation_graph(
             trace,
             "material_collection",
             state,
-            lambda: material_collection_node(state, search, progress=progress),
+            lambda: material_collection_node(state, search, llm, progress=progress),
         )
         if on_stage_complete:
             on_stage_complete("material_collection", result)

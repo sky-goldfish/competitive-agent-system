@@ -7,6 +7,13 @@ from datetime import datetime
 from typing import Any
 
 from app.agents.state import ensure_dict
+from app.agents.evidence_policy import (
+    FIELD_DIMENSION_REQUIREMENTS,
+    dimension_matches_any,
+    evidence_matches_claim_policy,
+    parse_field_evidence_ids,
+    parse_item_evidence_bindings,
+)
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, joinedload
@@ -858,6 +865,9 @@ def _handle_report_redo(
                 "related_dimension": e.related_dimension,
                 "quote": e.quote,
                 "summary": e.summary,
+                "claim": e.claim,
+                "sentiment": e.sentiment,
+                "evidence_role": e.evidence_role,
                 "confidence": e.confidence,
                 "source_url": e.source.url if e.source else None,
                 "source_title": e.source.title if e.source else None,
@@ -895,6 +905,12 @@ def _handle_report_redo(
                 opportunities_json=_str(analysis.get("opportunities_json"), "[]"),
                 custom_focus_analysis_json=_str(
                     analysis.get("custom_focus_analysis_json"), "[]"
+                ),
+                field_evidence_ids_json=_analysis_field_evidence_ids_json(
+                    analysis, comp_evidence
+                ),
+                item_evidence_bindings_json=_analysis_item_evidence_bindings_json(
+                    analysis, comp_evidence
                 ),
                 evidence_ids_json=json.dumps(
                     [e["id"] for e in comp_evidence if e.get("id")],
@@ -1196,6 +1212,116 @@ def _json_list(value: Any) -> list[str]:
     return [str(item) for item in parsed] if isinstance(parsed, list) else []
 
 
+def _json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _analysis_field_evidence_ids_json(
+    analysis: dict[str, Any], evidence: list[dict[str, Any]]
+) -> str:
+    existing = parse_field_evidence_ids(
+        _json_dict(analysis.get("field_evidence_ids_json"))
+    )
+    evidence_by_id = {str(item.get("id")): item for item in evidence if item.get("id")}
+    result: dict[str, list[str]] = {}
+    for field, dimensions in FIELD_DIMENSION_REQUIREMENTS.items():
+        ids = [
+            evidence_id
+            for evidence_id in existing.get(field, [])
+            if evidence_id in evidence_by_id
+            and (
+                not dimensions
+                or dimension_matches_any(
+                    evidence_by_id[evidence_id].get("related_dimension"), dimensions
+                )
+            )
+        ]
+        if not ids:
+            ids = [
+                str(item.get("id"))
+                for item in evidence
+                if item.get("id")
+                and (
+                    not dimensions
+                    or dimension_matches_any(item.get("related_dimension"), dimensions)
+                )
+            ][:4]
+        if ids:
+            result[field] = list(dict.fromkeys(ids))[:4]
+    return json.dumps(result, ensure_ascii=False)
+
+
+def _analysis_item_evidence_bindings_json(
+    analysis: dict[str, Any], evidence: list[dict[str, Any]]
+) -> str:
+    existing = parse_item_evidence_bindings(
+        _json_dict(analysis.get("item_evidence_bindings_json"))
+    )
+    evidence_by_id = {str(item.get("id")): item for item in evidence if item.get("id")}
+    result: dict[str, list[dict[str, Any]]] = {}
+    for field in FIELD_DIMENSION_REQUIREMENTS:
+        claims = _analysis_field_claims(analysis.get(field))
+        if not claims:
+            continue
+        rows: list[dict[str, Any]] = []
+        for index, claim in enumerate(claims):
+            existing_ids = (
+                existing.get(field, [{}])[index].get("evidence_ids", [])
+                if index < len(existing.get(field, []))
+                else []
+            )
+            ids = [
+                evidence_id
+                for evidence_id in existing_ids
+                if evidence_id in evidence_by_id
+                and evidence_matches_claim_policy(
+                    evidence_by_id[evidence_id], field, claim, evidence
+                )
+            ]
+            if not ids:
+                ids = [
+                    str(item.get("id"))
+                    for item in evidence
+                    if item.get("id")
+                    and evidence_matches_claim_policy(item, field, claim, evidence)
+                ][:2]
+            if ids:
+                rows.append(
+                    {
+                        "item_index": index,
+                        "claim": claim,
+                        "evidence_ids": list(dict.fromkeys(ids))[:3],
+                        "match_reason": "字段维度与证据情绪符合绑定策略",
+                    }
+                )
+        if rows:
+            result[field] = rows
+    return json.dumps(result, ensure_ascii=False)
+
+
+def _analysis_field_claims(value: Any) -> list[str]:
+    if value is None:
+        return []
+    parsed = _json_list(value)
+    if parsed:
+        return [str(item).strip() for item in parsed if str(item).strip()]
+    text = str(value).strip()
+    if not text or text in {"[]", "{}"}:
+        return []
+    lowered = text.lower()
+    if any(marker in lowered for marker in ("暂无", "未涉及", "unknown", "n/a")):
+        return []
+    return [text]
+
+
 def _evidence_list(
     db: Session, run_id: str, competitors: list[Competitor]
 ) -> list[dict[str, Any]]:
@@ -1224,7 +1350,14 @@ def _evidence_list(
                 "related_dimension": item.related_dimension,
                 "quote": item.quote,
                 "summary": item.summary,
+                "claim": item.claim,
+                "sentiment": item.sentiment,
+                "evidence_role": item.evidence_role,
                 "confidence": item.confidence,
+                "support_type": item.support_type,
+                "relevance_score": item.relevance_score,
+                "source_credibility": item.source_credibility,
+                "extraction_method": item.extraction_method,
                 "source_url": item.source.url if item.source else None,
                 "source_title": item.source.title if item.source else None,
                 "reference_id": ref_id,
@@ -1292,6 +1425,8 @@ def _analysis_list(
                 "weaknesses_json": item.weaknesses_json,
                 "opportunities_json": item.opportunities_json,
                 "custom_focus_analysis_json": item.custom_focus_analysis_json,
+                "field_evidence_ids_json": item.field_evidence_ids_json,
+                "item_evidence_bindings_json": item.item_evidence_bindings_json,
                 "evidence_ids_json": json.dumps(merged_ids, ensure_ascii=False),
             }
         )
@@ -1329,6 +1464,9 @@ def _analyze_revision_competitors(
                 "related_dimension": item.related_dimension,
                 "quote": item.quote,
                 "summary": item.summary,
+                "claim": item.claim,
+                "sentiment": item.sentiment,
+                "evidence_role": item.evidence_role,
                 "confidence": item.confidence,
                 "source_url": item.source.url if item.source else None,
                 "source_title": item.source.title if item.source else None,
@@ -1372,6 +1510,12 @@ def _analyze_revision_competitors(
                 opportunities_json=_str(analysis.get("opportunities_json"), "[]"),
                 custom_focus_analysis_json=_str(
                     analysis.get("custom_focus_analysis_json"), "[]"
+                ),
+                field_evidence_ids_json=_analysis_field_evidence_ids_json(
+                    analysis, comp_evidence
+                ),
+                item_evidence_bindings_json=_analysis_item_evidence_bindings_json(
+                    analysis, comp_evidence
                 ),
                 evidence_ids_json=json.dumps(
                     [item["id"] for item in comp_evidence if item.get("id")],
@@ -1756,6 +1900,8 @@ def _ensure_analyses_for_all_selected(
                 weaknesses_json="[]",
                 opportunities_json="[]",
                 custom_focus_analysis_json="[]",
+                field_evidence_ids_json="{}",
+                item_evidence_bindings_json="{}",
                 evidence_ids_json="[]",
                 analysis_iteration=-1,
             )
